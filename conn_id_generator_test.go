@@ -141,6 +141,29 @@ func TestConnIDGeneratorRejectsExcessivePathCIDReplenishment(t *testing.T) {
 	require.Equal(t, qerr.ProtocolViolation, transportErr.ErrorCode)
 }
 
+func TestConnIDGeneratorRecoversEmptyPathCIDQueue(t *testing.T) {
+	var queuedFrames []wire.Frame
+	g := newConnIDGenerator(
+		&packetHandlerMap{},
+		protocol.ParseConnectionID([]byte{1, 1, 1, 1}),
+		nil,
+		newStatelessResetter(&StatelessResetKey{1, 2, 3, 4}),
+		connRunnerCallbacks{
+			AddConnectionID:    func(protocol.ConnectionID) {},
+			RemoveConnectionID: func(protocol.ConnectionID) {},
+		},
+		func(f wire.Frame) { queuedFrames = append(queuedFrames, f) },
+		&protocol.DefaultConnectionIDGenerator{ConnLen: 5},
+	)
+	g.nextPathConnectionIDSeq[2] = 3
+
+	require.NoError(t, g.replenishPathConnectionIDs(2, 1))
+	require.Len(t, queuedFrames, 1)
+	frame, ok := queuedFrames[0].(*wire.PathNewConnectionIDFrame)
+	require.True(t, ok)
+	require.Equal(t, uint64(3), frame.SequenceNumber)
+}
+
 func testConnIDGeneratorIssueAndRetire(t *testing.T, hasInitialClientDestConnID bool) {
 	var (
 		added   []protocol.ConnectionID

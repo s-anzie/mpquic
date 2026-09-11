@@ -284,6 +284,9 @@ func (m *connIDGenerator) replenishPathConnectionIDs(id pathID, nextSequenceNumb
 		}
 		current = m.nextPathConnectionIDSeq[id]
 	}
+	if len(m.pathConnectionIDs[id]) == 0 {
+		return m.ensurePathConnectionID(id)
+	}
 	return nil
 }
 
