@@ -96,6 +96,7 @@ type multipathPathState struct {
 
 type multipathState struct {
 	localMaxPathID uint64
+	maxAckDelay    time.Duration
 
 	peerInitialMaxPathID uint64
 	peerMaxPathID        uint64
@@ -111,6 +112,7 @@ type multipathState struct {
 func (m *multipathState) configurePathCongestion(initialMaxDatagramSize protocol.ByteCount, connStats *utils.ConnectionStats) {
 	m.newPathCongestion = func() (*utils.RTTStats, congestion.SendAlgorithmWithDebugInfos) {
 		rttStats := utils.NewRTTStats()
+		rttStats.SetMaxAckDelay(m.maxAckDelay)
 		return rttStats, congestion.NewCubicSender(
 			congestion.DefaultClock{},
 			rttStats,
@@ -130,6 +132,7 @@ func (m *multipathState) configurePathCongestion(initialMaxDatagramSize protocol
 func newMultipathState(localMaxPathID uint64) *multipathState {
 	return &multipathState{
 		localMaxPathID:       localMaxPathID,
+		maxAckDelay:          protocol.MaxAckDelay,
 		paths:                make(map[uint64]*multipathPathState),
 		connectionIDToPathID: make(map[protocol.ConnectionID]uint64),
 	}
@@ -234,6 +237,9 @@ func (m *multipathState) handlePathAck(f *wire.AckFrame, receivedAt ...monotime.
 				packet := p.sentPackets[packetNumber]
 				if packetNumber == f.LargestAcked() && packet.ackEliciting {
 					m.updatePathRTT(p, packet, f.DelayTime, rcvTime)
+					if p.congestion != nil {
+						p.congestion.MaybeExitSlowStart()
+					}
 				}
 				if packet.ackEliciting && packet.size > 0 {
 					priorInFlight := p.bytesInFlight
@@ -258,6 +264,15 @@ func (m *multipathState) handlePathAck(f *wire.AckFrame, receivedAt ...monotime.
 		}
 	}
 	return nil
+}
+
+func (m *multipathState) setMaxAckDelay(maxAckDelay time.Duration) {
+	m.maxAckDelay = maxAckDelay
+	for _, p := range m.paths {
+		if p.rttStats != nil {
+			p.rttStats.SetMaxAckDelay(maxAckDelay)
+		}
+	}
 }
 
 func (m *multipathState) updatePathRTT(p *multipathPathState, packet multipathSentPacket, ackDelay time.Duration, receivedAt monotime.Time) {

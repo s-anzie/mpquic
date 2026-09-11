@@ -2571,6 +2571,7 @@ func (c *Conn) applyTransportParameters() {
 	}
 	c.connFlowController.UpdateSendWindow(params.InitialMaxData)
 	c.rttStats.SetMaxAckDelay(params.MaxAckDelay)
+	c.multipath.setMaxAckDelay(params.MaxAckDelay)
 	c.connIDGenerator.SetMaxActiveConnIDs(params.ActiveConnectionIDLimit)
 	if params.StatelessResetToken != nil {
 		c.connIDManager.SetStatelessResetToken(*params.StatelessResetToken)
