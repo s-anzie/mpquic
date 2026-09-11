@@ -92,6 +92,16 @@ func (h *connIDManager) add(f *wire.NewConnectionIDFrame) error {
 			ErrorMessage: "received NEW_CONNECTION_ID frame but zero-length connection IDs are in use",
 		}
 	}
+	if h.abandonedPaths[0] {
+		if h.abandonedRetired[0] == nil {
+			h.abandonedRetired[0] = make(map[uint64]bool)
+		}
+		if !h.abandonedRetired[0][f.SequenceNumber] {
+			h.queueControlFrame(&wire.RetireConnectionIDFrame{SequenceNumber: f.SequenceNumber})
+			h.abandonedRetired[0][f.SequenceNumber] = true
+		}
+		return nil
+	}
 	// If the NEW_CONNECTION_ID frame is reordered, such that its sequence number is smaller than the currently active
 	// connection ID or if it was already retired, send the RETIRE_CONNECTION_ID frame immediately.
 	if f.SequenceNumber < max(h.activeSequenceNumber, h.highestProbingID) || f.SequenceNumber < h.highestRetired {
@@ -462,12 +472,35 @@ func (h *connIDManager) AbandonPath(id pathID) {
 	h.pathMx.Lock()
 	defer h.pathMx.Unlock()
 
-	if id == 0 || h.abandonedPaths[id] {
+	if h.abandonedPaths[id] {
 		return
 	}
 	h.abandonedPaths[id] = true
 	if h.abandonedRetired[id] == nil {
 		h.abandonedRetired[id] = make(map[uint64]bool)
+	}
+	if id == 0 {
+		if !h.abandonedRetired[0][h.activeSequenceNumber] {
+			h.queueControlFrame(&wire.RetireConnectionIDFrame{SequenceNumber: h.activeSequenceNumber})
+			h.abandonedRetired[0][h.activeSequenceNumber] = true
+		}
+		for _, entry := range h.queue {
+			h.queueControlFrame(&wire.RetireConnectionIDFrame{SequenceNumber: entry.SequenceNumber})
+			h.abandonedRetired[0][entry.SequenceNumber] = true
+		}
+		clear(h.queue)
+		h.queue = nil
+		if h.pathProbing != nil {
+			if entry, ok := h.pathProbing[0]; ok {
+				if !h.abandonedRetired[0][entry.SequenceNumber] {
+					h.queueControlFrame(&wire.RetireConnectionIDFrame{SequenceNumber: entry.SequenceNumber})
+					h.abandonedRetired[0][entry.SequenceNumber] = true
+				}
+				h.removeStatelessResetToken(entry.StatelessResetToken)
+				delete(h.pathProbing, 0)
+			}
+		}
+		return
 	}
 	for _, entry := range h.pathQueues[id] {
 		h.queueControlFrame(&wire.PathRetireConnectionIDFrame{
