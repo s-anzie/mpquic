@@ -74,6 +74,9 @@ type multipathPathState struct {
 	sentPackets       map[protocol.PacketNumber]multipathSentPacket
 	congestion        congestion.SendAlgorithmWithDebugInfos
 	bytesInFlight     protocol.ByteCount
+	latestRTT         time.Duration
+	smoothedRTT       time.Duration
+	lossDelay         time.Duration
 
 	hasStatus          bool
 	statusSequence     uint64
@@ -148,6 +151,7 @@ func (m *multipathState) path(pathID uint64) (*multipathPathState, error) {
 			sentPackets:          make(map[protocol.PacketNumber]multipathSentPacket),
 			connectionIDs:        make(map[uint64]wire.PathNewConnectionIDFrame),
 			retiredConnectionIDs: make(map[uint64]bool),
+			lossDelay:            time.Second,
 		}
 		if m.newPathCongestion != nil {
 			p.congestion = m.newPathCongestion()
@@ -218,6 +222,9 @@ func (m *multipathState) handlePathAck(f *wire.AckFrame, receivedAt ...monotime.
 		for _, ackRange := range f.AckRanges {
 			if packetNumber >= ackRange.Smallest && packetNumber <= ackRange.Largest {
 				packet := p.sentPackets[packetNumber]
+				if packetNumber == f.LargestAcked() && packet.ackEliciting {
+					m.updatePathRTT(p, packet, f.DelayTime, rcvTime)
+				}
 				if packet.ackEliciting && packet.size > 0 {
 					priorInFlight := p.bytesInFlight
 					p.bytesInFlight -= min(p.bytesInFlight, packet.size)
@@ -241,6 +248,24 @@ func (m *multipathState) handlePathAck(f *wire.AckFrame, receivedAt ...monotime.
 		}
 	}
 	return nil
+}
+
+func (m *multipathState) updatePathRTT(p *multipathPathState, packet multipathSentPacket, ackDelay time.Duration, receivedAt monotime.Time) {
+	rttSample := receivedAt.Sub(packet.sentAt) - ackDelay
+	if rttSample <= 0 {
+		rttSample = receivedAt.Sub(packet.sentAt)
+	}
+	if rttSample <= 0 {
+		return
+	}
+	p.latestRTT = rttSample
+	if p.smoothedRTT == 0 {
+		p.smoothedRTT = rttSample
+	} else {
+		p.smoothedRTT = (7*p.smoothedRTT + rttSample) / 8
+	}
+	maxRTT := max(p.latestRTT, p.smoothedRTT)
+	p.lossDelay = max(time.Duration(9*maxRTT/8), protocol.TimerGranularity)
 }
 
 // recordSentPacket records a packet that belongs to a Multipath path. The
@@ -319,8 +344,12 @@ func (m *multipathState) canSendOnPath(pathID uint64, now monotime.Time) bool {
 func (m *multipathState) nextPathProbeLossTime(lossDelay time.Duration) monotime.Time {
 	var earliest monotime.Time
 	for _, p := range m.paths {
+		pathLossDelay := p.lossDelay
+		if pathLossDelay <= 0 {
+			pathLossDelay = lossDelay
+		}
 		for _, packet := range p.sentPackets {
-			lossTime := packet.sentAt.Add(lossDelay)
+			lossTime := packet.sentAt.Add(pathLossDelay)
 			if earliest.IsZero() || lossTime.Before(earliest) {
 				earliest = lossTime
 			}
@@ -330,12 +359,16 @@ func (m *multipathState) nextPathProbeLossTime(lossDelay time.Duration) monotime
 }
 
 func (m *multipathState) detectLostPathProbes(now monotime.Time, lossDelay time.Duration) []uint64 {
-	lossTime := now.Add(-lossDelay)
 	lostPaths := make(map[uint64]struct{})
 	for pathID, p := range m.paths {
 		if p.abandoned {
 			continue
 		}
+		pathLossDelay := p.lossDelay
+		if pathLossDelay <= 0 {
+			pathLossDelay = lossDelay
+		}
+		lossTime := now.Add(-pathLossDelay)
 		for packetNumber, packet := range p.sentPackets {
 			if !packet.sentAt.After(lossTime) {
 				if packet.ackEliciting && packet.size > 0 {

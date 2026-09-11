@@ -242,6 +242,37 @@ func TestMultipathStateAcknowledgesPacketRanges(t *testing.T) {
 	require.False(t, state.hasOutstandingPacket(1, 9))
 }
 
+func TestMultipathStateTracksPerPathRTTAndLossDelay(t *testing.T) {
+	state := newMultipathState(3)
+	sentAt := monotime.Now()
+	require.NoError(t, state.recordSentApplicationPacketWithSize(1, 1, sentAt, 1200, true, nil, nil))
+
+	pathID := uint64(1)
+	receivedAt := sentAt.Add(100 * time.Millisecond)
+	require.NoError(t, state.handlePathAck(&wire.AckFrame{
+		PathID:    &pathID,
+		AckRanges: []wire.AckRange{{Smallest: 1, Largest: 1}},
+		DelayTime: 10 * time.Millisecond,
+	}, receivedAt))
+
+	require.Equal(t, 90*time.Millisecond, state.paths[1].latestRTT)
+	require.Equal(t, 90*time.Millisecond, state.paths[1].smoothedRTT)
+	require.Equal(t, 101250*time.Microsecond, state.paths[1].lossDelay)
+}
+
+func TestMultipathStateUsesPathLossDelay(t *testing.T) {
+	state := newMultipathState(3)
+	now := monotime.Now()
+	require.NoError(t, state.recordSentPacket(1, 1, now.Add(-200*time.Millisecond)))
+	require.NoError(t, state.recordSentPacket(2, 1, now.Add(-200*time.Millisecond)))
+	state.paths[1].lossDelay = 100 * time.Millisecond
+
+	require.Equal(t, now.Add(-100*time.Millisecond), state.nextPathProbeLossTime(time.Second))
+	lost := state.detectLostPathProbes(now, time.Second)
+	require.Equal(t, []uint64{1}, lost)
+	require.True(t, state.hasOutstandingPacket(2, 1))
+}
+
 type multipathTestFrameHandler struct {
 	acked int
 	lost  int
