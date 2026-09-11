@@ -291,6 +291,7 @@ func TestMultipathStateFeedsRTTIntoPathCongestionController(t *testing.T) {
 	state := newMultipathState(3)
 	var connStats utils.ConnectionStats
 	state.configurePathCongestion(protocol.ByteCount(protocol.InitialPacketSize), &connStats)
+	state.setMaxAckDelay(40 * time.Millisecond)
 	sentAt := monotime.Now()
 	require.NoError(t, state.recordSentApplicationPacketWithSize(1, 1, sentAt, 1200, true, nil, nil))
 
@@ -301,6 +302,7 @@ func TestMultipathStateFeedsRTTIntoPathCongestionController(t *testing.T) {
 	}, sentAt.Add(100*time.Millisecond)))
 
 	require.True(t, state.paths[1].rttStats.HasMeasurement())
+	require.Equal(t, 40*time.Millisecond, state.paths[1].rttStats.MaxAckDelay())
 	require.Equal(t, state.paths[1].rttStats.LatestRTT(), state.paths[1].latestRTT)
 	require.Equal(t, state.paths[1].rttStats.SmoothedRTT(), state.paths[1].smoothedRTT)
 }
