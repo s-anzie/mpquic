@@ -226,3 +226,10 @@ func (h *appDataReceivedPacketTracker) GetAckFrame(now monotime.Time, onlyIfQueu
 }
 
 func (h *appDataReceivedPacketTracker) GetAlarmTimeout() monotime.Time { return h.ackAlarm }
+
+// disableACK clears pending ACK state without discarding the packet number
+// ranges retained by the tracker.
+func (h *appDataReceivedPacketTracker) disableACK() {
+	h.ackQueued = false
+	h.ackAlarm = 0
+}
