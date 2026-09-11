@@ -2616,7 +2616,11 @@ func (c *Conn) sendPackets(now monotime.Time) error {
 		if pm := c.pathManagerOutgoing.Load(); pm != nil {
 			pathID, connID, frame, tr, ok := pm.NextPathToProbe()
 			if ok {
-				probe, buf, err := c.packPathProbePacket(uint64(pathID), connID, []ackhandler.Frame{frame}, c.version)
+				frames := []ackhandler.Frame{frame}
+				if pathAck := c.receivedPacketHandler.GetAckFrameForPath(uint64(pathID), now, true); pathAck != nil {
+					frames = append(frames, ackhandler.Frame{Frame: pathAck})
+				}
+				probe, buf, err := c.packPathProbePacket(uint64(pathID), connID, frames, c.version)
 				if err != nil {
 					return err
 				}
