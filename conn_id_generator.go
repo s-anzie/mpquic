@@ -53,6 +53,7 @@ type connIDGenerator struct {
 	pathConnectionIDToPath  map[protocol.ConnectionID]pathID
 	nextPathConnectionIDSeq map[pathID]uint64
 	abandonedPaths          map[pathID]bool
+	currentPathDestConnIDs  map[pathID]protocol.ConnectionID
 	connIDsToRetire         []connIDToRetire       // sorted by t
 	initialClientDestConnID *protocol.ConnectionID // nil for the client
 
@@ -77,6 +78,7 @@ func newConnIDGenerator(
 		pathConnectionIDToPath:  make(map[protocol.ConnectionID]pathID),
 		nextPathConnectionIDSeq: make(map[pathID]uint64),
 		abandonedPaths:          make(map[pathID]bool),
+		currentPathDestConnIDs:  make(map[pathID]protocol.ConnectionID),
 		statelessResetter:       statelessResetter,
 		connRunners:             map[connRunner]connRunnerCallbacks{runner: callbacks},
 		queueControlFrame:       queueControlFrame,
@@ -228,6 +230,13 @@ func (m *connIDGenerator) PathIDForConnectionID(connID protocol.ConnectionID) (u
 	return uint64(pathID), true
 }
 
+// observePathDestination records the local Connection ID currently used as
+// the destination on a path. This is needed when a PATH_RETIRE_CONNECTION_ID
+// frame is received on a different path than the one it refers to.
+func (m *connIDGenerator) observePathDestination(id pathID, connID protocol.ConnectionID) {
+	m.currentPathDestConnIDs[id] = connID
+}
+
 func (m *connIDGenerator) retirePathConnectionID(id pathID, sequenceNumber uint64, sentWithDestConnID protocol.ConnectionID) error {
 	connections := m.pathConnectionIDs[id]
 	connID, ok := connections[sequenceNumber]
@@ -237,7 +246,8 @@ func (m *connIDGenerator) retirePathConnectionID(id pathID, sequenceNumber uint6
 			ErrorMessage: fmt.Sprintf("retired path Connection ID %d for unknown path %d", sequenceNumber, id),
 		}
 	}
-	if connID == sentWithDestConnID {
+	currentConnID, hasCurrentConnID := m.currentPathDestConnIDs[id]
+	if (hasCurrentConnID && connID == currentConnID) || (!hasCurrentConnID && connID == sentWithDestConnID) {
 		return &qerr.TransportError{
 			ErrorCode:    qerr.ProtocolViolation,
 			ErrorMessage: fmt.Sprintf("retired path Connection ID %d currently in use on path %d", sequenceNumber, id),
