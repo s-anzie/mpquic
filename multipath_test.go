@@ -72,6 +72,30 @@ func TestMultipathStatePathConnectionIDSequences(t *testing.T) {
 	require.Equal(t, qerr.ProtocolViolation, transportErr.ErrorCode)
 }
 
+func TestMultipathStateIgnoresFramesForAbandonedPath(t *testing.T) {
+	state := newMultipathState(3)
+	require.NoError(t, state.markPathAbandoned(1))
+
+	require.NoError(t, state.handlePathStatus(1, 4, true))
+	require.NoError(t, state.handlePathNewConnectionID(&wire.PathNewConnectionIDFrame{
+		PathID:         1,
+		SequenceNumber: 0,
+		ConnectionID:   protocol.ParseConnectionID([]byte{1, 2, 3, 4, 5, 6, 7, 8}),
+	}))
+	require.NoError(t, state.handlePathRetireConnectionID(&wire.PathRetireConnectionIDFrame{
+		PathID:         1,
+		SequenceNumber: 99,
+	}))
+	require.NoError(t, state.handlePathCIDsBlocked(&wire.PathCIDsBlockedFrame{
+		PathID:             1,
+		NextSequenceNumber: 99,
+	}))
+
+	path := state.paths[1]
+	require.Empty(t, path.connectionIDs)
+	require.False(t, path.hasStatus)
+}
+
 func TestMultipathStateAcceptsReorderedRetirePriorTo(t *testing.T) {
 	state := newMultipathState(3)
 	connID := protocol.ParseConnectionID([]byte{1, 2, 3, 4, 5, 6, 7, 8})

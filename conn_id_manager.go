@@ -26,6 +26,7 @@ type connIDManager struct {
 	pathQueues         map[pathID][]newConnID
 	pathHighestRetired map[pathID]uint64
 	abandonedPaths     map[pathID]bool
+	abandonedRetired   map[pathID]map[uint64]bool
 	multipath          bool
 
 	handshakeComplete         bool
@@ -63,6 +64,7 @@ func newConnIDManager(
 		pathQueues:                make(map[pathID][]newConnID),
 		pathHighestRetired:        make(map[pathID]uint64),
 		abandonedPaths:            make(map[pathID]bool),
+		abandonedRetired:          make(map[pathID]map[uint64]bool),
 	}
 }
 
@@ -288,6 +290,16 @@ func (h *connIDManager) AddPath(f *wire.PathNewConnectionIDFrame) error {
 		}
 	}
 	if h.abandonedPaths[id] {
+		if h.abandonedRetired[id] == nil {
+			h.abandonedRetired[id] = make(map[uint64]bool)
+		}
+		if !h.abandonedRetired[id][f.SequenceNumber] {
+			h.queueControlFrame(&wire.PathRetireConnectionIDFrame{
+				PathID:         f.PathID,
+				SequenceNumber: f.SequenceNumber,
+			})
+			h.abandonedRetired[id][f.SequenceNumber] = true
+		}
 		return nil
 	}
 	queue := h.pathQueues[id]
@@ -436,11 +448,15 @@ func (h *connIDManager) AbandonPath(id pathID) {
 		return
 	}
 	h.abandonedPaths[id] = true
+	if h.abandonedRetired[id] == nil {
+		h.abandonedRetired[id] = make(map[uint64]bool)
+	}
 	for _, entry := range h.pathQueues[id] {
 		h.queueControlFrame(&wire.PathRetireConnectionIDFrame{
 			PathID:         uint64(id),
 			SequenceNumber: entry.SequenceNumber,
 		})
+		h.abandonedRetired[id][entry.SequenceNumber] = true
 	}
 	delete(h.pathQueues, id)
 	if entry, ok := h.pathProbing[id]; ok {
@@ -448,6 +464,7 @@ func (h *connIDManager) AbandonPath(id pathID) {
 			PathID:         uint64(id),
 			SequenceNumber: entry.SequenceNumber,
 		})
+		h.abandonedRetired[id][entry.SequenceNumber] = true
 		h.removeStatelessResetToken(entry.StatelessResetToken)
 		delete(h.pathProbing, id)
 	}
