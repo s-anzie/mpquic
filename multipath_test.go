@@ -65,3 +65,37 @@ func TestMultipathStatePathAbandonIsIdempotent(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, echo)
 }
+
+func TestMultipathStateUsesAnIndependentPacketNumberSpacePerPath(t *testing.T) {
+	state := newMultipathState(3)
+
+	pathZeroPN, err := state.nextPacketNumber(0)
+	require.NoError(t, err)
+	require.Equal(t, protocol.PacketNumber(0), pathZeroPN)
+	pathZeroPN, err = state.nextPacketNumber(0)
+	require.NoError(t, err)
+	require.Equal(t, protocol.PacketNumber(1), pathZeroPN)
+
+	pathOnePN, err := state.nextPacketNumber(1)
+	require.NoError(t, err)
+	require.Equal(t, protocol.PacketNumber(0), pathOnePN)
+
+	require.NoError(t, state.observeReceivedPacketNumber(0, 9))
+	require.NoError(t, state.observeReceivedPacketNumber(0, 4))
+	require.NoError(t, state.observeAcknowledgedPacketNumber(0, 7))
+	require.Equal(t, protocol.PacketNumber(9), state.paths[0].packetNumberSpace.largestReceived)
+	require.Equal(t, protocol.PacketNumber(7), state.paths[0].packetNumberSpace.largestAcknowledged)
+	require.Equal(t, protocol.InvalidPacketNumber, state.paths[1].packetNumberSpace.largestReceived)
+}
+
+func TestMultipathStateRejectsPacketNumberOverflow(t *testing.T) {
+	state := newMultipathState(0)
+	path, err := state.path(0)
+	require.NoError(t, err)
+	path.packetNumberSpace.nextPacketNumber = protocol.MaxPathAndPacketNumber + 1
+
+	_, err = state.nextPacketNumber(0)
+	require.Error(t, err)
+	require.NoError(t, state.observeReceivedPacketNumber(0, protocol.MaxPathAndPacketNumber))
+	require.Error(t, state.observeReceivedPacketNumber(0, protocol.MaxPathAndPacketNumber+1))
+}

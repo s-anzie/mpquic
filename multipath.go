@@ -3,14 +3,60 @@ package quic
 import (
 	"fmt"
 
+	"github.com/quic-go/quic-go/internal/protocol"
 	"github.com/quic-go/quic-go/internal/qerr"
 	"github.com/quic-go/quic-go/internal/wire"
 )
 
+// multipathPacketNumberSpace tracks the packet numbers that belong to one
+// Multipath QUIC path. Each path has an independent packet number sequence.
+type multipathPacketNumberSpace struct {
+	nextPacketNumber    protocol.PacketNumber
+	largestReceived     protocol.PacketNumber
+	largestAcknowledged protocol.PacketNumber
+}
+
+func newMultipathPacketNumberSpace() multipathPacketNumberSpace {
+	return multipathPacketNumberSpace{
+		largestReceived:     protocol.InvalidPacketNumber,
+		largestAcknowledged: protocol.InvalidPacketNumber,
+	}
+}
+
+func (s *multipathPacketNumberSpace) popPacketNumber() (protocol.PacketNumber, error) {
+	if s.nextPacketNumber > protocol.MaxPathAndPacketNumber {
+		return protocol.InvalidPacketNumber, fmt.Errorf("path packet number space exhausted")
+	}
+	pn := s.nextPacketNumber
+	s.nextPacketNumber++
+	return pn, nil
+}
+
+func (s *multipathPacketNumberSpace) observeReceived(pn protocol.PacketNumber) error {
+	if pn < 0 || pn > protocol.MaxPathAndPacketNumber {
+		return fmt.Errorf("received invalid path packet number %d", pn)
+	}
+	if pn > s.largestReceived {
+		s.largestReceived = pn
+	}
+	return nil
+}
+
+func (s *multipathPacketNumberSpace) observeAcknowledged(pn protocol.PacketNumber) error {
+	if pn < 0 || pn > protocol.MaxPathAndPacketNumber {
+		return fmt.Errorf("acknowledged invalid path packet number %d", pn)
+	}
+	if pn > s.largestAcknowledged {
+		s.largestAcknowledged = pn
+	}
+	return nil
+}
+
 // multipathPathState contains the state that is independent for each path ID.
-// Packet number spaces and congestion control will be added in a later lot.
 type multipathPathState struct {
 	abandoned bool
+
+	packetNumberSpace multipathPacketNumberSpace
 
 	hasStatus      bool
 	statusSequence uint64
@@ -47,12 +93,37 @@ func (m *multipathState) path(pathID uint64) (*multipathPathState, error) {
 	p, ok := m.paths[pathID]
 	if !ok {
 		p = &multipathPathState{
+			packetNumberSpace:    newMultipathPacketNumberSpace(),
 			connectionIDs:        make(map[uint64]wire.PathNewConnectionIDFrame),
 			retiredConnectionIDs: make(map[uint64]bool),
 		}
 		m.paths[pathID] = p
 	}
 	return p, nil
+}
+
+func (m *multipathState) nextPacketNumber(pathID uint64) (protocol.PacketNumber, error) {
+	p, err := m.path(pathID)
+	if err != nil {
+		return protocol.InvalidPacketNumber, err
+	}
+	return p.packetNumberSpace.popPacketNumber()
+}
+
+func (m *multipathState) observeReceivedPacketNumber(pathID uint64, pn protocol.PacketNumber) error {
+	p, err := m.path(pathID)
+	if err != nil {
+		return err
+	}
+	return p.packetNumberSpace.observeReceived(pn)
+}
+
+func (m *multipathState) observeAcknowledgedPacketNumber(pathID uint64, pn protocol.PacketNumber) error {
+	p, err := m.path(pathID)
+	if err != nil {
+		return err
+	}
+	return p.packetNumberSpace.observeAcknowledged(pn)
 }
 
 func (m *multipathState) setPeerInitialMaxPathID(maxPathID uint64) {
