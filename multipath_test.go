@@ -273,6 +273,24 @@ func TestMultipathStateUsesPathLossDelay(t *testing.T) {
 	require.True(t, state.hasOutstandingPacket(2, 1))
 }
 
+func TestMultipathStateFeedsRTTIntoPathCongestionController(t *testing.T) {
+	state := newMultipathState(3)
+	var connStats utils.ConnectionStats
+	state.configurePathCongestion(protocol.ByteCount(protocol.InitialPacketSize), &connStats)
+	sentAt := monotime.Now()
+	require.NoError(t, state.recordSentApplicationPacketWithSize(1, 1, sentAt, 1200, true, nil, nil))
+
+	pathID := uint64(1)
+	require.NoError(t, state.handlePathAck(&wire.AckFrame{
+		PathID:    &pathID,
+		AckRanges: []wire.AckRange{{Smallest: 1, Largest: 1}},
+	}, sentAt.Add(100*time.Millisecond)))
+
+	require.True(t, state.paths[1].rttStats.HasMeasurement())
+	require.Equal(t, state.paths[1].rttStats.LatestRTT(), state.paths[1].latestRTT)
+	require.Equal(t, state.paths[1].rttStats.SmoothedRTT(), state.paths[1].smoothedRTT)
+}
+
 type multipathTestFrameHandler struct {
 	acked int
 	lost  int

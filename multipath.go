@@ -73,6 +73,7 @@ type multipathPathState struct {
 	packetNumberSpace multipathPacketNumberSpace
 	sentPackets       map[protocol.PacketNumber]multipathSentPacket
 	congestion        congestion.SendAlgorithmWithDebugInfos
+	rttStats          *utils.RTTStats
 	bytesInFlight     protocol.ByteCount
 	latestRTT         time.Duration
 	smoothedRTT       time.Duration
@@ -100,17 +101,18 @@ type multipathState struct {
 
 	paths                map[uint64]*multipathPathState
 	connectionIDToPathID map[protocol.ConnectionID]uint64
-	newPathCongestion    func() congestion.SendAlgorithmWithDebugInfos
+	newPathCongestion    func() (*utils.RTTStats, congestion.SendAlgorithmWithDebugInfos)
 }
 
 // configurePathCongestion creates an independent congestion controller for
 // every Multipath path. The connection statistics remain shared so that the
 // public connection metrics include all paths.
 func (m *multipathState) configurePathCongestion(initialMaxDatagramSize protocol.ByteCount, connStats *utils.ConnectionStats) {
-	m.newPathCongestion = func() congestion.SendAlgorithmWithDebugInfos {
-		return congestion.NewCubicSender(
+	m.newPathCongestion = func() (*utils.RTTStats, congestion.SendAlgorithmWithDebugInfos) {
+		rttStats := utils.NewRTTStats()
+		return rttStats, congestion.NewCubicSender(
 			congestion.DefaultClock{},
-			utils.NewRTTStats(),
+			rttStats,
 			connStats,
 			initialMaxDatagramSize,
 			true,
@@ -119,7 +121,7 @@ func (m *multipathState) configurePathCongestion(initialMaxDatagramSize protocol
 	}
 	for _, p := range m.paths {
 		if p.congestion == nil {
-			p.congestion = m.newPathCongestion()
+			p.rttStats, p.congestion = m.newPathCongestion()
 		}
 	}
 }
@@ -154,7 +156,7 @@ func (m *multipathState) path(pathID uint64) (*multipathPathState, error) {
 			lossDelay:            time.Second,
 		}
 		if m.newPathCongestion != nil {
-			p.congestion = m.newPathCongestion()
+			p.rttStats, p.congestion = m.newPathCongestion()
 		}
 		m.paths[pathID] = p
 	}
@@ -251,6 +253,14 @@ func (m *multipathState) handlePathAck(f *wire.AckFrame, receivedAt ...monotime.
 }
 
 func (m *multipathState) updatePathRTT(p *multipathPathState, packet multipathSentPacket, ackDelay time.Duration, receivedAt monotime.Time) {
+	if p.rttStats != nil {
+		p.rttStats.UpdateRTT(receivedAt.Sub(packet.sentAt), ackDelay)
+		p.latestRTT = p.rttStats.LatestRTT()
+		p.smoothedRTT = p.rttStats.SmoothedRTT()
+		maxRTT := max(p.latestRTT, p.smoothedRTT)
+		p.lossDelay = max(time.Duration(9*maxRTT/8), protocol.TimerGranularity)
+		return
+	}
 	rttSample := receivedAt.Sub(packet.sentAt) - ackDelay
 	if rttSample <= 0 {
 		rttSample = receivedAt.Sub(packet.sentAt)
