@@ -220,8 +220,10 @@ func (m *connIDGenerator) AbandonPath(id pathID) {
 // PathIDForConnectionID returns the path associated with a locally issued
 // Connection ID. The initial path uses path ID zero.
 func (m *connIDGenerator) PathIDForConnectionID(connID protocol.ConnectionID) (uint64, bool) {
-	if connID == m.activeSrcConnIDs[0] {
-		return 0, true
+	for _, activeConnID := range m.activeSrcConnIDs {
+		if connID == activeConnID {
+			return 0, true
+		}
 	}
 	pathID, ok := m.pathConnectionIDToPath[connID]
 	if !ok {

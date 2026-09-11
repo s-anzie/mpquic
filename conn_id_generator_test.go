@@ -136,6 +136,11 @@ func testConnIDGeneratorIssueAndRetire(t *testing.T, hasInitialClientDestConnID 
 		require.Equal(t, ncid.StatelessResetToken, sr.GetStatelessResetToken(ncid.ConnectionID))
 		connIDs[ncid.SequenceNumber] = ncid.ConnectionID
 	}
+	for _, connID := range connIDs {
+		pathID, ok := g.PathIDForConnectionID(connID)
+		require.True(t, ok)
+		require.Zero(t, pathID)
+	}
 
 	// completing the handshake retires the initial client destination connection ID
 	added = added[:0]
