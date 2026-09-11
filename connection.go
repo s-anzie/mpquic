@@ -2609,6 +2609,17 @@ func (c *Conn) triggerSending(now monotime.Time) error {
 	c.pacingDeadline = 0
 
 	sendMode := c.sentPacketHandler.SendMode(now)
+	if c.multipathEnabled && c.handshakeConfirmed &&
+		(sendMode == ackhandler.SendAck || sendMode == ackhandler.SendPacingLimited) {
+		sent, err := c.sendMultipathApplicationPacket(now)
+		if err != nil {
+			return err
+		}
+		if sent {
+			c.blocked = blockModeNone
+			return nil
+		}
+	}
 	switch sendMode {
 	case ackhandler.SendAny:
 		return c.sendPackets(now)
@@ -2670,27 +2681,12 @@ func (c *Conn) sendPackets(now monotime.Time) error {
 	}
 
 	if c.multipathEnabled && c.handshakeConfirmed {
-		if pm := c.pathManagerOutgoing.Load(); pm != nil {
-			pathID, connID, tr, ok := pm.NextPathForApplication()
-			if ok {
-				if pathPacker, ok := c.packer.(pathAwareApplicationPacker); ok {
-					pathAck := c.receivedPacketHandler.GetAckFrameForPath(uint64(pathID), now, true)
-					packet, buf, err := pathPacker.PackApplicationPacketForPath(
-						uint64(pathID), connID, pathAck, c.maxPacketSize(), now, c.version,
-					)
-					if err != nil && err != errNothingToPack {
-						return err
-					}
-					if err == nil {
-						c.logger.Debugf("sending multipath application packet on path %d", pathID)
-						c.logShortHeaderPacket(packet, protocol.ECNNon, buf.Len())
-						c.registerPackedShortHeaderPacket(packet, protocol.ECNNon, now)
-						tr.WriteTo(buf.Data, c.conn.RemoteAddr())
-						c.scheduleSending()
-						return nil
-					}
-				}
-			}
+		sent, err := c.sendMultipathApplicationPacket(now)
+		if err != nil {
+			return err
+		}
+		if sent {
+			return nil
 		}
 	}
 
@@ -2743,6 +2739,37 @@ func (c *Conn) sendPackets(now monotime.Time) error {
 		return c.sendPacketsWithGSO(now)
 	}
 	return c.sendPacketsWithoutGSO(now)
+}
+
+func (c *Conn) sendMultipathApplicationPacket(now monotime.Time) (bool, error) {
+	pm := c.pathManagerOutgoing.Load()
+	if pm == nil {
+		return false, nil
+	}
+	pathPacker, ok := c.packer.(pathAwareApplicationPacker)
+	if !ok {
+		return false, nil
+	}
+	pathID, connID, tr, ok := pm.NextPathForApplication()
+	if !ok {
+		return false, nil
+	}
+	pathAck := c.receivedPacketHandler.GetAckFrameForPath(uint64(pathID), now, true)
+	packet, buf, err := pathPacker.PackApplicationPacketForPath(
+		uint64(pathID), connID, pathAck, c.maxPacketSize(), now, c.version,
+	)
+	if err == errNothingToPack {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	c.logger.Debugf("sending multipath application packet on path %d", pathID)
+	c.logShortHeaderPacket(packet, protocol.ECNNon, buf.Len())
+	c.registerPackedShortHeaderPacket(packet, protocol.ECNNon, now)
+	tr.WriteTo(buf.Data, c.conn.RemoteAddr())
+	c.scheduleSending()
+	return true, nil
 }
 
 func (c *Conn) packPathProbePacket(pathID uint64, connID protocol.ConnectionID, frames []ackhandler.Frame, v protocol.Version) (shortHeaderPacket, *packetBuffer, error) {
