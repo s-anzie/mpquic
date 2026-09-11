@@ -422,7 +422,31 @@ func TestConnIDManagerAbandonPath(t *testing.T) {
 		PathID: 1, SequenceNumber: 2, ConnectionID: protocol.ParseConnectionID([]byte{6, 5, 4, 3}),
 		StatelessResetToken: protocol.StatelessResetToken{3},
 	}))
-	require.Len(t, frameQueue, 2)
+	require.Equal(t, []wire.Frame{
+		&wire.PathRetireConnectionIDFrame{PathID: 1, SequenceNumber: 1},
+		&wire.PathRetireConnectionIDFrame{PathID: 1, SequenceNumber: 0},
+		&wire.PathRetireConnectionIDFrame{PathID: 1, SequenceNumber: 2},
+	}, frameQueue)
+}
+
+func TestConnIDManagerRetiresLatePathConnectionIDAfterAbandon(t *testing.T) {
+	var frames []wire.Frame
+	h := newConnIDManager(
+		protocol.ParseConnectionID([]byte{1, 2, 3, 4}),
+		func(protocol.StatelessResetToken) {},
+		func(protocol.StatelessResetToken) {},
+		func(f wire.Frame) { frames = append(frames, f) },
+	)
+	h.SetMultipath(true)
+	h.AbandonPath(2)
+	frame := &wire.PathNewConnectionIDFrame{
+		PathID:         2,
+		SequenceNumber: 7,
+		ConnectionID:   protocol.ParseConnectionID([]byte{5, 6, 7, 8}),
+	}
+	require.NoError(t, h.AddPath(frame))
+	require.NoError(t, h.AddPath(frame))
+	require.Equal(t, []wire.Frame{&wire.PathRetireConnectionIDFrame{PathID: 2, SequenceNumber: 7}}, frames)
 }
 
 func TestConnIDManagerZeroLengthConnectionID(t *testing.T) {

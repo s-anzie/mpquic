@@ -293,6 +293,9 @@ func (m *multipathState) handlePathStatus(pathID, sequenceNumber uint64, backup 
 	if err != nil {
 		return err
 	}
+	if p.abandoned {
+		return nil
+	}
 	if p.hasStatus && sequenceNumber <= p.statusSequence {
 		return nil
 	}
@@ -327,6 +330,9 @@ func (m *multipathState) handlePathNewConnectionID(f *wire.PathNewConnectionIDFr
 	p, err := m.path(f.PathID)
 	if err != nil {
 		return err
+	}
+	if p.abandoned {
+		return nil
 	}
 	if previous, ok := p.connectionIDs[f.SequenceNumber]; ok {
 		if previous.ConnectionID != f.ConnectionID || previous.StatelessResetToken != f.StatelessResetToken {
@@ -369,6 +375,9 @@ func (m *multipathState) handlePathRetireConnectionID(f *wire.PathRetireConnecti
 	if err != nil {
 		return err
 	}
+	if p.abandoned {
+		return nil
+	}
 	if f.SequenceNumber >= p.nextConnectionIDSequence {
 		return &qerr.TransportError{
 			ErrorCode:    qerr.ProtocolViolation,
@@ -390,6 +399,9 @@ func (m *multipathState) handlePathCIDsBlocked(f *wire.PathCIDsBlockedFrame) err
 	p, err := m.path(f.PathID)
 	if err != nil {
 		return err
+	}
+	if p.abandoned {
+		return nil
 	}
 	if f.NextSequenceNumber > p.nextConnectionIDSequence {
 		return &qerr.TransportError{
