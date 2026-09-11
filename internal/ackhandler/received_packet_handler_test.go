@@ -167,3 +167,36 @@ func TestMultipathAckAlarmIsIncluded(t *testing.T) {
 	require.NoError(t, handler.ReceivedPacketForPath(1, 1, protocol.ECNNon, now, true))
 	require.Equal(t, now.Add(protocol.MaxAckDelay), handler.GetAlarmTimeout())
 }
+
+func TestAbandonPathStopsMultipathAckAlarm(t *testing.T) {
+	handler := NewReceivedPacketHandler(utils.DefaultLogger)
+	now := monotime.Now()
+
+	require.NoError(t, handler.ReceivedPacketForPath(1, 1, protocol.ECNNon, now, true))
+	require.False(t, handler.GetAlarmTimeout().IsZero())
+
+	handler.AbandonPath(1)
+	require.True(t, handler.GetAlarmTimeout().IsZero())
+	require.Nil(t, handler.GetAckFrameForPath(1, now.Add(time.Second), true))
+
+	// Delayed packets on an abandoned path remain tracked but must not re-arm
+	// the ACK alarm.
+	require.NoError(t, handler.ReceivedPacketForPath(1, 2, protocol.ECNNon, now, true))
+	require.True(t, handler.GetAlarmTimeout().IsZero())
+	require.True(t, handler.IsPotentiallyDuplicateForPath(1, 1))
+}
+
+func TestAbandonInitialPathStopsAckAlarm(t *testing.T) {
+	handler := NewReceivedPacketHandler(utils.DefaultLogger)
+	now := monotime.Now()
+
+	require.NoError(t, handler.ReceivedPacket(1, protocol.ECNNon, protocol.Encryption1RTT, now, true))
+	require.False(t, handler.GetAlarmTimeout().IsZero())
+
+	handler.AbandonPath(0)
+	require.True(t, handler.GetAlarmTimeout().IsZero())
+	require.Nil(t, handler.GetAckFrame(protocol.Encryption1RTT, now.Add(time.Second), true))
+
+	require.NoError(t, handler.ReceivedPacket(2, protocol.ECNNon, protocol.Encryption1RTT, now, true))
+	require.True(t, handler.GetAlarmTimeout().IsZero())
+}

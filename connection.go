@@ -2047,6 +2047,7 @@ func (c *Conn) handleFrameForPath(
 		var echo bool
 		echo, err = c.multipath.handlePathAbandon(frame)
 		if err == nil {
+			c.receivedPacketHandler.AbandonPath(frame.PathID)
 			c.connIDGenerator.AbandonPath(pathID(frame.PathID))
 			c.connIDManager.AbandonPath(pathID(frame.PathID))
 			if echo {

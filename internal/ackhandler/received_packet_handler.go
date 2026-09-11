@@ -14,6 +14,7 @@ type ReceivedPacketHandler struct {
 	handshakePackets *receivedPacketTracker
 	appDataPackets   appDataReceivedPacketTracker
 	multipathPackets map[uint64]*appDataReceivedPacketTracker
+	abandonedPaths   map[uint64]bool
 
 	lowest1RTTPacket protocol.PacketNumber
 }
@@ -24,6 +25,7 @@ func NewReceivedPacketHandler(logger utils.Logger) *ReceivedPacketHandler {
 		handshakePackets: newReceivedPacketTracker(),
 		appDataPackets:   *newAppDataReceivedPacketTracker(logger),
 		multipathPackets: make(map[uint64]*appDataReceivedPacketTracker),
+		abandonedPaths:   make(map[uint64]bool),
 		lowest1RTTPacket: protocol.InvalidPacketNumber,
 	}
 }
@@ -42,7 +44,11 @@ func (h *ReceivedPacketHandler) ReceivedPacketForPath(
 		tracker = newAppDataReceivedPacketTracker(h.appDataPackets.logger)
 		h.multipathPackets[pathID] = tracker
 	}
-	return tracker.ReceivedPacket(pn, ecn, rcvTime, ackEliciting)
+	err := tracker.ReceivedPacket(pn, ecn, rcvTime, ackEliciting)
+	if err == nil && h.abandonedPaths[pathID] {
+		tracker.disableACK()
+	}
+	return err
 }
 
 func (h *ReceivedPacketHandler) ReceivedPacket(
@@ -71,7 +77,11 @@ func (h *ReceivedPacketHandler) ReceivedPacket(
 		if h.lowest1RTTPacket == protocol.InvalidPacketNumber || pn < h.lowest1RTTPacket {
 			h.lowest1RTTPacket = pn
 		}
-		return h.appDataPackets.ReceivedPacket(pn, ecn, rcvTime, ackEliciting)
+		err := h.appDataPackets.ReceivedPacket(pn, ecn, rcvTime, ackEliciting)
+		if err == nil && h.abandonedPaths[0] {
+			h.appDataPackets.disableACK()
+		}
+		return err
 	default:
 		panic(fmt.Sprintf("received packet with unknown encryption level: %s", encLevel))
 	}
@@ -79,6 +89,19 @@ func (h *ReceivedPacketHandler) ReceivedPacket(
 
 func (h *ReceivedPacketHandler) IgnorePacketsBelow(pn protocol.PacketNumber) {
 	h.appDataPackets.IgnoreBelow(pn)
+}
+
+// AbandonPath stops scheduling ACKs for a path while retaining its packet
+// number state for duplicate detection and delayed packet processing.
+func (h *ReceivedPacketHandler) AbandonPath(pathID uint64) {
+	h.abandonedPaths[pathID] = true
+	if pathID == 0 {
+		h.appDataPackets.disableACK()
+		return
+	}
+	if tracker, ok := h.multipathPackets[pathID]; ok {
+		tracker.disableACK()
+	}
 }
 
 func (h *ReceivedPacketHandler) DropPackets(encLevel protocol.EncryptionLevel) {
@@ -121,6 +144,9 @@ func (h *ReceivedPacketHandler) GetAckFrame(encLevel protocol.EncryptionLevel, n
 		}
 		return nil
 	case protocol.Encryption1RTT:
+		if h.abandonedPaths[0] {
+			return nil
+		}
 		return h.appDataPackets.GetAckFrame(now, onlyIfQueued)
 	default:
 		// 0-RTT packets can't contain ACK frames
@@ -154,6 +180,9 @@ func (h *ReceivedPacketHandler) IsPotentiallyDuplicateForPath(pathID uint64, pn 
 // GetAckFrameForPath returns a PATH_ACK for a Multipath path when an ACK is
 // due. The caller is responsible for placing the frame on that path.
 func (h *ReceivedPacketHandler) GetAckFrameForPath(pathID uint64, now monotime.Time, onlyIfQueued bool) *wire.AckFrame {
+	if h.abandonedPaths[pathID] {
+		return nil
+	}
 	tracker, ok := h.multipathPackets[pathID]
 	if !ok {
 		return nil
