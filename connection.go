@@ -1839,6 +1839,11 @@ func (c *Conn) handleUnpackedShortHeaderPacket(
 	if err != nil {
 		return false, nil, err
 	}
+	if c.multipathEnabled && pathID != 0 {
+		if _, err := c.multipath.path(pathID); err != nil {
+			return false, nil, err
+		}
+	}
 	c.sentPacketHandler.ReceivedPacket(protocol.Encryption1RTT, rcvTime)
 	if pathID != 0 {
 		err = c.receivedPacketHandler.ReceivedPacketForPath(pathID, pn, ecn, rcvTime, isAckEliciting)
@@ -2706,6 +2711,14 @@ func (c *Conn) triggerSending(now monotime.Time) error {
 			c.blocked = blockModeNone
 			return nil
 		}
+		sent, err = c.sendMultipathAckOnlyPacket(now)
+		if err != nil {
+			return err
+		}
+		if sent {
+			c.blocked = blockModeNone
+			return nil
+		}
 		if c.multipath.isPathAbandoned(0) {
 			c.blocked = blockModeCongestionLimited
 			return nil
@@ -2773,6 +2786,13 @@ func (c *Conn) sendPackets(now monotime.Time) error {
 
 	if c.multipathEnabled && c.handshakeConfirmed {
 		sent, err := c.sendMultipathApplicationPacket(now)
+		if err != nil {
+			return err
+		}
+		if sent {
+			return nil
+		}
+		sent, err = c.sendMultipathAckOnlyPacket(now)
 		if err != nil {
 			return err
 		}
@@ -2864,6 +2884,41 @@ func (c *Conn) sendMultipathApplicationPacket(now monotime.Time) (bool, error) {
 	tr.WriteTo(buf.Data, c.conn.RemoteAddr())
 	c.scheduleSending()
 	return true, nil
+}
+
+// sendMultipathAckOnlyPacket sends a pending PATH_ACK for a secondary path
+// over the initial path. PATH_ACK is allowed on any open path, which also
+// lets a server acknowledge a path before it has a local path scheduler.
+func (c *Conn) sendMultipathAckOnlyPacket(now monotime.Time) (bool, error) {
+	pathPacker, ok := c.packer.(pathAwareApplicationPacker)
+	if !ok || c.multipath.isPathAbandoned(0) {
+		return false, nil
+	}
+	for id, p := range c.multipath.paths {
+		if id == 0 || p.abandoned {
+			continue
+		}
+		pathAck := c.receivedPacketHandler.GetAckFrameForPath(id, now, true)
+		if pathAck == nil {
+			continue
+		}
+		packet, buf, err := pathPacker.PackApplicationPacketForPath(
+			0, c.connIDManager.Get(), pathAck, c.maxPacketSize(), now, c.version,
+		)
+		if err == errNothingToPack {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		c.logger.Debugf("sending PATH_ACK for path %d on the initial path", id)
+		c.logShortHeaderPacket(packet, protocol.ECNNon, buf.Len())
+		c.registerPackedShortHeaderPacket(packet, protocol.ECNNon, now)
+		c.sendQueue.Send(buf, 0, protocol.ECNNon)
+		c.scheduleSending()
+		return true, nil
+	}
+	return false, nil
 }
 
 func (c *Conn) packPathProbePacket(pathID uint64, connID protocol.ConnectionID, frames []ackhandler.Frame, v protocol.Version) (shortHeaderPacket, *packetBuffer, error) {
@@ -3096,7 +3151,7 @@ func (c *Conn) registerPackedShortHeaderPacket(p shortHeaderPacket, ecn protocol
 	}
 
 	largestAcked := protocol.InvalidPacketNumber
-	if p.Ack != nil {
+	if p.Ack != nil && (p.Ack.PathID == nil || *p.Ack.PathID == 0) {
 		largestAcked = p.Ack.LargestAcked()
 	}
 	c.sentPacketHandler.SentPacket(
