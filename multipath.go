@@ -505,12 +505,6 @@ func (m *multipathState) handleMaxPathID(f *wire.MaxPathIDFrame) error {
 }
 
 func (m *multipathState) handlePathAbandon(f *wire.PathAbandonFrame) (bool, error) {
-	if f.PathID == 0 {
-		return false, &qerr.TransportError{
-			ErrorCode:    qerr.ProtocolViolation,
-			ErrorMessage: "cannot abandon the initial Multipath path",
-		}
-	}
 	p, err := m.path(f.PathID)
 	if err != nil {
 		return false, err
@@ -523,12 +517,6 @@ func (m *multipathState) handlePathAbandon(f *wire.PathAbandonFrame) (bool, erro
 }
 
 func (m *multipathState) markPathAbandoned(pathID uint64) error {
-	if pathID == 0 {
-		return &qerr.TransportError{
-			ErrorCode:    qerr.ProtocolViolation,
-			ErrorMessage: "cannot abandon the initial Multipath path",
-		}
-	}
 	p, err := m.path(pathID)
 	if err != nil {
 		return err
@@ -538,6 +526,23 @@ func (m *multipathState) markPathAbandoned(pathID uint64) error {
 	}
 	p.abandoned = true
 	return nil
+}
+
+// hasUsablePathExcept reports whether any other path can still carry traffic.
+// The path state is retained after abandonment so delayed packets can still be
+// recognized, but abandoned paths must not keep the connection alive.
+func (m *multipathState) hasUsablePathExcept(pathID uint64) bool {
+	for id, p := range m.paths {
+		if id != pathID && !p.abandoned {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *multipathState) isPathAbandoned(pathID uint64) bool {
+	p, ok := m.paths[pathID]
+	return ok && p.abandoned
 }
 
 func (m *multipathState) handlePathStatus(pathID, sequenceNumber uint64, backup bool) error {
