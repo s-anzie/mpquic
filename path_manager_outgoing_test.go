@@ -140,6 +140,33 @@ func TestPathManagerOutgoingAdvertisesValidatedPath(t *testing.T) {
 	}{{id: p.id, backup: false}}, statuses)
 }
 
+func TestPathManagerOutgoingSetsPathBackupPreference(t *testing.T) {
+	var statuses []struct {
+		id     pathID
+		backup bool
+	}
+	pm := newPathManagerOutgoing(
+		func(pathID) (protocol.ConnectionID, bool) { return protocol.ConnectionID{}, false },
+		func(pathID) {},
+		func() {},
+	)
+	pm.SetPathStatus(func(id pathID, backup bool) {
+		statuses = append(statuses, struct {
+			id     pathID
+			backup bool
+		}{id: id, backup: backup})
+	})
+	p := pm.NewPath(&Transport{}, time.Second, func() {})
+	require.NoError(t, p.SetBackup(true))
+	require.NoError(t, p.SetBackup(false))
+	require.Equal(t, []struct {
+		id     pathID
+		backup bool
+	}{{id: p.id, backup: true}, {id: p.id, backup: false}}, statuses)
+	require.NoError(t, p.Close())
+	require.ErrorIs(t, p.SetBackup(true), ErrPathClosed)
+}
+
 func TestPathManagerOutgoingRequeuesLostProbe(t *testing.T) {
 	connID := protocol.ParseConnectionID([]byte{1, 2, 3, 4})
 	pm := newPathManagerOutgoing(
