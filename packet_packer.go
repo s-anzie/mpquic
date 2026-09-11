@@ -476,6 +476,72 @@ func (p *packetPacker) AppendPacket(buf *packetBuffer, maxSize protocol.ByteCoun
 	return p.appendPacket(buf, false, maxSize, now, v)
 }
 
+// PackApplicationPacketForPath packs application data using the packet number
+// space and packet protection nonce of a Multipath path.
+func (p *packetPacker) PackApplicationPacketForPath(
+	pathID uint64,
+	connID protocol.ConnectionID,
+	pathAck *wire.AckFrame,
+	maxPacketSize protocol.ByteCount,
+	now monotime.Time,
+	v protocol.Version,
+) (shortHeaderPacket, *packetBuffer, error) {
+	if pathID == 0 {
+		buf := getPacketBuffer()
+		packet, err := p.AppendPacket(buf, maxPacketSize, now, v)
+		return packet, buf, err
+	}
+	if p.pathPacketNumbers == nil {
+		return shortHeaderPacket{}, nil, fmt.Errorf("multipath packet number source is not configured")
+	}
+
+	sealer, err := p.get1RTTSealer(pathID)
+	if err != nil {
+		return shortHeaderPacket{}, nil, err
+	}
+	pn, pnLen, err := p.pathPacketNumbers(pathID)
+	if err != nil {
+		return shortHeaderPacket{}, nil, err
+	}
+	hdrLen := wire.ShortHeaderLen(connID, pnLen)
+	pl := p.maybeGetShortHeaderPacket(sealer, hdrLen, maxPacketSize, false, now, v)
+	if pathAck != nil {
+		remaining := maxPacketSize - hdrLen - protocol.ByteCount(sealer.Overhead()) - pl.length
+		if remaining > 0 {
+			pathAck.Truncate(remaining, v)
+			if pathAck.Length(v) > 0 {
+				pl.frames = append(pl.frames, ackhandler.Frame{Frame: pathAck})
+				pl.length += pathAck.Length(v)
+			}
+		}
+	}
+	if pl.length == 0 {
+		return shortHeaderPacket{}, nil, errNothingToPack
+	}
+
+	buf := getPacketBuffer()
+	packet, err := p.appendShortHeaderPacketForPath(
+		buf,
+		connID,
+		pn,
+		pnLen,
+		sealer.KeyPhase(),
+		pl,
+		0,
+		maxPacketSize,
+		sealer,
+		false,
+		pathID,
+		v,
+	)
+	if err != nil {
+		buf.Release()
+		return shortHeaderPacket{}, nil, err
+	}
+	packet.PathID = pathID
+	return packet, buf, nil
+}
+
 func (p *packetPacker) appendPacket(
 	buf *packetBuffer,
 	onlyAck bool,
