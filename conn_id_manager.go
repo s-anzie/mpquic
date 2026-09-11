@@ -25,6 +25,7 @@ type connIDManager struct {
 	pathProbing        map[pathID]newConnID // initialized lazily
 	pathQueues         map[pathID][]newConnID
 	pathHighestRetired map[pathID]uint64
+	abandonedPaths     map[pathID]bool
 	multipath          bool
 
 	handshakeComplete         bool
@@ -61,6 +62,7 @@ func newConnIDManager(
 		queue:                     make([]newConnID, 0, protocol.MaxActiveConnectionIDs),
 		pathQueues:                make(map[pathID][]newConnID),
 		pathHighestRetired:        make(map[pathID]uint64),
+		abandonedPaths:            make(map[pathID]bool),
 	}
 }
 
@@ -285,6 +287,9 @@ func (h *connIDManager) AddPath(f *wire.PathNewConnectionIDFrame) error {
 			return nil
 		}
 	}
+	if h.abandonedPaths[id] {
+		return nil
+	}
 	queue := h.pathQueues[id]
 	for _, entry := range queue {
 		if entry.SequenceNumber == f.SequenceNumber {
@@ -365,6 +370,9 @@ func (h *connIDManager) GetConnIDForPath(id pathID) (protocol.ConnectionID, bool
 	if h.activeConnectionID.Len() == 0 {
 		return protocol.ConnectionID{}, true
 	}
+	if h.abandonedPaths[id] {
+		return protocol.ConnectionID{}, false
+	}
 
 	if h.pathProbing == nil {
 		h.pathProbing = make(map[pathID]newConnID)
@@ -415,6 +423,34 @@ func (h *connIDManager) RetireConnIDForPath(pathID pathID) {
 	}
 	h.removeStatelessResetToken(entry.StatelessResetToken)
 	delete(h.pathProbing, pathID)
+}
+
+// AbandonPath immediately retires all peer-issued Connection IDs for a path.
+// The path number space itself is kept by the Multipath state for delayed
+// packets that may still arrive after PATH_ABANDON.
+func (h *connIDManager) AbandonPath(id pathID) {
+	h.pathMx.Lock()
+	defer h.pathMx.Unlock()
+
+	if id == 0 || h.abandonedPaths[id] {
+		return
+	}
+	h.abandonedPaths[id] = true
+	for _, entry := range h.pathQueues[id] {
+		h.queueControlFrame(&wire.PathRetireConnectionIDFrame{
+			PathID:         uint64(id),
+			SequenceNumber: entry.SequenceNumber,
+		})
+	}
+	delete(h.pathQueues, id)
+	if entry, ok := h.pathProbing[id]; ok {
+		h.queueControlFrame(&wire.PathRetireConnectionIDFrame{
+			PathID:         uint64(id),
+			SequenceNumber: entry.SequenceNumber,
+		})
+		h.removeStatelessResetToken(entry.StatelessResetToken)
+		delete(h.pathProbing, id)
+	}
 }
 
 func (h *connIDManager) IsActiveStatelessResetToken(token protocol.StatelessResetToken) bool {

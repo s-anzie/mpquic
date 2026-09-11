@@ -1989,6 +1989,9 @@ func (c *Conn) handleFrame(
 	case *wire.PathAbandonFrame:
 		var echo bool
 		echo, err = c.multipath.handlePathAbandon(frame)
+		if err == nil {
+			c.connIDManager.AbandonPath(pathID(frame.PathID))
+		}
 		if echo && err == nil {
 			c.queueControlFrame(&wire.PathAbandonFrame{PathID: frame.PathID, ErrorCode: frame.ErrorCode})
 		}
@@ -3230,6 +3233,14 @@ func (c *Conn) getPathManager() *pathManagerOutgoing {
 		c.connIDManager.RetireConnIDForPath,
 		c.scheduleSending,
 	)
+	new.SetAbandonPath(func(id pathID) {
+		if !c.multipathEnabled {
+			return
+		}
+		c.multipath.markPathAbandoned(uint64(id))
+		c.connIDManager.AbandonPath(id)
+		c.queueControlFrame(&wire.PathAbandonFrame{PathID: uint64(id)})
+	})
 	if c.multipathEnabled {
 		new.SetMaxPathID(c.multipath.peerMaxPathID)
 	}

@@ -133,6 +133,22 @@ func TestPathManagerOutgoingRequeuesLostProbe(t *testing.T) {
 	require.True(t, ok)
 }
 
+func TestPathManagerOutgoingAbandonsPathOnClose(t *testing.T) {
+	var abandoned []pathID
+	pm := newPathManagerOutgoing(
+		func(pathID) (protocol.ConnectionID, bool) {
+			return protocol.ParseConnectionID([]byte{1, 2, 3, 4}), true
+		},
+		func(pathID) {},
+		func() {},
+	)
+	pm.SetAbandonPath(func(id pathID) { abandoned = append(abandoned, id) })
+	p := pm.NewPath(&Transport{}, time.Second, func() {})
+	pm.addPath(p, p.enablePath)
+	require.NoError(t, p.Close())
+	require.Equal(t, []pathID{p.id}, abandoned)
+}
+
 func TestPathManagerOutgoingRetransmissions(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		connIDs := []protocol.ConnectionID{

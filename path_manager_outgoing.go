@@ -119,6 +119,7 @@ func (p *pathOutgoing) Validated() <-chan struct{} { return p.validated }
 type pathManagerOutgoing struct {
 	getConnID       func(pathID) (_ protocol.ConnectionID, ok bool)
 	retireConnID    func(pathID)
+	abandonPath     func(pathID)
 	scheduleSending func()
 
 	mx             sync.Mutex
@@ -143,10 +144,17 @@ func newPathManagerOutgoing(
 		nextPathID:      1,
 		getConnID:       getConnID,
 		retireConnID:    retireConnID,
+		abandonPath:     func(pathID) {},
 		scheduleSending: scheduleSending,
 		paths:           make(map[pathID]*pathOutgoing, 4),
 		maxPathID:       pathID(protocol.MaxPathID),
 	}
+}
+
+func (pm *pathManagerOutgoing) SetAbandonPath(abandonPath func(pathID)) {
+	pm.mx.Lock()
+	pm.abandonPath = abandonPath
+	pm.mx.Unlock()
 }
 
 // SetMaxPathID updates the maximum path ID that can be allocated to a new
@@ -219,6 +227,7 @@ func (pm *pathManagerOutgoing) removePathImpl(id pathID) error {
 	if _, ok := pm.paths[id]; !ok {
 		return nil
 	}
+	pm.abandonPath(id)
 	pm.retireConnID(id)
 	delete(pm.paths, id)
 	return nil

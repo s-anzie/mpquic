@@ -228,6 +228,18 @@ func (m *multipathState) handlePathAbandon(f *wire.PathAbandonFrame) (bool, erro
 	return true, nil
 }
 
+func (m *multipathState) markPathAbandoned(pathID uint64) error {
+	p, err := m.path(pathID)
+	if err != nil {
+		return err
+	}
+	if p.abandoned {
+		return nil
+	}
+	p.abandoned = true
+	return nil
+}
+
 func (m *multipathState) handlePathStatus(pathID, sequenceNumber uint64, backup bool) error {
 	p, err := m.path(pathID)
 	if err != nil {
