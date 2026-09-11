@@ -1332,6 +1332,10 @@ func (c *Conn) handleShortHeaderPacket(
 		return false, err
 	}
 	if c.multipathEnabled && packetPathID != 0 {
+		if path, err := c.multipath.path(packetPathID); err == nil {
+			path.remoteAddr = p.remoteAddr
+			path.packetInfo = p.info
+		}
 		if pathChallenge != nil {
 			if err := c.sendMultipathPathResponse(packetPathID, pathChallenge, p.rcvTime, p.remoteAddr, p.info); err != nil {
 				return false, err
@@ -2898,6 +2902,31 @@ func (c *Conn) sendMultipathAckOnlyPacket(now monotime.Time) (bool, error) {
 	if c.multipath.isPathAbandoned(0) {
 		pm := c.pathManagerOutgoing.Load()
 		if pm == nil {
+			for id, path := range c.multipath.paths {
+				if id == 0 || path.abandoned || path.remoteAddr == nil {
+					continue
+				}
+				connID, ok := c.connIDManager.GetConnIDForPath(pathID(id))
+				if !ok {
+					continue
+				}
+				pathAck := c.receivedPacketHandler.GetAckFrameForPath(id, now, true)
+				packet, buf, err := pathPacker.PackApplicationPacketForPath(
+					id, connID, pathAck, c.maxPacketSize(), now, c.version,
+				)
+				if err == errNothingToPack {
+					continue
+				}
+				if err != nil {
+					return false, err
+				}
+				c.logger.Debugf("sending final ACKs on server path %d", id)
+				c.logShortHeaderPacket(packet, protocol.ECNNon, buf.Len())
+				c.registerPackedShortHeaderPacket(packet, protocol.ECNNon, now)
+				c.sendQueue.SendProbe(buf, path.remoteAddr, path.packetInfo)
+				c.scheduleSending()
+				return true, nil
+			}
 			return false, nil
 		}
 		pathID, connID, tr, ok := pm.NextPathForApplication()
