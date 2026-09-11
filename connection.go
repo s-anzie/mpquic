@@ -583,6 +583,7 @@ func (c *Conn) preSetup() {
 
 	c.datagramQueue = newDatagramQueue(c.scheduleSending, c.logger)
 	c.multipath = newMultipathState(c.config.MaxPathID)
+	c.multipath.configurePathCongestion(protocol.ByteCount(c.config.InitialPacketSize), &c.connStats)
 	c.connState.Version = c.version
 }
 
@@ -2230,7 +2231,7 @@ func (c *Conn) handleHandshakeDoneFrame(rcvTime monotime.Time) error {
 
 func (c *Conn) handleAckFrame(frame *wire.AckFrame, encLevel protocol.EncryptionLevel, rcvTime monotime.Time) error {
 	if frame.PathID != nil && *frame.PathID != 0 {
-		return c.multipath.handlePathAck(frame)
+		return c.multipath.handlePathAck(frame, rcvTime)
 	}
 	acked1RTTPacket, err := c.sentPacketHandler.ReceivedAck(frame, encLevel, c.lastPacketReceivedTime)
 	if err != nil {
@@ -2942,7 +2943,7 @@ func (c *Conn) appendOneShortHeaderPacket(buf *packetBuffer, maxSize protocol.By
 func (c *Conn) registerPackedShortHeaderPacket(p shortHeaderPacket, ecn protocol.ECN, now monotime.Time) {
 	if p.IsPathProbePacket {
 		if c.multipathEnabled && p.PathID != 0 {
-			if err := c.multipath.recordSentPacket(p.PathID, p.PacketNumber, now); err != nil {
+			if err := c.multipath.recordSentPacketWithSize(p.PathID, p.PacketNumber, now, p.Length, p.IsAckEliciting()); err != nil {
 				c.setCloseError(&closeError{err: err})
 				return
 			}
@@ -2963,7 +2964,7 @@ func (c *Conn) registerPackedShortHeaderPacket(p shortHeaderPacket, ecn protocol
 		return
 	}
 	if c.multipathEnabled && p.PathID != 0 {
-		if err := c.multipath.recordSentApplicationPacket(p.PathID, p.PacketNumber, now, p.Frames, p.StreamFrames); err != nil {
+		if err := c.multipath.recordSentApplicationPacketWithSize(p.PathID, p.PacketNumber, now, p.Length, p.IsAckEliciting(), p.Frames, p.StreamFrames); err != nil {
 			c.setCloseError(&closeError{err: err})
 			return
 		}
@@ -3327,6 +3328,9 @@ func (c *Conn) getPathManager() *pathManagerOutgoing {
 			PathID:             uint64(id),
 			NextSequenceNumber: c.connIDManager.NextPathConnectionIDSequence(id),
 		})
+	})
+	new.SetPathApplicationAvailability(func(id pathID) bool {
+		return c.multipath.canSendOnPath(uint64(id), monotime.Now())
 	})
 	if c.multipathEnabled {
 		new.SetMaxPathID(c.multipath.peerMaxPathID)

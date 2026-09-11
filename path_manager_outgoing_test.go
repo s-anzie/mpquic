@@ -175,6 +175,33 @@ func TestPathManagerOutgoingSkipsApplicationPathWithoutConnectionID(t *testing.T
 	require.Equal(t, []pathID{p1.id}, blocked)
 }
 
+func TestPathManagerOutgoingSkipsUnavailableApplicationPath(t *testing.T) {
+	connIDs := map[pathID]protocol.ConnectionID{}
+	pm := newPathManagerOutgoing(
+		func(id pathID) (protocol.ConnectionID, bool) {
+			connID, ok := connIDs[id]
+			return connID, ok
+		},
+		func(pathID) {},
+		func() {},
+	)
+	pm.SetPathApplicationAvailability(func(id pathID) bool { return id != 1 })
+
+	p1 := pm.NewPath(&Transport{}, time.Second, func() {})
+	p2 := pm.NewPath(&Transport{}, time.Second, func() {})
+	pm.addPath(p1, p1.enablePath)
+	pm.addPath(p2, p2.enablePath)
+	pm.paths[p1.id].isValidated = true
+	pm.paths[p2.id].isValidated = true
+	connIDs[p1.id] = protocol.ParseConnectionID([]byte{1})
+	connIDs[p2.id] = protocol.ParseConnectionID([]byte{2})
+
+	id, connID, _, ok := pm.NextPathForApplication()
+	require.True(t, ok)
+	require.Equal(t, p2.id, id)
+	require.Equal(t, connIDs[p2.id], connID)
+}
+
 func TestPathManagerOutgoingAdvertisesValidatedPath(t *testing.T) {
 	connID := protocol.ParseConnectionID([]byte{1, 2, 3, 4})
 	var statuses []struct {

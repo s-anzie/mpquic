@@ -8,6 +8,7 @@ import (
 	"github.com/quic-go/quic-go/internal/monotime"
 	"github.com/quic-go/quic-go/internal/protocol"
 	"github.com/quic-go/quic-go/internal/qerr"
+	"github.com/quic-go/quic-go/internal/utils"
 	"github.com/quic-go/quic-go/internal/wire"
 	"github.com/stretchr/testify/require"
 )
@@ -279,6 +280,30 @@ func TestMultipathStateAcknowledgesAndDetectsLostApplicationFrames(t *testing.T)
 	))
 	require.Empty(t, state.detectLostPathProbes(now, time.Second))
 	require.Equal(t, 1, handler.lost)
+}
+
+func TestMultipathStateUsesIndependentPathCongestionControllers(t *testing.T) {
+	state := newMultipathState(3)
+	var connStats utils.ConnectionStats
+	state.configurePathCongestion(protocol.ByteCount(protocol.InitialPacketSize), &connStats)
+
+	now := monotime.Now()
+	require.NoError(t, state.recordSentApplicationPacketWithSize(1, 1, now, 1200, true, nil, nil))
+	require.NoError(t, state.recordSentApplicationPacketWithSize(2, 1, now, 1200, true, nil, nil))
+	require.Equal(t, protocol.ByteCount(1200), state.paths[1].bytesInFlight)
+	require.Equal(t, protocol.ByteCount(1200), state.paths[2].bytesInFlight)
+	require.NotSame(t, state.paths[1].congestion, state.paths[2].congestion)
+
+	pathID := uint64(1)
+	require.NoError(t, state.handlePathAck(&wire.AckFrame{
+		PathID:    &pathID,
+		AckRanges: []wire.AckRange{{Smallest: 1, Largest: 1}},
+	}, now.Add(time.Millisecond)))
+	require.Zero(t, state.paths[1].bytesInFlight)
+	require.Equal(t, protocol.ByteCount(1200), state.paths[2].bytesInFlight)
+
+	require.Empty(t, state.detectLostPathProbes(now.Add(time.Second), time.Second))
+	require.Zero(t, state.paths[2].bytesInFlight)
 }
 
 func TestMultipathStateAllocatesIndependentPacketNumbers(t *testing.T) {

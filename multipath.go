@@ -5,9 +5,11 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go/internal/ackhandler"
+	"github.com/quic-go/quic-go/internal/congestion"
 	"github.com/quic-go/quic-go/internal/monotime"
 	"github.com/quic-go/quic-go/internal/protocol"
 	"github.com/quic-go/quic-go/internal/qerr"
+	"github.com/quic-go/quic-go/internal/utils"
 	"github.com/quic-go/quic-go/internal/wire"
 )
 
@@ -21,6 +23,8 @@ type multipathPacketNumberSpace struct {
 
 type multipathSentPacket struct {
 	sentAt       monotime.Time
+	size         protocol.ByteCount
+	ackEliciting bool
 	isProbe      bool
 	frames       []ackhandler.Frame
 	streamFrames []ackhandler.StreamFrame
@@ -68,6 +72,8 @@ type multipathPathState struct {
 
 	packetNumberSpace multipathPacketNumberSpace
 	sentPackets       map[protocol.PacketNumber]multipathSentPacket
+	congestion        congestion.SendAlgorithmWithDebugInfos
+	bytesInFlight     protocol.ByteCount
 
 	hasStatus          bool
 	statusSequence     uint64
@@ -91,6 +97,28 @@ type multipathState struct {
 
 	paths                map[uint64]*multipathPathState
 	connectionIDToPathID map[protocol.ConnectionID]uint64
+	newPathCongestion    func() congestion.SendAlgorithmWithDebugInfos
+}
+
+// configurePathCongestion creates an independent congestion controller for
+// every Multipath path. The connection statistics remain shared so that the
+// public connection metrics include all paths.
+func (m *multipathState) configurePathCongestion(initialMaxDatagramSize protocol.ByteCount, connStats *utils.ConnectionStats) {
+	m.newPathCongestion = func() congestion.SendAlgorithmWithDebugInfos {
+		return congestion.NewCubicSender(
+			congestion.DefaultClock{},
+			utils.NewRTTStats(),
+			connStats,
+			initialMaxDatagramSize,
+			true,
+			nil,
+		)
+	}
+	for _, p := range m.paths {
+		if p.congestion == nil {
+			p.congestion = m.newPathCongestion()
+		}
+	}
 }
 
 func newMultipathState(localMaxPathID uint64) *multipathState {
@@ -120,6 +148,9 @@ func (m *multipathState) path(pathID uint64) (*multipathPathState, error) {
 			sentPackets:          make(map[protocol.PacketNumber]multipathSentPacket),
 			connectionIDs:        make(map[uint64]wire.PathNewConnectionIDFrame),
 			retiredConnectionIDs: make(map[uint64]bool),
+		}
+		if m.newPathCongestion != nil {
+			p.congestion = m.newPathCongestion()
 		}
 		m.paths[pathID] = p
 	}
@@ -162,7 +193,7 @@ func (m *multipathState) observeAcknowledgedPacketNumber(pathID uint64, pn proto
 	return p.packetNumberSpace.observeAcknowledged(pn)
 }
 
-func (m *multipathState) handlePathAck(f *wire.AckFrame) error {
+func (m *multipathState) handlePathAck(f *wire.AckFrame, receivedAt ...monotime.Time) error {
 	if f.PathID == nil || *f.PathID == 0 {
 		return fmt.Errorf("PATH_ACK must identify a non-initial path")
 	}
@@ -176,6 +207,10 @@ func (m *multipathState) handlePathAck(f *wire.AckFrame) error {
 	if p.abandoned {
 		return nil
 	}
+	rcvTime := monotime.Now()
+	if len(receivedAt) > 0 {
+		rcvTime = receivedAt[0]
+	}
 	if err := p.packetNumberSpace.observeAcknowledged(f.LargestAcked()); err != nil {
 		return err
 	}
@@ -183,6 +218,13 @@ func (m *multipathState) handlePathAck(f *wire.AckFrame) error {
 		for _, ackRange := range f.AckRanges {
 			if packetNumber >= ackRange.Smallest && packetNumber <= ackRange.Largest {
 				packet := p.sentPackets[packetNumber]
+				if packet.ackEliciting && packet.size > 0 {
+					priorInFlight := p.bytesInFlight
+					p.bytesInFlight -= min(p.bytesInFlight, packet.size)
+					if p.congestion != nil {
+						p.congestion.OnPacketAcked(packetNumber, packet.size, priorInFlight, rcvTime)
+					}
+				}
 				for _, frame := range packet.frames {
 					if frame.Handler != nil && frame.Frame != nil {
 						frame.Handler.OnAcked(frame.Frame)
@@ -204,23 +246,10 @@ func (m *multipathState) handlePathAck(f *wire.AckFrame) error {
 // recordSentPacket records a packet that belongs to a Multipath path. The
 // packet number is retained until a PATH_ACK acknowledges it.
 func (m *multipathState) recordSentPacket(pathID uint64, packetNumber protocol.PacketNumber, sentAt monotime.Time) error {
-	if pathID == 0 {
-		return nil
-	}
-	p, err := m.path(pathID)
-	if err != nil {
-		return err
-	}
-	if packetNumber < 0 || packetNumber > protocol.MaxPathAndPacketNumber {
-		return fmt.Errorf("sent invalid path packet number %d", packetNumber)
-	}
-	p.sentPackets[packetNumber] = multipathSentPacket{sentAt: sentAt, isProbe: true}
-	return nil
+	return m.recordSentPacketWithSize(pathID, packetNumber, sentAt, 0, false)
 }
 
-// recordSentApplicationPacket tracks a packet that carries application data
-// in a path-specific packet number space.
-func (m *multipathState) recordSentApplicationPacket(pathID uint64, packetNumber protocol.PacketNumber, sentAt monotime.Time, frames []ackhandler.Frame, streamFrames []ackhandler.StreamFrame) error {
+func (m *multipathState) recordSentPacketWithSize(pathID uint64, packetNumber protocol.PacketNumber, sentAt monotime.Time, size protocol.ByteCount, ackEliciting bool) error {
 	if pathID == 0 {
 		return nil
 	}
@@ -233,10 +262,58 @@ func (m *multipathState) recordSentApplicationPacket(pathID uint64, packetNumber
 	}
 	p.sentPackets[packetNumber] = multipathSentPacket{
 		sentAt:       sentAt,
+		size:         size,
+		ackEliciting: ackEliciting,
+		isProbe:      true,
+	}
+	m.onPathPacketSent(p, sentAt, packetNumber, size, ackEliciting)
+	return nil
+}
+
+// recordSentApplicationPacket tracks a packet that carries application data
+// in a path-specific packet number space.
+func (m *multipathState) recordSentApplicationPacket(pathID uint64, packetNumber protocol.PacketNumber, sentAt monotime.Time, frames []ackhandler.Frame, streamFrames []ackhandler.StreamFrame) error {
+	return m.recordSentApplicationPacketWithSize(pathID, packetNumber, sentAt, 0, false, frames, streamFrames)
+}
+
+func (m *multipathState) recordSentApplicationPacketWithSize(pathID uint64, packetNumber protocol.PacketNumber, sentAt monotime.Time, size protocol.ByteCount, ackEliciting bool, frames []ackhandler.Frame, streamFrames []ackhandler.StreamFrame) error {
+	if pathID == 0 {
+		return nil
+	}
+	p, err := m.path(pathID)
+	if err != nil {
+		return err
+	}
+	if packetNumber < 0 || packetNumber > protocol.MaxPathAndPacketNumber {
+		return fmt.Errorf("sent invalid path packet number %d", packetNumber)
+	}
+	p.sentPackets[packetNumber] = multipathSentPacket{
+		sentAt:       sentAt,
+		size:         size,
+		ackEliciting: ackEliciting,
 		frames:       frames,
 		streamFrames: streamFrames,
 	}
+	m.onPathPacketSent(p, sentAt, packetNumber, size, ackEliciting)
 	return nil
+}
+
+func (m *multipathState) onPathPacketSent(p *multipathPathState, sentAt monotime.Time, packetNumber protocol.PacketNumber, size protocol.ByteCount, ackEliciting bool) {
+	if !ackEliciting || size == 0 || p.congestion == nil {
+		return
+	}
+	p.bytesInFlight += size
+	p.congestion.OnPacketSent(sentAt, p.bytesInFlight, packetNumber, size, true)
+}
+
+// canSendOnPath reports whether the path-specific congestion controller allows
+// another ack-eliciting packet to be sent.
+func (m *multipathState) canSendOnPath(pathID uint64, now monotime.Time) bool {
+	p, ok := m.paths[pathID]
+	if !ok || p.abandoned || p.congestion == nil {
+		return true
+	}
+	return p.congestion.CanSend(p.bytesInFlight) && p.congestion.HasPacingBudget(now)
 }
 
 func (m *multipathState) nextPathProbeLossTime(lossDelay time.Duration) monotime.Time {
@@ -261,6 +338,13 @@ func (m *multipathState) detectLostPathProbes(now monotime.Time, lossDelay time.
 		}
 		for packetNumber, packet := range p.sentPackets {
 			if !packet.sentAt.After(lossTime) {
+				if packet.ackEliciting && packet.size > 0 {
+					priorInFlight := p.bytesInFlight
+					p.bytesInFlight -= min(p.bytesInFlight, packet.size)
+					if p.congestion != nil {
+						p.congestion.OnCongestionEvent(packetNumber, packet.size, priorInFlight)
+					}
+				}
 				for _, frame := range packet.frames {
 					if frame.Handler != nil && frame.Frame != nil {
 						frame.Handler.OnLost(frame.Frame)
