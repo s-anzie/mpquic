@@ -2,6 +2,7 @@ package quic
 
 import (
 	"fmt"
+	"net"
 	"slices"
 	"time"
 
@@ -70,6 +71,11 @@ func (s *multipathPacketNumberSpace) observeAcknowledged(pn protocol.PacketNumbe
 // multipathPathState contains the state that is independent for each path ID.
 type multipathPathState struct {
 	abandoned bool
+
+	// The most recent received packet identifies where a server can send a
+	// final ACK when the initial path has been abandoned.
+	remoteAddr net.Addr
+	packetInfo packetInfo
 
 	packetNumberSpace multipathPacketNumberSpace
 	largestSent       protocol.PacketNumber
