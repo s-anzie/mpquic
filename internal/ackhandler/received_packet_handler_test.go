@@ -160,3 +160,10 @@ func TestMultipathPacketNumberSpaces(t *testing.T) {
 	require.Equal(t, uint64(1), *ack.PathID)
 	require.Equal(t, []wire.AckRange{{Smallest: 3, Largest: 3}}, ack.AckRanges)
 }
+
+func TestMultipathAckAlarmIsIncluded(t *testing.T) {
+	handler := NewReceivedPacketHandler(utils.DefaultLogger)
+	now := monotime.Now()
+	require.NoError(t, handler.ReceivedPacketForPath(1, 1, protocol.ECNNon, now, true))
+	require.Equal(t, now.Add(protocol.MaxAckDelay), handler.GetAlarmTimeout())
+}
