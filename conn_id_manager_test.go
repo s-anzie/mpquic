@@ -336,6 +336,59 @@ func TestConnIDManagerPathMigration(t *testing.T) {
 	require.Empty(t, frameQueue)
 }
 
+func TestConnIDManagerMultipath(t *testing.T) {
+	var frameQueue []wire.Frame
+	m := newConnIDManager(
+		protocol.ParseConnectionID([]byte{1, 2, 3, 4}),
+		func(protocol.StatelessResetToken) {},
+		func(protocol.StatelessResetToken) {},
+		func(f wire.Frame) { frameQueue = append(frameQueue, f) },
+	)
+	m.SetMultipath(true)
+
+	pathOneCID := protocol.ParseConnectionID([]byte{4, 3, 2, 1})
+	pathTwoCID := protocol.ParseConnectionID([]byte{5, 4, 3, 2})
+	pathOneToken := protocol.StatelessResetToken{4, 3, 2, 1, 4, 3, 2, 1}
+	pathTwoToken := protocol.StatelessResetToken{5, 4, 3, 2, 5, 4, 3, 2}
+	require.NoError(t, m.AddPath(&wire.PathNewConnectionIDFrame{
+		PathID:              1,
+		SequenceNumber:      0,
+		ConnectionID:        pathOneCID,
+		StatelessResetToken: pathOneToken,
+	}))
+	require.NoError(t, m.AddPath(&wire.PathNewConnectionIDFrame{
+		PathID:              2,
+		SequenceNumber:      0,
+		ConnectionID:        pathTwoCID,
+		StatelessResetToken: pathTwoToken,
+	}))
+
+	connID, ok := m.GetConnIDForPath(1)
+	require.True(t, ok)
+	require.Equal(t, pathOneCID, connID)
+	connID, ok = m.GetConnIDForPath(2)
+	require.True(t, ok)
+	require.Equal(t, pathTwoCID, connID)
+
+	require.NoError(t, m.AddPath(&wire.PathNewConnectionIDFrame{
+		PathID:              1,
+		SequenceNumber:      1,
+		RetirePriorTo:       1,
+		ConnectionID:        protocol.ParseConnectionID([]byte{6, 5, 4, 3}),
+		StatelessResetToken: protocol.StatelessResetToken{6, 5, 4, 3, 6, 5, 4, 3},
+	}))
+	require.Equal(t, []wire.Frame{&wire.PathRetireConnectionIDFrame{PathID: 1, SequenceNumber: 0}}, frameQueue)
+	connID, ok = m.GetConnIDForPath(1)
+	require.True(t, ok)
+	require.Equal(t, protocol.ParseConnectionID([]byte{6, 5, 4, 3}), connID)
+
+	m.RetireConnIDForPath(1)
+	require.Equal(t, []wire.Frame{
+		&wire.PathRetireConnectionIDFrame{PathID: 1, SequenceNumber: 0},
+		&wire.PathRetireConnectionIDFrame{PathID: 1, SequenceNumber: 1},
+	}, frameQueue)
+}
+
 func TestConnIDManagerZeroLengthConnectionID(t *testing.T) {
 	m := newConnIDManager(
 		protocol.ConnectionID{},

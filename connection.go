@@ -1988,6 +1988,9 @@ func (c *Conn) handleFrame(
 		err = c.multipath.handlePathStatus(frame.PathID, frame.SequenceNumber, true)
 	case *wire.PathNewConnectionIDFrame:
 		err = c.multipath.handlePathNewConnectionID(frame)
+		if err == nil {
+			err = c.connIDManager.AddPath(frame)
+		}
 	case *wire.PathRetireConnectionIDFrame:
 		if frame.PathID == 0 {
 			err = c.connIDGenerator.Retire(frame.SequenceNumber, destConnID, rcvTime.Add(3*c.rttStats.PTO(false)))
@@ -2509,6 +2512,7 @@ func (c *Conn) applyTransportParameters() {
 	c.frameParser.SetAckDelayExponent(params.AckDelayExponent)
 	c.multipathEnabled = c.config.EnableMultipath && params.InitialMaxPathID != nil
 	c.frameParser.SetMultipath(c.multipathEnabled)
+	c.connIDManager.SetMultipath(c.multipathEnabled)
 	if cs, ok := c.cryptoStreamHandler.(handshake.MultipathCryptoSetup); ok {
 		cs.SetMultipath(c.multipathEnabled)
 	}
