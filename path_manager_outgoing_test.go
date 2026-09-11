@@ -6,6 +6,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/quic-go/quic-go/internal/ackhandler"
 	"github.com/quic-go/quic-go/internal/protocol"
 	"github.com/quic-go/quic-go/internal/wire"
 
@@ -74,7 +75,6 @@ func TestPathManagerOutgoingPathProbing(t *testing.T) {
 		// ... neither does receiving a random PATH_RESPONSE...
 		pm.HandlePathResponseFrame(&wire.PathResponseFrame{Data: [8]byte{'f', 'o', 'o', 'f', 'o', 'o'}})
 		f.Handler.OnAcked(f.Frame) // doesn't do anything
-		f.Handler.OnLost(f.Frame)  // doesn't do anything
 		select {
 		case <-errChan:
 			t.Fatal("should still be probing")
@@ -106,6 +106,31 @@ func TestPathManagerOutgoingPathProbing(t *testing.T) {
 		require.True(t, ok)
 		require.Equal(t, tr1, switchToTransport)
 	})
+}
+
+func TestPathManagerOutgoingRequeuesLostProbe(t *testing.T) {
+	connID := protocol.ParseConnectionID([]byte{1, 2, 3, 4})
+	pm := newPathManagerOutgoing(
+		func(pathID) (protocol.ConnectionID, bool) { return connID, true },
+		func(pathID) {},
+		func() {},
+	)
+	p := pm.NewPath(&Transport{}, time.Second, func() {})
+	pm.addPath(p, p.enablePath)
+
+	pm.requeueProbe(p.id)
+	_, _, _, _, ok := pm.NextPathToProbe()
+	require.True(t, ok)
+	_, _, _, _, ok = pm.NextPathToProbe()
+	require.False(t, ok)
+
+	frame := ackhandler.Frame{
+		Frame:   &wire.PathChallengeFrame{},
+		Handler: &pathManagerOutgoingAckHandler{manager: pm, pathID: p.id},
+	}
+	frame.Handler.OnLost(frame.Frame)
+	_, _, _, _, ok = pm.NextPathToProbe()
+	require.True(t, ok)
 }
 
 func TestPathManagerOutgoingRetransmissions(t *testing.T) {

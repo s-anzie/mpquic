@@ -190,6 +190,17 @@ func (pm *pathManagerOutgoing) enqueueProbe(p *Path) {
 	pm.scheduleSending()
 }
 
+func (pm *pathManagerOutgoing) requeueProbe(id pathID) {
+	pm.mx.Lock()
+	if _, ok := pm.paths[id]; !ok || slices.Contains(pm.pathsToProbe, id) {
+		pm.mx.Unlock()
+		return
+	}
+	pm.pathsToProbe = append(pm.pathsToProbe, id)
+	pm.mx.Unlock()
+	pm.scheduleSending()
+}
+
 func (pm *pathManagerOutgoing) removePath(id pathID) error {
 	if err := pm.removePathImpl(id); err != nil {
 		return err
@@ -285,7 +296,7 @@ func (pm *pathManagerOutgoing) NextPathToProbe() (_ pathID, _ protocol.Connectio
 	}
 	frame := ackhandler.Frame{
 		Frame:   &wire.PathChallengeFrame{Data: b},
-		Handler: (*pathManagerOutgoingAckHandler)(pm),
+		Handler: &pathManagerOutgoingAckHandler{manager: pm, pathID: id},
 	}
 	return id, connID, frame, p.tr, true
 }
@@ -320,12 +331,17 @@ func (pm *pathManagerOutgoing) ShouldSwitchPath() (*Transport, bool) {
 	return p.tr, true
 }
 
-type pathManagerOutgoingAckHandler pathManagerOutgoing
+type pathManagerOutgoingAckHandler struct {
+	manager *pathManagerOutgoing
+	pathID  pathID
+}
 
 var _ ackhandler.FrameHandler = &pathManagerOutgoingAckHandler{}
 
 // OnAcked is called when the PATH_CHALLENGE is acked.
 // This doesn't validate the path, only receiving the PATH_RESPONSE does.
-func (pm *pathManagerOutgoingAckHandler) OnAcked(wire.Frame) {}
+func (h *pathManagerOutgoingAckHandler) OnAcked(wire.Frame) {}
 
-func (pm *pathManagerOutgoingAckHandler) OnLost(wire.Frame) {}
+func (h *pathManagerOutgoingAckHandler) OnLost(wire.Frame) {
+	h.manager.requeueProbe(h.pathID)
+}
