@@ -87,6 +87,19 @@ func (p *Path) Switch() error {
 	return nil
 }
 
+// SetBackup tells the peer to use this path only as a backup when another
+// usable path is available. The preference is advisory and does not change
+// the local path scheduler.
+func (p *Path) SetBackup(backup bool) error {
+	select {
+	case <-p.abandon:
+		return ErrPathClosed
+	default:
+	}
+	p.pathManager.setPathStatus(p.id, backup)
+	return nil
+}
+
 // Close abandons a path.
 // It is not possible to close the path that’s currently active.
 // After closing, the path cannot be successfully probed again with [Path.Probe].
@@ -171,6 +184,12 @@ func (pm *pathManagerOutgoing) SetPathCIDsBlocked(cidsBlocked func(pathID)) {
 	pm.mx.Lock()
 	pm.cidsBlocked = cidsBlocked
 	pm.mx.Unlock()
+}
+
+func (pm *pathManagerOutgoing) setPathStatus(id pathID, backup bool) {
+	pm.mx.Lock()
+	defer pm.mx.Unlock()
+	pm.statusPath(id, backup)
 }
 
 // SetMaxPathID updates the maximum path ID that can be allocated to a new
