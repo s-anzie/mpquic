@@ -198,6 +198,16 @@ func (pm *pathManagerOutgoing) SetPathApplicationAvailability(canSendPath func(p
 	pm.mx.Unlock()
 }
 
+func (pm *pathManagerOutgoing) transportForPath(id pathID) (*Transport, bool) {
+	pm.mx.Lock()
+	defer pm.mx.Unlock()
+	p, ok := pm.paths[id]
+	if !ok || p.tr == nil {
+		return nil, false
+	}
+	return p.tr, true
+}
+
 func (pm *pathManagerOutgoing) setPathStatus(id pathID, backup bool) {
 	pm.mx.Lock()
 	defer pm.mx.Unlock()
