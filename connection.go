@@ -1331,6 +1331,14 @@ func (c *Conn) handleShortHeaderPacket(
 	if err != nil {
 		return false, err
 	}
+	if c.multipathEnabled && packetPathID != 0 {
+		if pathChallenge != nil {
+			if err := c.sendMultipathPathResponse(packetPathID, pathChallenge, p.rcvTime, p.remoteAddr, p.info); err != nil {
+				return false, err
+			}
+		}
+		return true, nil
+	}
 
 	// In RFC 9000, only the client can migrate between paths.
 	if c.perspective == protocol.PerspectiveClient {
@@ -1827,7 +1835,7 @@ func (c *Conn) handleUnpackedShortHeaderPacket(
 	c.firstAckElicitingPacketAfterIdleSentTime = 0
 	c.keepAlivePingSent = false
 
-	isAckEliciting, isNonProbing, pathChallenge, err := c.handleFrames(data, destConnID, protocol.Encryption1RTT, log, rcvTime)
+	isAckEliciting, isNonProbing, pathChallenge, err := c.handleFramesForPath(data, destConnID, pathID, protocol.Encryption1RTT, log, rcvTime)
 	if err != nil {
 		return false, nil, err
 	}
@@ -1845,9 +1853,14 @@ func (c *Conn) handleUnpackedShortHeaderPacket(
 
 // handleFrames parses the frames, one after the other, and handles them.
 // It returns the last PATH_CHALLENGE frame contained in the packet, if any.
-func (c *Conn) handleFrames(
+func (c *Conn) handleFrames(data []byte, destConnID protocol.ConnectionID, encLevel protocol.EncryptionLevel, log func([]qlog.Frame), rcvTime monotime.Time) (bool, bool, *wire.PathChallengeFrame, error) {
+	return c.handleFramesForPath(data, destConnID, 0, encLevel, log, rcvTime)
+}
+
+func (c *Conn) handleFramesForPath(
 	data []byte,
 	destConnID protocol.ConnectionID,
+	pathID uint64,
 	encLevel protocol.EncryptionLevel,
 	log func([]qlog.Frame),
 	rcvTime monotime.Time,
@@ -1944,7 +1957,7 @@ func (c *Conn) handleFrames(
 			if skipHandling {
 				continue
 			}
-			pc, err := c.handleFrame(frame, encLevel, destConnID, rcvTime)
+			pc, err := c.handleFrameForPath(frame, pathID, encLevel, destConnID, rcvTime)
 			if pc != nil {
 				pathChallenge = pc
 			}
@@ -1979,8 +1992,13 @@ func (c *Conn) handleFrames(
 	return
 }
 
-func (c *Conn) handleFrame(
+func (c *Conn) handleFrame(f wire.Frame, encLevel protocol.EncryptionLevel, destConnID protocol.ConnectionID, rcvTime monotime.Time) (*wire.PathChallengeFrame, error) {
+	return c.handleFrameForPath(f, 0, encLevel, destConnID, rcvTime)
+}
+
+func (c *Conn) handleFrameForPath(
 	f wire.Frame,
+	packetPathID uint64,
 	encLevel protocol.EncryptionLevel,
 	destConnID protocol.ConnectionID,
 	rcvTime monotime.Time,
@@ -2008,7 +2026,7 @@ func (c *Conn) handleFrame(
 		err = c.streamsMap.HandleStopSendingFrame(frame)
 	case *wire.PingFrame:
 	case *wire.PathChallengeFrame:
-		c.handlePathChallengeFrame(frame)
+		c.handlePathChallengeFrame(frame, packetPathID)
 		pathChallenge = frame
 	case *wire.PathResponseFrame:
 		err = c.handlePathResponseFrame(frame)
@@ -2182,10 +2200,54 @@ func (c *Conn) handleHandshakeEvents(now monotime.Time) error {
 	}
 }
 
-func (c *Conn) handlePathChallengeFrame(f *wire.PathChallengeFrame) {
-	if c.perspective == protocol.PerspectiveClient {
+func (c *Conn) handlePathChallengeFrame(f *wire.PathChallengeFrame, pathID uint64) {
+	if c.perspective == protocol.PerspectiveClient && (!c.multipathEnabled || pathID == 0) {
 		c.queueControlFrame(&wire.PathResponseFrame{Data: f.Data})
 	}
+}
+
+// sendMultipathPathResponse sends a PATH_RESPONSE on the path that carried the
+// corresponding PATH_CHALLENGE. A response on the initial path would not
+// validate a secondary path and can cause the peer to probe indefinitely.
+func (c *Conn) sendMultipathPathResponse(
+	id uint64,
+	challenge *wire.PathChallengeFrame,
+	now monotime.Time,
+	remoteAddr net.Addr,
+	info packetInfo,
+) error {
+	connID, ok := c.connIDManager.GetConnIDForPath(pathID(id))
+	if !ok {
+		c.queueControlFrame(&wire.PathCIDsBlockedFrame{
+			PathID:             id,
+			NextSequenceNumber: c.connIDManager.NextPathConnectionIDSequence(pathID(id)),
+		})
+		return nil
+	}
+	frames := []ackhandler.Frame{{Frame: &wire.PathResponseFrame{Data: challenge.Data}}}
+	if pathAck := c.receivedPacketHandler.GetAckFrameForPath(id, now, true); pathAck != nil {
+		frames = append(frames, ackhandler.Frame{Frame: pathAck})
+	}
+	probe, buf, err := c.packPathProbePacket(id, connID, frames, c.version)
+	if err != nil {
+		return err
+	}
+	c.logShortHeaderPacketWithDatagramPayloadChecksum(probe, protocol.ECNNon, buf.Len(), false, qlog.DatagramPayloadChecksum(0))
+	c.registerPackedShortHeaderPacket(probe, protocol.ECNNon, now)
+	if c.perspective == protocol.PerspectiveServer {
+		c.sendQueue.SendProbe(buf, remoteAddr, info)
+		return nil
+	}
+	pm := c.pathManagerOutgoing.Load()
+	if pm == nil {
+		return fmt.Errorf("cannot send a multipath PATH_RESPONSE without a path manager")
+	}
+	tr, ok := pm.transportForPath(pathID(id))
+	if !ok {
+		return fmt.Errorf("cannot send a multipath PATH_RESPONSE for unknown path %d", id)
+	}
+	_, err = tr.WriteTo(buf.Data, c.conn.RemoteAddr())
+	return err
 }
 
 func (c *Conn) handlePathResponseFrame(f *wire.PathResponseFrame) error {
