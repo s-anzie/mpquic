@@ -118,6 +118,7 @@ func (p *Path) Close() error {
 }
 
 type pathOutgoing struct {
+	id             pathID
 	pathChallenges [][8]byte // length is implicitly limited by exponential backoff
 	tr             *Transport
 	isValidated    bool
@@ -137,13 +138,14 @@ type pathManagerOutgoing struct {
 	cidsBlocked     func(pathID)
 	scheduleSending func()
 
-	mx             sync.Mutex
-	activePath     pathID
-	pathsToProbe   []pathID
-	paths          map[pathID]*pathOutgoing
-	nextPathID     pathID
-	maxPathID      pathID
-	pathToSwitchTo *pathOutgoing
+	mx               sync.Mutex
+	activePath       pathID
+	pathsToProbe     []pathID
+	paths            map[pathID]*pathOutgoing
+	nextPathID       pathID
+	maxPathID        pathID
+	pathToSwitchTo   *pathOutgoing
+	pathToSwitchFrom pathID
 }
 
 // newPathManagerOutgoing creates a new pathManagerOutgoing object. This
@@ -217,6 +219,7 @@ func (pm *pathManagerOutgoing) addPath(p *Path, enablePath func()) *pathOutgoing
 	}
 
 	path := &pathOutgoing{
+		id:         p.id,
 		tr:         p.tr,
 		probeSent:  make(chan struct{}, 1),
 		validated:  make(chan struct{}),
@@ -279,6 +282,7 @@ func (pm *pathManagerOutgoing) switchToPath(id pathID) error {
 	if !p.isValidated {
 		return ErrPathNotValidated
 	}
+	pm.pathToSwitchFrom = pm.activePath
 	pm.pathToSwitchTo = p
 	pm.activePath = id
 	return nil
@@ -374,7 +378,12 @@ func (pm *pathManagerOutgoing) ShouldSwitchPath() (*Transport, bool) {
 		return nil, false
 	}
 	p := pm.pathToSwitchTo
+	from := pm.pathToSwitchFrom
 	pm.pathToSwitchTo = nil
+	if from != p.id {
+		pm.statusPath(from, true)
+		pm.statusPath(p.id, false)
+	}
 	return p.tr, true
 }
 
