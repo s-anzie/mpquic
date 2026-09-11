@@ -71,6 +71,7 @@ type multipathPathState struct {
 	abandoned bool
 
 	packetNumberSpace multipathPacketNumberSpace
+	largestSent       protocol.PacketNumber
 	sentPackets       map[protocol.PacketNumber]multipathSentPacket
 	congestion        congestion.SendAlgorithmWithDebugInfos
 	rttStats          *utils.RTTStats
@@ -150,6 +151,7 @@ func (m *multipathState) path(pathID uint64) (*multipathPathState, error) {
 	if !ok {
 		p = &multipathPathState{
 			packetNumberSpace:    newMultipathPacketNumberSpace(),
+			largestSent:          protocol.InvalidPacketNumber,
 			sentPackets:          make(map[protocol.PacketNumber]multipathSentPacket),
 			connectionIDs:        make(map[uint64]wire.PathNewConnectionIDFrame),
 			retiredConnectionIDs: make(map[uint64]bool),
@@ -212,6 +214,12 @@ func (m *multipathState) handlePathAck(f *wire.AckFrame, receivedAt ...monotime.
 	// paths.
 	if p.abandoned {
 		return nil
+	}
+	if p.largestSent == protocol.InvalidPacketNumber || f.LargestAcked() > p.largestSent {
+		return &qerr.TransportError{
+			ErrorCode:    qerr.ProtocolViolation,
+			ErrorMessage: fmt.Sprintf("received PATH_ACK for unsent packet %d on path %d", f.LargestAcked(), *f.PathID),
+		}
 	}
 	rcvTime := monotime.Now()
 	if len(receivedAt) > 0 {
@@ -295,6 +303,7 @@ func (m *multipathState) recordSentPacketWithSize(pathID uint64, packetNumber pr
 	if packetNumber < 0 || packetNumber > protocol.MaxPathAndPacketNumber {
 		return fmt.Errorf("sent invalid path packet number %d", packetNumber)
 	}
+	p.largestSent = max(p.largestSent, packetNumber)
 	p.sentPackets[packetNumber] = multipathSentPacket{
 		sentAt:       sentAt,
 		size:         size,
@@ -322,6 +331,7 @@ func (m *multipathState) recordSentApplicationPacketWithSize(pathID uint64, pack
 	if packetNumber < 0 || packetNumber > protocol.MaxPathAndPacketNumber {
 		return fmt.Errorf("sent invalid path packet number %d", packetNumber)
 	}
+	p.largestSent = max(p.largestSent, packetNumber)
 	p.sentPackets[packetNumber] = multipathSentPacket{
 		sentAt:       sentAt,
 		size:         size,
