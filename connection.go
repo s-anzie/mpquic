@@ -2668,6 +2668,31 @@ func (c *Conn) sendPackets(now monotime.Time) error {
 		}
 	}
 
+	if c.multipathEnabled && c.handshakeConfirmed {
+		if pm := c.pathManagerOutgoing.Load(); pm != nil {
+			pathID, connID, tr, ok := pm.NextPathForApplication()
+			if ok {
+				if pathPacker, ok := c.packer.(pathAwareApplicationPacker); ok {
+					pathAck := c.receivedPacketHandler.GetAckFrameForPath(uint64(pathID), now, true)
+					packet, buf, err := pathPacker.PackApplicationPacketForPath(
+						uint64(pathID), connID, pathAck, c.maxPacketSize(), now, c.version,
+					)
+					if err != nil && err != errNothingToPack {
+						return err
+					}
+					if err == nil {
+						c.logger.Debugf("sending multipath application packet on path %d", pathID)
+						c.logShortHeaderPacket(packet, protocol.ECNNon, buf.Len())
+						c.registerPackedShortHeaderPacket(packet, protocol.ECNNon, now)
+						tr.WriteTo(buf.Data, c.conn.RemoteAddr())
+						c.scheduleSending()
+						return nil
+					}
+				}
+			}
+		}
+	}
+
 	// Path MTU Discovery
 	// Can't use GSO, since we need to send a single packet that's larger than our current maximum size.
 	// Performance-wise, this doesn't matter, since we only send a very small (<10) number of

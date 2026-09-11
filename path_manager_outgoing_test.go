@@ -108,6 +108,45 @@ func TestPathManagerOutgoingPathProbing(t *testing.T) {
 	})
 }
 
+func TestPathManagerOutgoingSelectsValidatedApplicationPathsRoundRobin(t *testing.T) {
+	connIDs := map[pathID]protocol.ConnectionID{}
+	pm := newPathManagerOutgoing(
+		func(id pathID) (protocol.ConnectionID, bool) {
+			connID, ok := connIDs[id]
+			return connID, ok
+		},
+		func(pathID) {},
+		func() {},
+	)
+
+	tr1 := &Transport{}
+	tr2 := &Transport{}
+	p1 := pm.NewPath(tr1, time.Second, func() {})
+	p2 := pm.NewPath(tr2, time.Second, func() {})
+	pm.addPath(p1, p1.enablePath)
+	pm.addPath(p2, p2.enablePath)
+	pm.paths[p1.id].isValidated = true
+	pm.paths[p2.id].isValidated = true
+	connIDs[p1.id] = protocol.ParseConnectionID([]byte{1})
+	connIDs[p2.id] = protocol.ParseConnectionID([]byte{2})
+
+	id, connID, tr, ok := pm.NextPathForApplication()
+	require.True(t, ok)
+	require.Equal(t, p1.id, id)
+	require.Equal(t, connIDs[p1.id], connID)
+	require.Equal(t, tr1, tr)
+
+	id, connID, tr, ok = pm.NextPathForApplication()
+	require.True(t, ok)
+	require.Equal(t, p2.id, id)
+	require.Equal(t, connIDs[p2.id], connID)
+	require.Equal(t, tr2, tr)
+
+	id, _, _, ok = pm.NextPathForApplication()
+	require.True(t, ok)
+	require.Equal(t, p1.id, id)
+}
+
 func TestPathManagerOutgoingAdvertisesValidatedPath(t *testing.T) {
 	connID := protocol.ParseConnectionID([]byte{1, 2, 3, 4})
 	var statuses []struct {
