@@ -2436,6 +2436,9 @@ func (c *Conn) checkTransportParameters(params *wire.TransportParameters) error 
 	if params.InitialSourceConnectionID != c.handshakeDestConnID {
 		return fmt.Errorf("expected initial_source_connection_id to equal %s, is %s", c.handshakeDestConnID, params.InitialSourceConnectionID)
 	}
+	if params.InitialMaxPathID != nil && (c.handshakeDestConnID.Len() == 0 || c.srcConnIDLen == 0) {
+		return errors.New("initial_max_path_id requires non-zero source and destination connection IDs")
+	}
 
 	if c.perspective == protocol.PerspectiveServer {
 		return nil

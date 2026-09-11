@@ -1228,6 +1228,20 @@ func TestConnectionTransportParameterValidationFailureClient(t *testing.T) {
 		assert.ErrorIs(t, err, &qerr.TransportError{ErrorCode: qerr.TransportParameterError})
 		assert.ErrorContains(t, err, "expected retry_source_connection_id to equal")
 	})
+
+	t.Run("multipath requires non-zero connection IDs", func(t *testing.T) {
+		tc := newClientTestConnection(t, nil, nil, false)
+		tc.conn.srcConnIDLen = 0
+		maxPathID := uint64(1)
+		params := &wire.TransportParameters{
+			InitialSourceConnectionID:       tc.destConnID,
+			OriginalDestinationConnectionID: tc.destConnID,
+			InitialMaxPathID:                &maxPathID,
+		}
+		err := tc.conn.handleTransportParameters(params)
+		assert.ErrorIs(t, err, &qerr.TransportError{ErrorCode: qerr.TransportParameterError})
+		assert.ErrorContains(t, err, "initial_max_path_id requires non-zero")
+	})
 }
 
 func TestConnectionHandshakeServer(t *testing.T) {
