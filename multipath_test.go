@@ -201,6 +201,7 @@ func TestMultipathStateRejectsPacketNumberOverflow(t *testing.T) {
 
 func TestMultipathStateHandlesPathAckPerPath(t *testing.T) {
 	state := newMultipathState(3)
+	require.NoError(t, state.recordSentPacket(1, 9, monotime.Now()))
 	pathID := uint64(1)
 	ack := &wire.AckFrame{
 		PathID:    &pathID,
@@ -219,6 +220,19 @@ func TestMultipathStateHandlesPathAckPerPath(t *testing.T) {
 	ack.AckRanges[0].Largest = 20
 	require.NoError(t, state.handlePathAck(ack))
 	require.Equal(t, protocol.PacketNumber(9), state.paths[1].packetNumberSpace.largestAcknowledged)
+}
+
+func TestMultipathStateRejectsPathAckForUnsentPacket(t *testing.T) {
+	state := newMultipathState(3)
+	require.NoError(t, state.recordSentPacket(1, 3, monotime.Now()))
+	pathID := uint64(1)
+	err := state.handlePathAck(&wire.AckFrame{
+		PathID:    &pathID,
+		AckRanges: []wire.AckRange{{Smallest: 4, Largest: 4}},
+	})
+	var transportErr *qerr.TransportError
+	require.ErrorAs(t, err, &transportErr)
+	require.Equal(t, qerr.ProtocolViolation, transportErr.ErrorCode)
 }
 
 func TestMultipathStateAcknowledgesPacketRanges(t *testing.T) {
