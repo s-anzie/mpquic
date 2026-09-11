@@ -97,7 +97,14 @@ func (h *ReceivedPacketHandler) DropPackets(encLevel protocol.EncryptionLevel) {
 }
 
 func (h *ReceivedPacketHandler) GetAlarmTimeout() monotime.Time {
-	return h.appDataPackets.GetAlarmTimeout()
+	earliest := h.appDataPackets.GetAlarmTimeout()
+	for _, tracker := range h.multipathPackets {
+		alarm := tracker.GetAlarmTimeout()
+		if !alarm.IsZero() && (earliest.IsZero() || alarm.Before(earliest)) {
+			earliest = alarm
+		}
+	}
+	return earliest
 }
 
 func (h *ReceivedPacketHandler) GetAckFrame(encLevel protocol.EncryptionLevel, now monotime.Time, onlyIfQueued bool) *wire.AckFrame {
