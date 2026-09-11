@@ -130,6 +130,23 @@ func (m *multipathState) observeAcknowledgedPacketNumber(pathID uint64, pn proto
 	return p.packetNumberSpace.observeAcknowledged(pn)
 }
 
+func (m *multipathState) handlePathAck(f *wire.AckFrame) error {
+	if f.PathID == nil || *f.PathID == 0 {
+		return fmt.Errorf("PATH_ACK must identify a non-initial path")
+	}
+	p, err := m.path(*f.PathID)
+	if err != nil {
+		return err
+	}
+	// Packets and ACKs can arrive after PATH_ABANDON. The path state is kept
+	// long enough to ignore those delayed frames without affecting the active
+	// paths.
+	if p.abandoned {
+		return nil
+	}
+	return p.packetNumberSpace.observeAcknowledged(f.LargestAcked())
+}
+
 func (m *multipathState) setPeerInitialMaxPathID(maxPathID uint64) {
 	m.peerInitialMaxPathID = maxPathID
 	m.peerMaxPathID = maxPathID

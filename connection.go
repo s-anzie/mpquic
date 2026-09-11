@@ -1844,12 +1844,6 @@ func (c *Conn) handleFrames(
 			if skipHandling {
 				continue
 			}
-			if ackFrame.PathID != nil && *ackFrame.PathID != 0 {
-				return false, false, nil, &qerr.TransportError{
-					ErrorCode:    qerr.ProtocolViolation,
-					ErrorMessage: "PATH_ACK for a non-initial path is not supported yet",
-				}
-			}
 			wire.LogFrame(c.logger, ackFrame, false)
 			handleErr = c.handleAckFrame(ackFrame, encLevel, rcvTime)
 		} else if frameType.IsDatagramFrameType() {
@@ -2160,6 +2154,9 @@ func (c *Conn) handleHandshakeDoneFrame(rcvTime monotime.Time) error {
 }
 
 func (c *Conn) handleAckFrame(frame *wire.AckFrame, encLevel protocol.EncryptionLevel, rcvTime monotime.Time) error {
+	if frame.PathID != nil && *frame.PathID != 0 {
+		return c.multipath.handlePathAck(frame)
+	}
 	acked1RTTPacket, err := c.sentPacketHandler.ReceivedAck(frame, encLevel, c.lastPacketReceivedTime)
 	if err != nil {
 		return err
