@@ -136,7 +136,10 @@ func TestMarshalAndUnmarshalTransportParameters(t *testing.T) {
 
 func TestInitialMaxPathIDTransportParameter(t *testing.T) {
 	for _, maxPathID := range []uint64{0, 1, protocol.MaxPathID} {
-		params := &TransportParameters{InitialMaxPathID: &maxPathID}
+		params := &TransportParameters{
+			ActiveConnectionIDLimit: protocol.DefaultActiveConnectionIDLimit,
+			InitialMaxPathID:        &maxPathID,
+		}
 		data := params.Marshal(protocol.PerspectiveClient)
 
 		parsed := &TransportParameters{}
