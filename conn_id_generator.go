@@ -265,6 +265,28 @@ func (m *connIDGenerator) retirePathConnectionID(id pathID, sequenceNumber uint6
 	return nil
 }
 
+// replenishPathConnectionIDs issues enough path Connection IDs to answer a
+// PATH_CIDs_BLOCKED frame without allowing an unbounded peer-controlled loop.
+func (m *connIDGenerator) replenishPathConnectionIDs(id pathID, nextSequenceNumber uint64) error {
+	if m.abandonedPaths[id] {
+		return nil
+	}
+	current := m.nextPathConnectionIDSeq[id]
+	if nextSequenceNumber >= current && nextSequenceNumber-current > protocol.MaxIssuedConnectionIDs {
+		return &qerr.TransportError{
+			ErrorCode:    qerr.ProtocolViolation,
+			ErrorMessage: fmt.Sprintf("PATH_CIDs_BLOCKED requests an excessive sequence number %d for path %d", nextSequenceNumber, id),
+		}
+	}
+	for current <= nextSequenceNumber {
+		if _, err := m.issuePathConnectionID(id); err != nil {
+			return err
+		}
+		current = m.nextPathConnectionIDSeq[id]
+	}
+	return nil
+}
+
 func (m *connIDGenerator) SetHandshakeComplete(connIDExpiry monotime.Time) {
 	if m.initialClientDestConnID != nil {
 		m.queueConnIDForRetiring(*m.initialClientDestConnID, connIDExpiry)

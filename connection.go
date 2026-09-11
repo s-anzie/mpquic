@@ -2053,6 +2053,9 @@ func (c *Conn) handleFrame(
 		}
 	case *wire.PathCIDsBlockedFrame:
 		err = c.multipath.handlePathCIDsBlocked(frame)
+		if err == nil && c.multipathEnabled {
+			err = c.connIDGenerator.replenishPathConnectionIDs(pathID(frame.PathID), frame.NextSequenceNumber)
+		}
 	default:
 		err = fmt.Errorf("unexpected frame type: %s", reflect.ValueOf(&frame).Elem().Type().Name())
 	}
