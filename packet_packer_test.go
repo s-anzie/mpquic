@@ -1095,3 +1095,32 @@ func TestPackPathProbePacketUsesPathPacketNumberSpace(t *testing.T) {
 	require.Equal(t, protocol.PacketNumber(0x12), p.PacketNumber)
 	require.Equal(t, uint64(2), p.PathID)
 }
+
+func TestPackApplicationPacketForPathUsesPathPacketNumberSpace(t *testing.T) {
+	mockCtrl := gomock.NewController(t)
+	tp := newTestPacketPacker(t, mockCtrl, protocol.PerspectiveClient)
+	tp.packer.setPathPacketNumberSource(func(pathID uint64) (protocol.PacketNumber, protocol.PacketNumberLen, error) {
+		require.Equal(t, uint64(2), pathID)
+		return 0x22, protocol.PacketNumberLen2, nil
+	})
+	tp.framer.EXPECT().HasData().Return(false)
+	tp.ackFramer.EXPECT().GetAckFrame(protocol.Encryption1RTT, gomock.Any(), true).Return(nil)
+	tp.sealingManager.EXPECT().Get1RTTSealer().Return(newMockShortHeaderSealer(mockCtrl), nil)
+
+	pathAck := &wire.AckFrame{
+		PathID:    func() *uint64 { id := uint64(2); return &id }(),
+		AckRanges: []wire.AckRange{{Smallest: 1, Largest: 1}},
+	}
+	p, _, err := tp.packer.PackApplicationPacketForPath(
+		2,
+		protocol.ParseConnectionID([]byte{1, 2, 3, 4}),
+		pathAck,
+		protocol.MaxByteCount,
+		monotime.Now(),
+		protocol.Version1,
+	)
+	require.NoError(t, err)
+	require.Equal(t, protocol.PacketNumber(0x22), p.PacketNumber)
+	require.Equal(t, uint64(2), p.PathID)
+	require.Contains(t, p.Frames, ackhandler.Frame{Frame: pathAck})
+}

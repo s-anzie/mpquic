@@ -39,6 +39,10 @@ type pathAwarePacker interface {
 	PackPathProbePacketForPath(pathID uint64, connID protocol.ConnectionID, frames []ackhandler.Frame, v protocol.Version) (shortHeaderPacket, *packetBuffer, error)
 }
 
+type pathAwareApplicationPacker interface {
+	PackApplicationPacketForPath(pathID uint64, connID protocol.ConnectionID, pathAck *wire.AckFrame, maxPacketSize protocol.ByteCount, now monotime.Time, v protocol.Version) (shortHeaderPacket, *packetBuffer, error)
+}
+
 type cryptoStreamHandler interface {
 	StartHandshake(context.Context) error
 	ChangeConnectionID(protocol.ConnectionID)
