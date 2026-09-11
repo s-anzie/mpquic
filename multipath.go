@@ -380,6 +380,9 @@ func (m *multipathState) canSendOnPath(pathID uint64, now monotime.Time) bool {
 func (m *multipathState) nextPathProbeLossTime(lossDelay time.Duration) monotime.Time {
 	var earliest monotime.Time
 	for _, p := range m.paths {
+		if p.abandoned {
+			continue
+		}
 		pathLossDelay := p.lossDelay
 		if pathLossDelay <= 0 {
 			pathLossDelay = lossDelay

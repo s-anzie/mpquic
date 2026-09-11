@@ -295,6 +295,14 @@ func TestMultipathStateReportsLostPathsInIDOrder(t *testing.T) {
 	require.Equal(t, []uint64{1, 2}, state.detectLostPathProbes(now, time.Second))
 }
 
+func TestMultipathStateDoesNotKeepLossTimerForAbandonedPath(t *testing.T) {
+	state := newMultipathState(3)
+	now := monotime.Now()
+	require.NoError(t, state.recordSentPacket(1, 1, now.Add(-time.Second)))
+	require.NoError(t, state.markPathAbandoned(1))
+	require.True(t, state.nextPathProbeLossTime(time.Second).IsZero())
+}
+
 func TestMultipathStateFeedsRTTIntoPathCongestionController(t *testing.T) {
 	state := newMultipathState(3)
 	var connStats utils.ConnectionStats
