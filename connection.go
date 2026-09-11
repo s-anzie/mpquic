@@ -185,6 +185,7 @@ type Conn struct {
 
 	notifyReceivedPacket chan struct{}
 	sendingScheduled     chan struct{}
+	multipathActions     chan func()
 	receivedPacketMx     sync.Mutex
 	receivedPackets      ringbuffer.RingBuffer[receivedPacket]
 
@@ -573,6 +574,7 @@ func (c *Conn) preSetup() {
 	c.notifyReceivedPacket = make(chan struct{}, 1)
 	c.closeChan = make(chan struct{}, 1)
 	c.sendingScheduled = make(chan struct{}, 1)
+	c.multipathActions = make(chan func(), 8)
 	c.handshakeCompleteChan = make(chan struct{})
 
 	now := monotime.Now()
@@ -635,6 +637,15 @@ runLoop:
 			break runLoop
 		default:
 		}
+		for {
+			select {
+			case action := <-c.multipathActions:
+				action()
+			default:
+				goto multipathActionsDrained
+			}
+		}
+	multipathActionsDrained:
 
 		// no need to set a timer if we can send packets immediately
 		if c.pacingDeadline != deadlineSendImmediately {
@@ -3539,11 +3550,18 @@ func (c *Conn) getPathManager() *pathManagerOutgoing {
 		if !c.multipathEnabled {
 			return
 		}
-		c.multipath.markPathAbandoned(uint64(id))
-		c.receivedPacketHandler.AbandonPath(uint64(id))
-		c.connIDGenerator.AbandonPath(id)
-		c.connIDManager.AbandonPath(id)
-		c.queueControlFrame(&wire.PathAbandonFrame{PathID: uint64(id)})
+		action := func() {
+			c.multipath.markPathAbandoned(uint64(id))
+			c.receivedPacketHandler.AbandonPath(uint64(id))
+			c.connIDGenerator.AbandonPath(id)
+			c.connIDManager.AbandonPath(id)
+			c.queueControlFrame(&wire.PathAbandonFrame{PathID: uint64(id)})
+		}
+		select {
+		case c.multipathActions <- action:
+			c.scheduleSending()
+		case <-c.ctx.Done():
+		}
 	})
 	new.SetPathStatus(func(id pathID, backup bool) {
 		if !c.multipathEnabled {
