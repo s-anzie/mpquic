@@ -391,6 +391,26 @@ func TestConnIDManagerMultipath(t *testing.T) {
 	}, frameQueue)
 }
 
+func TestConnIDManagerRoutesInitialPathCIDsToTheInitialQueue(t *testing.T) {
+	h := newConnIDManager(
+		protocol.ParseConnectionID([]byte{1, 2, 3, 4}),
+		func(protocol.StatelessResetToken) {},
+		func(protocol.StatelessResetToken) {},
+		func(wire.Frame) {},
+	)
+	h.SetMultipath(true)
+	pathCID := protocol.ParseConnectionID([]byte{4, 3, 2, 1})
+	require.NoError(t, h.AddPath(&wire.PathNewConnectionIDFrame{
+		PathID:              0,
+		SequenceNumber:      1,
+		ConnectionID:        pathCID,
+		StatelessResetToken: protocol.StatelessResetToken{1},
+	}))
+
+	h.updateConnectionID()
+	require.Equal(t, pathCID, h.Get())
+}
+
 func TestConnIDManagerAbandonPath(t *testing.T) {
 	var frameQueue []wire.Frame
 	m := newConnIDManager(
