@@ -2006,6 +2006,7 @@ func (c *Conn) handleFrame(
 		var echo bool
 		echo, err = c.multipath.handlePathAbandon(frame)
 		if err == nil {
+			c.connIDGenerator.AbandonPath(pathID(frame.PathID))
 			c.connIDManager.AbandonPath(pathID(frame.PathID))
 		}
 		if echo && err == nil {
@@ -3262,6 +3263,7 @@ func (c *Conn) getPathManager() *pathManagerOutgoing {
 			return
 		}
 		c.multipath.markPathAbandoned(uint64(id))
+		c.connIDGenerator.AbandonPath(id)
 		c.connIDManager.AbandonPath(id)
 		c.queueControlFrame(&wire.PathAbandonFrame{PathID: uint64(id)})
 	})

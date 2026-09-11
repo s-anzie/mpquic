@@ -52,6 +52,7 @@ type connIDGenerator struct {
 	pathConnectionIDs       map[pathID]map[uint64]protocol.ConnectionID
 	pathConnectionIDToPath  map[protocol.ConnectionID]pathID
 	nextPathConnectionIDSeq map[pathID]uint64
+	abandonedPaths          map[pathID]bool
 	connIDsToRetire         []connIDToRetire       // sorted by t
 	initialClientDestConnID *protocol.ConnectionID // nil for the client
 
@@ -75,6 +76,7 @@ func newConnIDGenerator(
 		pathConnectionIDs:       make(map[pathID]map[uint64]protocol.ConnectionID),
 		pathConnectionIDToPath:  make(map[protocol.ConnectionID]pathID),
 		nextPathConnectionIDSeq: make(map[pathID]uint64),
+		abandonedPaths:          make(map[pathID]bool),
 		statelessResetter:       statelessResetter,
 		connRunners:             map[connRunner]connRunnerCallbacks{runner: callbacks},
 		queueControlFrame:       queueControlFrame,
@@ -194,11 +196,23 @@ func (m *connIDGenerator) issuePathConnectionID(id pathID) (wire.PathNewConnecti
 }
 
 func (m *connIDGenerator) ensurePathConnectionID(id pathID) error {
+	if m.abandonedPaths[id] {
+		return nil
+	}
 	if len(m.pathConnectionIDs[id]) > 0 {
 		return nil
 	}
 	_, err := m.issuePathConnectionID(id)
 	return err
+}
+
+// AbandonPath prevents future Connection ID replenishment for a path while
+// retaining already issued IDs for packets that may still be reordered.
+func (m *connIDGenerator) AbandonPath(id pathID) {
+	if id == 0 {
+		return
+	}
+	m.abandonedPaths[id] = true
 }
 
 // PathIDForConnectionID returns the path associated with a locally issued
@@ -232,6 +246,10 @@ func (m *connIDGenerator) retirePathConnectionID(id pathID, sequenceNumber uint6
 	delete(connections, sequenceNumber)
 	delete(m.pathConnectionIDToPath, connID)
 	m.connRunners.RemoveConnectionID(connID)
+	if !m.abandonedPaths[id] {
+		_, err := m.issuePathConnectionID(id)
+		return err
+	}
 	return nil
 }
 
