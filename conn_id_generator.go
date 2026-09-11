@@ -268,6 +268,19 @@ func (m *connIDGenerator) retirePathConnectionID(id pathID, sequenceNumber uint6
 // replenishPathConnectionIDs issues enough path Connection IDs to answer a
 // PATH_CIDs_BLOCKED frame without allowing an unbounded peer-controlled loop.
 func (m *connIDGenerator) replenishPathConnectionIDs(id pathID, nextSequenceNumber uint64) error {
+	if id == 0 {
+		if m.abandonedPaths[0] {
+			return nil
+		}
+		nextExpected := m.highestSeq + 1
+		if nextSequenceNumber > nextExpected {
+			return &qerr.TransportError{
+				ErrorCode:    qerr.ProtocolViolation,
+				ErrorMessage: fmt.Sprintf("PATH_CIDs_BLOCKED expects sequence number %d for the initial path, next expected is %d", nextSequenceNumber, nextExpected),
+			}
+		}
+		return m.issueNewConnID()
+	}
 	if m.abandonedPaths[id] {
 		return nil
 	}

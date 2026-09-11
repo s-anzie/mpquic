@@ -668,6 +668,11 @@ func (m *multipathState) handlePathCIDsBlocked(f *wire.PathCIDsBlockedFrame) err
 	if p.abandoned {
 		return nil
 	}
+	if f.PathID == 0 {
+		// The initial path uses the regular connection ID sequence space. Its
+		// next locally issued sequence number is tracked by connIDGenerator.
+		return nil
+	}
 	if f.NextSequenceNumber > p.nextConnectionIDSequence {
 		return &qerr.TransportError{
 			ErrorCode:    qerr.ProtocolViolation,
