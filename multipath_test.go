@@ -355,6 +355,22 @@ func TestMultipathStateAcknowledgesAndDetectsLostApplicationFrames(t *testing.T)
 	require.Equal(t, 1, handler.lost)
 }
 
+func TestMultipathStateReportsApplicationLossWithoutProbeLoss(t *testing.T) {
+	state := newMultipathState(3)
+	now := monotime.Now()
+	require.NoError(t, state.recordSentApplicationPacket(
+		1,
+		4,
+		now.Add(-time.Second),
+		[]ackhandler.Frame{{Frame: &wire.PingFrame{}}},
+		nil,
+	))
+
+	lostPaths, lostPackets := state.detectLostPathPackets(now, time.Second)
+	require.Empty(t, lostPaths)
+	require.True(t, lostPackets)
+}
+
 func TestMultipathStateUsesIndependentPathCongestionControllers(t *testing.T) {
 	state := newMultipathState(3)
 	var connStats utils.ConnectionStats
