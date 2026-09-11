@@ -31,6 +31,10 @@ type unpacker interface {
 	UnpackShortHeader(rcvTime monotime.Time, data []byte) (protocol.PacketNumber, protocol.PacketNumberLen, protocol.KeyPhaseBit, []byte, error)
 }
 
+type pathAwareUnpacker interface {
+	UnpackShortHeaderForPath(pathID uint64, rcvTime monotime.Time, data []byte) (protocol.PacketNumber, protocol.PacketNumberLen, protocol.KeyPhaseBit, []byte, error)
+}
+
 type cryptoStreamHandler interface {
 	StartHandshake(context.Context) error
 	ChangeConnectionID(protocol.ConnectionID)
@@ -1206,7 +1210,19 @@ func (c *Conn) handleShortHeaderPacket(
 		}
 		return false, nil
 	}
-	pn, pnLen, keyPhase, data, err := c.unpacker.UnpackShortHeader(p.rcvTime, p.data)
+	pathID := uint64(0)
+	if c.multipathEnabled {
+		pathID, _ = c.multipath.pathIDForConnectionID(destConnID)
+	}
+	var pn protocol.PacketNumber
+	var pnLen protocol.PacketNumberLen
+	var keyPhase protocol.KeyPhaseBit
+	var data []byte
+	if pathUnpacker, ok := c.unpacker.(pathAwareUnpacker); ok {
+		pn, pnLen, keyPhase, data, err = pathUnpacker.UnpackShortHeaderForPath(pathID, p.rcvTime, p.data)
+	} else {
+		pn, pnLen, keyPhase, data, err = c.unpacker.UnpackShortHeader(p.rcvTime, p.data)
+	}
 	if err != nil {
 		// Stateless reset packets (see RFC 9000, section 10.3):
 		// * fill the entire UDP datagram (i.e. they cannot be part of a coalesced packet)

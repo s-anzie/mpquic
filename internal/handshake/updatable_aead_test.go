@@ -221,6 +221,24 @@ func TestUpdatableAEADMultipathNonce(t *testing.T) {
 	require.Error(t, client.SetPathID(protocol.MaxPathID+1))
 }
 
+func TestUpdatableAEADDecodesPacketNumbersPerPath(t *testing.T) {
+	client, server, _ := setupEndpoints(t, utils.NewRTTStats())
+	client.SetMultipath(true)
+	server.SetMultipath(true)
+	require.NoError(t, client.SetPathID(1))
+	require.NoError(t, server.SetPathID(1))
+
+	ciphertext := server.Seal(nil, []byte("path one"), 100, []byte("header"))
+	_, err := client.Open(nil, ciphertext, monotime.Now(), 100, protocol.KeyPhaseZero, []byte("header"))
+	require.NoError(t, err)
+	require.Equal(t, protocol.PacketNumber(100), client.DecodePacketNumber(100, protocol.PacketNumberLen1))
+
+	require.NoError(t, client.SetPathID(2))
+	// A new path starts with its own packet number space instead of using the
+	// largest packet number received on path 1.
+	require.Equal(t, protocol.PacketNumber(0), client.DecodePacketNumber(0, protocol.PacketNumberLen1))
+}
+
 func TestUpdatableAEADPacketNumbers(t *testing.T) {
 	client, server, _ := setupEndpoints(t, utils.NewRTTStats())
 	msg := []byte("Lorem ipsum")

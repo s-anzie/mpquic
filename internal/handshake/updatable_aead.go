@@ -75,8 +75,9 @@ type updatableAEAD struct {
 
 	// multipath selects the Multipath QUIC path-and-packet-number nonce
 	// construction. pathID is the path used by subsequent 1-RTT packets.
-	multipath bool
-	pathID    uint64
+	multipath           bool
+	pathID              uint64
+	highestRcvdPNByPath map[uint64]protocol.PacketNumber
 }
 
 var (
@@ -181,7 +182,11 @@ func (a *updatableAEAD) setAEADParameters(aead cipher.AEAD, suite cipherSuite) {
 }
 
 func (a *updatableAEAD) DecodePacketNumber(wirePN protocol.PacketNumber, wirePNLen protocol.PacketNumberLen) protocol.PacketNumber {
-	return protocol.DecodePacketNumber(wirePNLen, a.highestRcvdPN, wirePN)
+	largest := a.highestRcvdPN
+	if a.multipath {
+		largest = a.highestRcvdPNByPath[a.pathID]
+	}
+	return protocol.DecodePacketNumber(wirePNLen, largest, wirePN)
 }
 
 // SetMultipath enables or disables the Multipath QUIC nonce construction.
@@ -189,6 +194,9 @@ func (a *updatableAEAD) DecodePacketNumber(wirePN protocol.PacketNumber, wirePNL
 // separate AEAD instances and keeps the regular QUIC nonce format.
 func (a *updatableAEAD) SetMultipath(enabled bool) {
 	a.multipath = enabled
+	if enabled && a.highestRcvdPNByPath == nil {
+		a.highestRcvdPNByPath = make(map[uint64]protocol.PacketNumber)
+	}
 }
 
 // SetPathID selects the path ID used for subsequent 1-RTT packets.
@@ -225,6 +233,9 @@ func (a *updatableAEAD) Open(dst, src []byte, rcvTime monotime.Time, pn protocol
 	}
 	if err == nil {
 		a.highestRcvdPN = max(a.highestRcvdPN, pn)
+		if a.multipath {
+			a.highestRcvdPNByPath[a.pathID] = max(a.highestRcvdPNByPath[a.pathID], pn)
+		}
 	}
 	return dec, err
 }
