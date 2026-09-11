@@ -494,6 +494,12 @@ func (m *multipathState) handleMaxPathID(f *wire.MaxPathIDFrame) error {
 }
 
 func (m *multipathState) handlePathAbandon(f *wire.PathAbandonFrame) (bool, error) {
+	if f.PathID == 0 {
+		return false, &qerr.TransportError{
+			ErrorCode:    qerr.ProtocolViolation,
+			ErrorMessage: "cannot abandon the initial Multipath path",
+		}
+	}
 	p, err := m.path(f.PathID)
 	if err != nil {
 		return false, err
@@ -506,6 +512,12 @@ func (m *multipathState) handlePathAbandon(f *wire.PathAbandonFrame) (bool, erro
 }
 
 func (m *multipathState) markPathAbandoned(pathID uint64) error {
+	if pathID == 0 {
+		return &qerr.TransportError{
+			ErrorCode:    qerr.ProtocolViolation,
+			ErrorMessage: "cannot abandon the initial Multipath path",
+		}
+	}
 	p, err := m.path(pathID)
 	if err != nil {
 		return err
