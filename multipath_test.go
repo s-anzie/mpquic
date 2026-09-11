@@ -183,6 +183,14 @@ func TestMultipathStateKeepsImplicitInitialPathUsable(t *testing.T) {
 	require.True(t, state.hasUsablePathExcept(1))
 }
 
+func TestMultipathStateAcceptsInitialPathCIDsBlocked(t *testing.T) {
+	state := newMultipathState(3)
+	require.NoError(t, state.handlePathCIDsBlocked(&wire.PathCIDsBlockedFrame{
+		PathID:             0,
+		NextSequenceNumber: 42,
+	}))
+}
+
 func TestMultipathStateUsesAnIndependentPacketNumberSpacePerPath(t *testing.T) {
 	state := newMultipathState(3)
 
