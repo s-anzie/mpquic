@@ -248,7 +248,7 @@ func (pm *pathManagerOutgoing) NewPath(t *Transport, initialRTT time.Duration, e
 	}
 }
 
-func (pm *pathManagerOutgoing) NextPathToProbe() (_ protocol.ConnectionID, _ ackhandler.Frame, _ *Transport, hasPath bool) {
+func (pm *pathManagerOutgoing) NextPathToProbe() (_ pathID, _ protocol.ConnectionID, _ ackhandler.Frame, _ *Transport, hasPath bool) {
 	pm.mx.Lock()
 	defer pm.mx.Unlock()
 
@@ -265,12 +265,12 @@ func (pm *pathManagerOutgoing) NextPathToProbe() (_ protocol.ConnectionID, _ ack
 		pm.pathsToProbe = pm.pathsToProbe[1:]
 	}
 	if id == invalidPathID {
-		return protocol.ConnectionID{}, ackhandler.Frame{}, nil, false
+		return invalidPathID, protocol.ConnectionID{}, ackhandler.Frame{}, nil, false
 	}
 
 	connID, ok := pm.getConnID(id)
 	if !ok {
-		return protocol.ConnectionID{}, ackhandler.Frame{}, nil, false
+		return invalidPathID, protocol.ConnectionID{}, ackhandler.Frame{}, nil, false
 	}
 
 	var b [8]byte
@@ -287,7 +287,7 @@ func (pm *pathManagerOutgoing) NextPathToProbe() (_ protocol.ConnectionID, _ ack
 		Frame:   &wire.PathChallengeFrame{Data: b},
 		Handler: (*pathManagerOutgoingAckHandler)(pm),
 	}
-	return connID, frame, p.tr, true
+	return id, connID, frame, p.tr, true
 }
 
 func (pm *pathManagerOutgoing) HandlePathResponseFrame(f *wire.PathResponseFrame) {

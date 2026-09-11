@@ -35,6 +35,10 @@ type pathAwareUnpacker interface {
 	UnpackShortHeaderForPath(pathID uint64, rcvTime monotime.Time, data []byte) (protocol.PacketNumber, protocol.PacketNumberLen, protocol.KeyPhaseBit, []byte, error)
 }
 
+type pathAwarePacker interface {
+	PackPathProbePacketForPath(pathID uint64, connID protocol.ConnectionID, frames []ackhandler.Frame, v protocol.Version) (shortHeaderPacket, *packetBuffer, error)
+}
+
 type cryptoStreamHandler interface {
 	StartHandshake(context.Context) error
 	ChangeConnectionID(protocol.ConnectionID)
@@ -2569,9 +2573,9 @@ func (c *Conn) triggerSending(now monotime.Time) error {
 func (c *Conn) sendPackets(now monotime.Time) error {
 	if c.perspective == protocol.PerspectiveClient && c.handshakeConfirmed {
 		if pm := c.pathManagerOutgoing.Load(); pm != nil {
-			connID, frame, tr, ok := pm.NextPathToProbe()
+			pathID, connID, frame, tr, ok := pm.NextPathToProbe()
 			if ok {
-				probe, buf, err := c.packer.PackPathProbePacket(connID, []ackhandler.Frame{frame}, c.version)
+				probe, buf, err := c.packPathProbePacket(uint64(pathID), connID, []ackhandler.Frame{frame}, c.version)
 				if err != nil {
 					return err
 				}
@@ -2635,6 +2639,13 @@ func (c *Conn) sendPackets(now monotime.Time) error {
 		return c.sendPacketsWithGSO(now)
 	}
 	return c.sendPacketsWithoutGSO(now)
+}
+
+func (c *Conn) packPathProbePacket(pathID uint64, connID protocol.ConnectionID, frames []ackhandler.Frame, v protocol.Version) (shortHeaderPacket, *packetBuffer, error) {
+	if pathPacker, ok := c.packer.(pathAwarePacker); ok {
+		return pathPacker.PackPathProbePacketForPath(pathID, connID, frames, v)
+	}
+	return c.packer.PackPathProbePacket(connID, frames, v)
 }
 
 func (c *Conn) sendPacketsWithoutGSO(now monotime.Time) error {

@@ -27,7 +27,7 @@ func TestPathManagerOutgoingPathProbing(t *testing.T) {
 			func() {},
 		)
 
-		_, _, _, ok := pm.NextPathToProbe()
+		_, _, _, _, ok := pm.NextPathToProbe()
 		require.False(t, ok)
 
 		tr1 := &Transport{}
@@ -42,7 +42,7 @@ func TestPathManagerOutgoingPathProbing(t *testing.T) {
 		synctest.Wait()
 
 		require.False(t, enabled)
-		connID, f, tr, ok := pm.NextPathToProbe()
+		_, connID, f, tr, ok := pm.NextPathToProbe()
 		require.True(t, ok)
 		require.Equal(t, tr1, tr)
 		require.Equal(t, protocol.ParseConnectionID([]byte{1, 2, 3, 4, 5, 6, 7, 8}), connID)
@@ -50,7 +50,7 @@ func TestPathManagerOutgoingPathProbing(t *testing.T) {
 		pc := f.Frame.(*wire.PathChallengeFrame)
 		require.True(t, enabled)
 
-		_, _, _, ok = pm.NextPathToProbe()
+		_, _, _, _, ok = pm.NextPathToProbe()
 		require.False(t, ok)
 
 		select {
@@ -122,7 +122,7 @@ func TestPathManagerOutgoingRetransmissions(t *testing.T) {
 			func() { scheduledSending <- struct{}{} },
 		)
 
-		_, _, _, ok := pm.NextPathToProbe()
+		_, _, _, _, ok := pm.NextPathToProbe()
 		require.False(t, ok)
 
 		tr1 := &Transport{}
@@ -139,7 +139,7 @@ func TestPathManagerOutgoingRetransmissions(t *testing.T) {
 				case <-done:
 					return
 				}
-				_, f, _, ok := pm.NextPathToProbe()
+				_, _, f, _, ok := pm.NextPathToProbe()
 				if !ok {
 					// should never happen
 					pathChallengeChan <- [8]byte{}
@@ -272,7 +272,7 @@ func TestPathManagerOutgoingAbandonPath(t *testing.T) {
 		// closing the path multiple times is ok
 		require.NoError(t, p1.Close())
 		require.NoError(t, p1.Close())
-		_, _, _, ok := pm.NextPathToProbe()
+		_, _, _, _, ok := pm.NextPathToProbe()
 		require.False(t, ok)
 
 		synctest.Wait()
@@ -291,14 +291,14 @@ func TestPathManagerOutgoingAbandonPath(t *testing.T) {
 		// wait for the path to be queued for probing
 		synctest.Wait()
 
-		connID, f, _, ok := pm.NextPathToProbe()
+		_, connID, f, _, ok := pm.NextPathToProbe()
 		require.True(t, ok)
 		require.Equal(t, protocol.ParseConnectionID([]byte{1, 2, 3, 4, 5, 6, 7, 8}), connID)
 
 		require.NoError(t, p2.Close())
 		require.Equal(t, []pathID{p1.id, p2.id}, retiredPaths)
 		pm.HandlePathResponseFrame(&wire.PathResponseFrame{Data: f.Frame.(*wire.PathChallengeFrame).Data})
-		_, _, _, ok = pm.NextPathToProbe()
+		_, _, _, _, ok = pm.NextPathToProbe()
 		require.False(t, ok)
 		// it's not possible to switch to an abandoned path
 		require.ErrorIs(t, p2.Switch(), ErrPathClosed)
@@ -333,7 +333,7 @@ func TestPathManagerOutgoingAbandonValidatedPath(t *testing.T) {
 		go func() { errChan <- p.Probe(context.Background()) }()
 		synctest.Wait()
 
-		_, f, _, ok := pm.NextPathToProbe()
+		_, _, f, _, ok := pm.NextPathToProbe()
 		require.True(t, ok)
 
 		// Validate the path before abandoning it. This is the ordering an

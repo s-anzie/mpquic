@@ -236,7 +236,7 @@ func (p *packetPacker) packConnectionClose(
 			sealer, err = p.cryptoSetup.Get0RTTSealer()
 		case protocol.Encryption1RTT:
 			var s handshake.ShortHeaderSealer
-			s, err = p.cryptoSetup.Get1RTTSealer()
+			s, err = p.get1RTTSealer(0)
 			if err == nil {
 				keyPhase = s.KeyPhase()
 			}
@@ -388,7 +388,7 @@ func (p *packetPacker) PackCoalescedPacket(onlyAck bool, maxSize protocol.ByteCo
 	var kp protocol.KeyPhaseBit
 	if (onlyAck && size == 0) || (!onlyAck && size < maxSize-protocol.MinCoalescedPacketSize) {
 		var err error
-		oneRTTSealer, err = p.cryptoSetup.Get1RTTSealer()
+		oneRTTSealer, err = p.get1RTTSealer(0)
 		if err != nil && err != handshake.ErrKeysDropped && err != handshake.ErrKeysNotYetAvailable {
 			return nil, err
 		}
@@ -477,7 +477,7 @@ func (p *packetPacker) appendPacket(
 	now monotime.Time,
 	v protocol.Version,
 ) (shortHeaderPacket, error) {
-	sealer, err := p.cryptoSetup.Get1RTTSealer()
+	sealer, err := p.get1RTTSealer(0)
 	if err != nil {
 		return shortHeaderPacket{}, err
 	}
@@ -766,7 +766,7 @@ func (p *packetPacker) PackPTOProbePacket(
 }
 
 func (p *packetPacker) packPTOProbePacket1RTT(maxPacketSize protocol.ByteCount, addPingIfEmpty bool, now monotime.Time, v protocol.Version) (*coalescedPacket, error) {
-	s, err := p.cryptoSetup.Get1RTTSealer()
+	s, err := p.get1RTTSealer(0)
 	if err != nil {
 		return nil, err
 	}
@@ -799,7 +799,7 @@ func (p *packetPacker) PackMTUProbePacket(ping ackhandler.Frame, size protocol.B
 		length: ping.Frame.Length(v),
 	}
 	buffer := getPacketBuffer()
-	s, err := p.cryptoSetup.Get1RTTSealer()
+	s, err := p.get1RTTSealer(0)
 	if err != nil {
 		return shortHeaderPacket{}, nil, err
 	}
@@ -812,9 +812,15 @@ func (p *packetPacker) PackMTUProbePacket(ping ackhandler.Frame, size protocol.B
 }
 
 func (p *packetPacker) PackPathProbePacket(connID protocol.ConnectionID, frames []ackhandler.Frame, v protocol.Version) (shortHeaderPacket, *packetBuffer, error) {
+	return p.PackPathProbePacketForPath(0, connID, frames, v)
+}
+
+// PackPathProbePacketForPath packs a PATH_CHALLENGE probe using the packet
+// number space and packet protection nonce for pathID.
+func (p *packetPacker) PackPathProbePacketForPath(pathID uint64, connID protocol.ConnectionID, frames []ackhandler.Frame, v protocol.Version) (shortHeaderPacket, *packetBuffer, error) {
 	pn, pnLen := p.pnManager.PeekPacketNumber(protocol.Encryption1RTT)
 	buf := getPacketBuffer()
-	s, err := p.cryptoSetup.Get1RTTSealer()
+	s, err := p.get1RTTSealer(pathID)
 	if err != nil {
 		return shortHeaderPacket{}, nil, err
 	}
@@ -833,6 +839,15 @@ func (p *packetPacker) PackPathProbePacket(connID protocol.ConnectionID, frames 
 	}
 	packet.IsPathProbePacket = true
 	return packet, buf, err
+}
+
+func (p *packetPacker) get1RTTSealer(pathID uint64) (handshake.ShortHeaderSealer, error) {
+	if multipath, ok := p.cryptoSetup.(handshake.MultipathCryptoSetup); ok {
+		if err := multipath.SetPathID(pathID); err != nil {
+			return nil, err
+		}
+	}
+	return p.cryptoSetup.Get1RTTSealer()
 }
 
 func (p *packetPacker) getLongHeader(encLevel protocol.EncryptionLevel, v protocol.Version) *wire.ExtendedHeader {
