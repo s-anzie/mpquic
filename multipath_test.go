@@ -303,6 +303,22 @@ func TestMultipathStateDoesNotKeepLossTimerForAbandonedPath(t *testing.T) {
 	require.True(t, state.nextPathProbeLossTime(time.Second).IsZero())
 }
 
+func TestMultipathStateReportsNextPathPacingTime(t *testing.T) {
+	state := newMultipathState(3)
+	var connStats utils.ConnectionStats
+	state.configurePathCongestion(protocol.ByteCount(protocol.InitialPacketSize), &connStats)
+	now := monotime.Now()
+	require.NoError(t, state.recordSentApplicationPacketWithSize(1, 1, now, 1200, true, nil, nil))
+
+	deadline, ok := state.nextPathPacingTime()
+	require.True(t, ok)
+	require.Zero(t, deadline)
+
+	require.NoError(t, state.markPathAbandoned(1))
+	_, ok = state.nextPathPacingTime()
+	require.False(t, ok)
+}
+
 func TestMultipathStateFeedsRTTIntoPathCongestionController(t *testing.T) {
 	state := newMultipathState(3)
 	var connStats utils.ConnectionStats

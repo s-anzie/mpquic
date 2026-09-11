@@ -377,6 +377,23 @@ func (m *multipathState) canSendOnPath(pathID uint64, now monotime.Time) bool {
 	return p.congestion.CanSend(p.bytesInFlight) && p.congestion.HasPacingBudget(now)
 }
 
+func (m *multipathState) nextPathPacingTime() (monotime.Time, bool) {
+	var earliest monotime.Time
+	for _, p := range m.paths {
+		if p.abandoned || p.congestion == nil {
+			continue
+		}
+		next := p.congestion.TimeUntilSend(p.bytesInFlight)
+		if next.IsZero() {
+			return 0, true
+		}
+		if earliest.IsZero() || next.Before(earliest) {
+			earliest = next
+		}
+	}
+	return earliest, !earliest.IsZero()
+}
+
 func (m *multipathState) nextPathProbeLossTime(lossDelay time.Duration) monotime.Time {
 	var earliest monotime.Time
 	for _, p := range m.paths {
