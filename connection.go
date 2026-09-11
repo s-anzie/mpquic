@@ -2216,6 +2216,9 @@ func (c *Conn) sendMultipathPathResponse(
 	remoteAddr net.Addr,
 	info packetInfo,
 ) error {
+	if c.multipath.isPathAbandoned(id) {
+		return nil
+	}
 	connID, ok := c.connIDManager.GetConnIDForPath(pathID(id))
 	if !ok {
 		c.queueControlFrame(&wire.PathCIDsBlockedFrame{
