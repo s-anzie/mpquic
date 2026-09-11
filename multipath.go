@@ -2,6 +2,7 @@ package quic
 
 import (
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/quic-go/quic-go/internal/ackhandler"
@@ -434,6 +435,7 @@ func (m *multipathState) detectLostPathProbes(now monotime.Time, lossDelay time.
 	for pathID := range lostPaths {
 		result = append(result, pathID)
 	}
+	slices.Sort(result)
 	return result
 }
 
