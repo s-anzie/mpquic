@@ -79,6 +79,36 @@ func TestMultipathStateAcceptsReorderedRetirePriorTo(t *testing.T) {
 	require.NotContains(t, state.paths[1].connectionIDs, uint64(1))
 }
 
+func TestMultipathStateBindsConnectionIDsToOnePath(t *testing.T) {
+	state := newMultipathState(3)
+	connID := protocol.ParseConnectionID([]byte{1, 2, 3, 4, 5, 6, 7, 8})
+
+	require.NoError(t, state.handlePathNewConnectionID(&wire.PathNewConnectionIDFrame{
+		PathID:         1,
+		SequenceNumber: 0,
+		ConnectionID:   connID,
+	}))
+	pathID, ok := state.pathIDForConnectionID(connID)
+	require.True(t, ok)
+	require.Equal(t, uint64(1), pathID)
+
+	err := state.handlePathNewConnectionID(&wire.PathNewConnectionIDFrame{
+		PathID:         2,
+		SequenceNumber: 0,
+		ConnectionID:   connID,
+	})
+	var transportErr *qerr.TransportError
+	require.ErrorAs(t, err, &transportErr)
+	require.Equal(t, qerr.ProtocolViolation, transportErr.ErrorCode)
+
+	require.NoError(t, state.handlePathRetireConnectionID(&wire.PathRetireConnectionIDFrame{
+		PathID:         1,
+		SequenceNumber: 0,
+	}))
+	_, ok = state.pathIDForConnectionID(connID)
+	require.False(t, ok)
+}
+
 func TestMultipathStatePathAbandonIsIdempotent(t *testing.T) {
 	state := newMultipathState(3)
 	f := &wire.PathAbandonFrame{PathID: 1, ErrorCode: 0}

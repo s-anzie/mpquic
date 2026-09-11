@@ -77,14 +77,21 @@ type multipathState struct {
 	peerInitialMaxPathID uint64
 	peerMaxPathID        uint64
 
-	paths map[uint64]*multipathPathState
+	paths                map[uint64]*multipathPathState
+	connectionIDToPathID map[protocol.ConnectionID]uint64
 }
 
 func newMultipathState(localMaxPathID uint64) *multipathState {
 	return &multipathState{
-		localMaxPathID: localMaxPathID,
-		paths:          make(map[uint64]*multipathPathState),
+		localMaxPathID:       localMaxPathID,
+		paths:                make(map[uint64]*multipathPathState),
+		connectionIDToPathID: make(map[protocol.ConnectionID]uint64),
 	}
+}
+
+func (m *multipathState) pathIDForConnectionID(connID protocol.ConnectionID) (uint64, bool) {
+	pathID, ok := m.connectionIDToPathID[connID]
+	return pathID, ok
 }
 
 func (m *multipathState) path(pathID uint64) (*multipathPathState, error) {
@@ -205,6 +212,12 @@ func (m *multipathState) handlePathNewConnectionID(f *wire.PathNewConnectionIDFr
 		}
 		return nil
 	}
+	if previousPathID, ok := m.connectionIDToPathID[f.ConnectionID]; ok && previousPathID != f.PathID {
+		return &qerr.TransportError{
+			ErrorCode:    qerr.ProtocolViolation,
+			ErrorMessage: fmt.Sprintf("connection ID %s is already assigned to path %d", f.ConnectionID, previousPathID),
+		}
+	}
 	if f.RetirePriorTo > p.highestRetiredConnectionID {
 		for sequenceNumber := range p.connectionIDs {
 			if sequenceNumber < f.RetirePriorTo {
@@ -219,6 +232,7 @@ func (m *multipathState) handlePathNewConnectionID(f *wire.PathNewConnectionIDFr
 		return nil
 	}
 	p.connectionIDs[f.SequenceNumber] = *f
+	m.connectionIDToPathID[f.ConnectionID] = f.PathID
 	if f.SequenceNumber >= p.nextConnectionIDSequence {
 		p.nextConnectionIDSequence = f.SequenceNumber + 1
 	}
@@ -239,7 +253,10 @@ func (m *multipathState) handlePathRetireConnectionID(f *wire.PathRetireConnecti
 	if f.SequenceNumber < p.highestRetiredConnectionID {
 		return nil
 	}
-	delete(p.connectionIDs, f.SequenceNumber)
+	if connectionID, ok := p.connectionIDs[f.SequenceNumber]; ok {
+		delete(m.connectionIDToPathID, connectionID.ConnectionID)
+		delete(p.connectionIDs, f.SequenceNumber)
+	}
 	p.retiredConnectionIDs[f.SequenceNumber] = true
 	return nil
 }
