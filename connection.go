@@ -213,6 +213,7 @@ type Conn struct {
 
 	// multipathEnabled is true after both endpoints have advertised support.
 	multipathEnabled bool
+	multipath        *multipathState
 
 	timer *time.Timer
 	// keepAlivePingSent stores whether a keep alive PING is in flight.
@@ -567,6 +568,7 @@ func (c *Conn) preSetup() {
 	c.receivedPacketHandler = *ackhandler.NewReceivedPacketHandler(c.logger)
 
 	c.datagramQueue = newDatagramQueue(c.scheduleSending, c.logger)
+	c.multipath = newMultipathState(c.config.MaxPathID)
 	c.connState.Version = c.version
 }
 
@@ -1842,6 +1844,12 @@ func (c *Conn) handleFrames(
 			if skipHandling {
 				continue
 			}
+			if ackFrame.PathID != nil && *ackFrame.PathID != 0 {
+				return false, false, nil, &qerr.TransportError{
+					ErrorCode:    qerr.ProtocolViolation,
+					ErrorMessage: "PATH_ACK for a non-initial path is not supported yet",
+				}
+			}
 			wire.LogFrame(c.logger, ackFrame, false)
 			handleErr = c.handleAckFrame(ackFrame, encLevel, rcvTime)
 		} else if frameType.IsDatagramFrameType() {
@@ -1950,6 +1958,31 @@ func (c *Conn) handleFrame(
 		err = c.connIDGenerator.Retire(frame.SequenceNumber, destConnID, rcvTime.Add(3*c.rttStats.PTO(false)))
 	case *wire.HandshakeDoneFrame:
 		err = c.handleHandshakeDoneFrame(rcvTime)
+	case *wire.PathAbandonFrame:
+		var echo bool
+		echo, err = c.multipath.handlePathAbandon(frame)
+		if echo && err == nil {
+			c.queueControlFrame(&wire.PathAbandonFrame{PathID: frame.PathID, ErrorCode: frame.ErrorCode})
+		}
+	case *wire.PathStatusAvailableFrame:
+		err = c.multipath.handlePathStatus(frame.PathID, frame.SequenceNumber, false)
+	case *wire.PathStatusBackupFrame:
+		err = c.multipath.handlePathStatus(frame.PathID, frame.SequenceNumber, true)
+	case *wire.PathNewConnectionIDFrame:
+		err = c.multipath.handlePathNewConnectionID(frame)
+	case *wire.PathRetireConnectionIDFrame:
+		err = c.multipath.handlePathRetireConnectionID(frame)
+	case *wire.MaxPathIDFrame:
+		err = c.multipath.handleMaxPathID(frame)
+	case *wire.PathsBlockedFrame:
+		if frame.MaximumPathID > c.config.MaxPathID {
+			err = &qerr.TransportError{
+				ErrorCode:    qerr.ProtocolViolation,
+				ErrorMessage: fmt.Sprintf("PATHS_BLOCKED references maximum path ID %d above local maximum %d", frame.MaximumPathID, c.config.MaxPathID),
+			}
+		}
+	case *wire.PathCIDsBlockedFrame:
+		err = c.multipath.handlePathCIDsBlocked(frame)
 	default:
 		err = fmt.Errorf("unexpected frame type: %s", reflect.ValueOf(&frame).Elem().Type().Name())
 	}
@@ -2440,6 +2473,9 @@ func (c *Conn) applyTransportParameters() {
 	c.frameParser.SetAckDelayExponent(params.AckDelayExponent)
 	c.multipathEnabled = c.config.EnableMultipath && params.InitialMaxPathID != nil
 	c.frameParser.SetMultipath(c.multipathEnabled)
+	if params.InitialMaxPathID != nil {
+		c.multipath.setPeerInitialMaxPathID(*params.InitialMaxPathID)
+	}
 	c.connFlowController.UpdateSendWindow(params.InitialMaxData)
 	c.rttStats.SetMaxAckDelay(params.MaxAckDelay)
 	c.connIDGenerator.SetMaxActiveConnIDs(params.ActiveConnectionIDLimit)
