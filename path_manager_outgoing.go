@@ -136,6 +136,7 @@ type pathManagerOutgoing struct {
 	abandonPath     func(pathID)
 	statusPath      func(pathID pathID, backup bool)
 	cidsBlocked     func(pathID)
+	canSendPath     func(pathID) bool
 	scheduleSending func()
 
 	mx                  sync.Mutex
@@ -166,6 +167,7 @@ func newPathManagerOutgoing(
 		abandonPath:         func(pathID) {},
 		statusPath:          func(pathID pathID, backup bool) {},
 		cidsBlocked:         func(pathID) {},
+		canSendPath:         func(pathID) bool { return true },
 		scheduleSending:     scheduleSending,
 		paths:               make(map[pathID]*pathOutgoing, 4),
 		maxPathID:           pathID(protocol.MaxPathID),
@@ -187,6 +189,12 @@ func (pm *pathManagerOutgoing) SetPathStatus(statusPath func(pathID pathID, back
 func (pm *pathManagerOutgoing) SetPathCIDsBlocked(cidsBlocked func(pathID)) {
 	pm.mx.Lock()
 	pm.cidsBlocked = cidsBlocked
+	pm.mx.Unlock()
+}
+
+func (pm *pathManagerOutgoing) SetPathApplicationAvailability(canSendPath func(pathID) bool) {
+	pm.mx.Lock()
+	pm.canSendPath = canSendPath
 	pm.mx.Unlock()
 }
 
@@ -383,6 +391,9 @@ func (pm *pathManagerOutgoing) NextPathForApplication() (_ pathID, _ protocol.Co
 		connID, ok := pm.getConnID(selected)
 		if !ok {
 			pm.cidsBlocked(selected)
+			continue
+		}
+		if !pm.canSendPath(selected) {
 			continue
 		}
 		pm.nextApplicationPath = selected + 1
