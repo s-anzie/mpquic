@@ -22,6 +22,7 @@ var (
 )
 
 var errPathDoesNotExist = errors.New("path does not exist")
+var errPeerPathLimitReached = errors.New("peer path limit reached")
 
 // Path is a network path.
 type Path struct {
@@ -125,6 +126,7 @@ type pathManagerOutgoing struct {
 	pathsToProbe   []pathID
 	paths          map[pathID]*pathOutgoing
 	nextPathID     pathID
+	maxPathID      pathID
 	pathToSwitchTo *pathOutgoing
 }
 
@@ -143,7 +145,22 @@ func newPathManagerOutgoing(
 		retireConnID:    retireConnID,
 		scheduleSending: scheduleSending,
 		paths:           make(map[pathID]*pathOutgoing, 4),
+		maxPathID:       pathID(protocol.MaxPathID),
 	}
+}
+
+// SetMaxPathID updates the maximum path ID that can be allocated to a new
+// path. Existing paths are not affected by a lower limit.
+func (pm *pathManagerOutgoing) SetMaxPathID(maxPathID uint64) {
+	pm.mx.Lock()
+	pm.maxPathID = pathID(min(maxPathID, protocol.MaxPathID))
+	pm.mx.Unlock()
+}
+
+func (pm *pathManagerOutgoing) canCreatePath() bool {
+	pm.mx.Lock()
+	defer pm.mx.Unlock()
+	return pm.nextPathID <= pm.maxPathID
 }
 
 func (pm *pathManagerOutgoing) addPath(p *Path, enablePath func()) *pathOutgoing {
@@ -215,6 +232,9 @@ func (pm *pathManagerOutgoing) switchToPath(id pathID) error {
 func (pm *pathManagerOutgoing) NewPath(t *Transport, initialRTT time.Duration, enablePath func()) *Path {
 	pm.mx.Lock()
 	defer pm.mx.Unlock()
+	if pm.nextPathID > pm.maxPathID {
+		return nil
+	}
 
 	id := pm.nextPathID
 	pm.nextPathID++

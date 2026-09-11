@@ -225,6 +225,25 @@ func TestPathManagerOutgoingRetransmissions(t *testing.T) {
 	})
 }
 
+func TestPathManagerOutgoingHonorsMaximumPathID(t *testing.T) {
+	pm := newPathManagerOutgoing(
+		func(pathID) (protocol.ConnectionID, bool) { return protocol.ParseConnectionID([]byte{1}), true },
+		func(pathID) {},
+		func() {},
+	)
+	pm.SetMaxPathID(1)
+
+	require.True(t, pm.canCreatePath())
+	require.NotNil(t, pm.NewPath(&Transport{}, time.Second, func() {}))
+	require.False(t, pm.canCreatePath())
+	require.Nil(t, pm.NewPath(&Transport{}, time.Second, func() {}))
+
+	pm.SetMaxPathID(2)
+	require.True(t, pm.canCreatePath())
+	require.NotNil(t, pm.NewPath(&Transport{}, time.Second, func() {}))
+	require.False(t, pm.canCreatePath())
+}
+
 func TestPathManagerOutgoingAbandonPath(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		connIDs := []protocol.ConnectionID{

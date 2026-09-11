@@ -1968,6 +1968,11 @@ func (c *Conn) handleFrame(
 		err = c.multipath.handlePathRetireConnectionID(frame)
 	case *wire.MaxPathIDFrame:
 		err = c.multipath.handleMaxPathID(frame)
+		if err == nil {
+			if pm := c.pathManagerOutgoing.Load(); pm != nil {
+				pm.SetMaxPathID(c.multipath.peerMaxPathID)
+			}
+		}
 	case *wire.PathsBlockedFrame:
 		if frame.MaximumPathID > c.config.MaxPathID {
 			err = &qerr.TransportError{
@@ -2478,6 +2483,9 @@ func (c *Conn) applyTransportParameters() {
 	}
 	if params.InitialMaxPathID != nil {
 		c.multipath.setPeerInitialMaxPathID(*params.InitialMaxPathID)
+		if pm := c.pathManagerOutgoing.Load(); pm != nil {
+			pm.SetMaxPathID(c.multipath.peerMaxPathID)
+		}
 	}
 	c.connFlowController.UpdateSendWindow(params.InitialMaxData)
 	c.rttStats.SetMaxAckDelay(params.MaxAckDelay)
@@ -3144,6 +3152,9 @@ func (c *Conn) getPathManager() *pathManagerOutgoing {
 		c.connIDManager.RetireConnIDForPath,
 		c.scheduleSending,
 	)
+	if c.multipathEnabled {
+		new.SetMaxPathID(c.multipath.peerMaxPathID)
+	}
 	if c.pathManagerOutgoing.CompareAndSwap(old, new) {
 		return new
 	}
@@ -3159,10 +3170,14 @@ func (c *Conn) AddPath(t *Transport) (*Path, error) {
 	if c.peerParams.DisableActiveMigration {
 		return nil, errors.New("server disabled connection migration")
 	}
+	pm := c.getPathManager()
+	if c.multipathEnabled && !pm.canCreatePath() {
+		return nil, errPeerPathLimitReached
+	}
 	if err := t.init(false); err != nil {
 		return nil, err
 	}
-	return c.getPathManager().NewPath(
+	path := pm.NewPath(
 		t,
 		200*time.Millisecond, // initial RTT estimate
 		func() {
@@ -3176,7 +3191,11 @@ func (c *Conn) AddPath(t *Transport) (*Path, error) {
 				},
 			)
 		},
-	), nil
+	)
+	if path == nil {
+		return nil, errPeerPathLimitReached
+	}
+	return path, nil
 }
 
 // HandshakeComplete blocks until the handshake completes (or fails).
