@@ -54,6 +54,15 @@ type ShortHeaderSealer interface {
 	KeyPhase() protocol.KeyPhaseBit
 }
 
+// MultipathCryptoSetup is implemented by crypto setups that can select the
+// path-aware nonce format and the path ID for 1-RTT packet protection.
+// It is optional so existing packet protection users can continue to operate
+// with the regular QUIC nonce format.
+type MultipathCryptoSetup interface {
+	SetMultipath(enabled bool)
+	SetPathID(pathID uint64) error
+}
+
 type ConnectionState struct {
 	tls.ConnectionState
 	Used0RTT bool

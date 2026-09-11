@@ -192,6 +192,35 @@ func TestUpdatableAEADEncryptDecryptMessage(t *testing.T) {
 	}
 }
 
+func TestUpdatableAEADMultipathNonce(t *testing.T) {
+	client, server, _ := setupEndpoints(t, utils.NewRTTStats())
+	client.SetMultipath(true)
+	server.SetMultipath(true)
+	require.NoError(t, client.SetPathID(7))
+	require.NoError(t, server.SetPathID(7))
+
+	plaintext := []byte("multipath packet")
+	associatedData := []byte("path-aware header")
+	ciphertext := server.Seal(nil, plaintext, 41, associatedData)
+	opened, err := client.Open(nil, ciphertext, monotime.Now(), 41, protocol.KeyPhaseZero, associatedData)
+	require.NoError(t, err)
+	require.Equal(t, plaintext, opened)
+
+	// The path ID is part of the nonce, so the same packet number cannot be
+	// opened with a different path's packet number space.
+	require.NoError(t, client.SetPathID(8))
+	_, err = client.Open(nil, ciphertext, monotime.Now(), 41, protocol.KeyPhaseZero, associatedData)
+	require.Equal(t, ErrDecryptionFailed, err)
+
+	require.NoError(t, server.SetPathID(8))
+	ciphertext = server.Seal(nil, plaintext, 0, associatedData)
+	opened, err = client.Open(nil, ciphertext, monotime.Now(), 0, protocol.KeyPhaseZero, associatedData)
+	require.NoError(t, err)
+	require.Equal(t, plaintext, opened)
+
+	require.Error(t, client.SetPathID(protocol.MaxPathID+1))
+}
+
 func TestUpdatableAEADPacketNumbers(t *testing.T) {
 	client, server, _ := setupEndpoints(t, utils.NewRTTStats())
 	msg := []byte("Lorem ipsum")

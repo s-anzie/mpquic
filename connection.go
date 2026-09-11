@@ -2473,6 +2473,9 @@ func (c *Conn) applyTransportParameters() {
 	c.frameParser.SetAckDelayExponent(params.AckDelayExponent)
 	c.multipathEnabled = c.config.EnableMultipath && params.InitialMaxPathID != nil
 	c.frameParser.SetMultipath(c.multipathEnabled)
+	if cs, ok := c.cryptoStreamHandler.(handshake.MultipathCryptoSetup); ok {
+		cs.SetMultipath(c.multipathEnabled)
+	}
 	if params.InitialMaxPathID != nil {
 		c.multipath.setPeerInitialMaxPathID(*params.InitialMaxPathID)
 	}

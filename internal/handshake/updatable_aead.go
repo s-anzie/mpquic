@@ -72,6 +72,11 @@ type updatableAEAD struct {
 
 	// use a single slice to avoid allocations
 	nonceBuf []byte
+
+	// multipath selects the Multipath QUIC path-and-packet-number nonce
+	// construction. pathID is the path used by subsequent 1-RTT packets.
+	multipath bool
+	pathID    uint64
 }
 
 var (
@@ -179,6 +184,37 @@ func (a *updatableAEAD) DecodePacketNumber(wirePN protocol.PacketNumber, wirePNL
 	return protocol.DecodePacketNumber(wirePNLen, a.highestRcvdPN, wirePN)
 }
 
+// SetMultipath enables or disables the Multipath QUIC nonce construction.
+// This only affects 1-RTT packets; long-header packet protection is handled by
+// separate AEAD instances and keeps the regular QUIC nonce format.
+func (a *updatableAEAD) SetMultipath(enabled bool) {
+	a.multipath = enabled
+}
+
+// SetPathID selects the path ID used for subsequent 1-RTT packets.
+func (a *updatableAEAD) SetPathID(pathID uint64) error {
+	if pathID > protocol.MaxPathID {
+		return fmt.Errorf("path ID %d exceeds the maximum %d", pathID, protocol.MaxPathID)
+	}
+	a.pathID = pathID
+	return nil
+}
+
+func (a *updatableAEAD) setNonce(pn protocol.PacketNumber) {
+	if !a.multipath {
+		// Keep the prefix zeroed when switching back to regular QUIC packet
+		// protection after using a path-aware nonce.
+		clear(a.nonceBuf[:len(a.nonceBuf)-8])
+		binary.BigEndian.PutUint64(a.nonceBuf[len(a.nonceBuf)-8:], uint64(pn))
+		return
+	}
+	nonce, err := protocol.PathAndPacketNumber(a.pathID, pn)
+	if err != nil {
+		panic(err)
+	}
+	copy(a.nonceBuf, nonce[:])
+}
+
 func (a *updatableAEAD) Open(dst, src []byte, rcvTime monotime.Time, pn protocol.PacketNumber, kp protocol.KeyPhaseBit, ad []byte) ([]byte, error) {
 	dec, err := a.open(dst, src, rcvTime, pn, kp, ad)
 	if err == ErrDecryptionFailed {
@@ -209,7 +245,7 @@ func (a *updatableAEAD) open(dst, src []byte, rcvTime monotime.Time, pn protocol
 			})
 		}
 	}
-	binary.BigEndian.PutUint64(a.nonceBuf[len(a.nonceBuf)-8:], uint64(pn))
+	a.setNonce(pn)
 	if kp != a.keyPhase.Bit() {
 		if a.keyPhase > 0 && a.firstRcvdWithCurrentKey == protocol.InvalidPacketNumber || pn < a.firstRcvdWithCurrentKey {
 			if a.prevRcvAEAD == nil {
@@ -281,7 +317,7 @@ func (a *updatableAEAD) Seal(dst, src []byte, pn protocol.PacketNumber, ad []byt
 		a.firstPacketNumber = pn
 	}
 	a.numSentWithCurrentKey++
-	binary.BigEndian.PutUint64(a.nonceBuf[len(a.nonceBuf)-8:], uint64(pn))
+	a.setNonce(pn)
 	// The AEAD we're using here will be the qtls.aeadAESGCM13.
 	// It uses the nonce provided here and XOR it with the IV.
 	return a.sendAEAD.Seal(dst, a.nonceBuf, src, ad)
