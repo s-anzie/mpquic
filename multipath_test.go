@@ -175,6 +175,14 @@ func TestMultipathStateAllowsInitialPathAbandon(t *testing.T) {
 	require.NoError(t, state.markPathAbandoned(0))
 }
 
+func TestMultipathStateKeepsImplicitInitialPathUsable(t *testing.T) {
+	state := newMultipathState(3)
+	echo, err := state.handlePathAbandon(&wire.PathAbandonFrame{PathID: 1})
+	require.NoError(t, err)
+	require.True(t, echo)
+	require.True(t, state.hasUsablePathExcept(1))
+}
+
 func TestMultipathStateUsesAnIndependentPacketNumberSpacePerPath(t *testing.T) {
 	state := newMultipathState(3)
 

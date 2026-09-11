@@ -532,6 +532,14 @@ func (m *multipathState) markPathAbandoned(pathID uint64) error {
 // The path state is retained after abandonment so delayed packets can still be
 // recognized, but abandoned paths must not keep the connection alive.
 func (m *multipathState) hasUsablePathExcept(pathID uint64) bool {
+	// Path 0 is established by the connection itself and its state is created
+	// lazily. Treat an absent path-0 entry as usable unless it is the path being
+	// abandoned.
+	if pathID != 0 {
+		if p, ok := m.paths[0]; !ok || !p.abandoned {
+			return true
+		}
+	}
 	for id, p := range m.paths {
 		if id != pathID && !p.abandoned {
 			return true
