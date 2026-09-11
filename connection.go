@@ -3267,6 +3267,17 @@ func (c *Conn) getPathManager() *pathManagerOutgoing {
 		c.connIDManager.AbandonPath(id)
 		c.queueControlFrame(&wire.PathAbandonFrame{PathID: uint64(id)})
 	})
+	new.SetPathStatus(func(id pathID, backup bool) {
+		if !c.multipathEnabled {
+			return
+		}
+		frame, err := c.multipath.nextPathStatusFrame(uint64(id), backup)
+		if err != nil {
+			c.logger.Debugf("cannot create path status for path %d: %s", id, err)
+			return
+		}
+		c.queueControlFrame(frame)
+	})
 	if c.multipathEnabled {
 		new.SetMaxPathID(c.multipath.peerMaxPathID)
 	}
