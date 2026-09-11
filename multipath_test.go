@@ -38,6 +38,22 @@ func TestMultipathStatePathStatusIsMonotonic(t *testing.T) {
 	require.False(t, path.statusBackup)
 }
 
+func TestMultipathStatePathStatusSequence(t *testing.T) {
+	state := newMultipathState(3)
+
+	frame, err := state.nextPathStatusFrame(1, false)
+	require.NoError(t, err)
+	require.Equal(t, &wire.PathStatusAvailableFrame{PathID: 1, SequenceNumber: 0}, frame)
+
+	frame, err = state.nextPathStatusFrame(1, true)
+	require.NoError(t, err)
+	require.Equal(t, &wire.PathStatusBackupFrame{PathID: 1, SequenceNumber: 1}, frame)
+
+	frame, err = state.nextPathStatusFrame(2, false)
+	require.NoError(t, err)
+	require.Equal(t, &wire.PathStatusAvailableFrame{PathID: 2, SequenceNumber: 0}, frame)
+}
+
 func TestMultipathStatePathConnectionIDSequences(t *testing.T) {
 	state := newMultipathState(3)
 	connID := protocol.ParseConnectionID([]byte{1, 2, 3, 4, 5, 6, 7, 8})

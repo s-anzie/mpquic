@@ -65,9 +65,10 @@ type multipathPathState struct {
 	packetNumberSpace multipathPacketNumberSpace
 	sentPackets       map[protocol.PacketNumber]multipathSentPacket
 
-	hasStatus      bool
-	statusSequence uint64
-	statusBackup   bool
+	hasStatus          bool
+	statusSequence     uint64
+	statusBackup       bool
+	nextStatusSequence uint64
 
 	nextConnectionIDSequence uint64
 	// highestRetiredConnectionID is the Retire Prior To threshold. Sequence
@@ -299,6 +300,27 @@ func (m *multipathState) handlePathStatus(pathID, sequenceNumber uint64, backup 
 	p.statusSequence = sequenceNumber
 	p.statusBackup = backup
 	return nil
+}
+
+// nextPathStatusFrame creates the next status update for a path. Status
+// sequence numbers are scoped to a path and increase for every update sent.
+func (m *multipathState) nextPathStatusFrame(pathID uint64, backup bool) (wire.Frame, error) {
+	p, err := m.path(pathID)
+	if err != nil {
+		return nil, err
+	}
+	sequenceNumber := p.nextStatusSequence
+	p.nextStatusSequence++
+	if backup {
+		return &wire.PathStatusBackupFrame{
+			PathID:         pathID,
+			SequenceNumber: sequenceNumber,
+		}, nil
+	}
+	return &wire.PathStatusAvailableFrame{
+		PathID:         pathID,
+		SequenceNumber: sequenceNumber,
+	}, nil
 }
 
 func (m *multipathState) handlePathNewConnectionID(f *wire.PathNewConnectionIDFrame) error {

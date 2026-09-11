@@ -120,6 +120,7 @@ type pathManagerOutgoing struct {
 	getConnID       func(pathID) (_ protocol.ConnectionID, ok bool)
 	retireConnID    func(pathID)
 	abandonPath     func(pathID)
+	statusPath      func(pathID pathID, backup bool)
 	scheduleSending func()
 
 	mx             sync.Mutex
@@ -145,6 +146,7 @@ func newPathManagerOutgoing(
 		getConnID:       getConnID,
 		retireConnID:    retireConnID,
 		abandonPath:     func(pathID) {},
+		statusPath:      func(pathID pathID, backup bool) {},
 		scheduleSending: scheduleSending,
 		paths:           make(map[pathID]*pathOutgoing, 4),
 		maxPathID:       pathID(protocol.MaxPathID),
@@ -154,6 +156,12 @@ func newPathManagerOutgoing(
 func (pm *pathManagerOutgoing) SetAbandonPath(abandonPath func(pathID)) {
 	pm.mx.Lock()
 	pm.abandonPath = abandonPath
+	pm.mx.Unlock()
+}
+
+func (pm *pathManagerOutgoing) SetPathStatus(statusPath func(pathID pathID, backup bool)) {
+	pm.mx.Lock()
+	pm.statusPath = statusPath
 	pm.mx.Unlock()
 }
 
@@ -314,7 +322,7 @@ func (pm *pathManagerOutgoing) HandlePathResponseFrame(f *wire.PathResponseFrame
 	pm.mx.Lock()
 	defer pm.mx.Unlock()
 
-	for _, p := range pm.paths {
+	for id, p := range pm.paths {
 		if slices.Contains(p.pathChallenges, f.Data) {
 			// path validated
 			if !p.isValidated {
@@ -322,6 +330,7 @@ func (pm *pathManagerOutgoing) HandlePathResponseFrame(f *wire.PathResponseFrame
 				p.isValidated = true
 				p.pathChallenges = nil
 				close(p.validated)
+				pm.statusPath(id, false)
 			}
 			break
 		}

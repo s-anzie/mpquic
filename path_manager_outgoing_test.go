@@ -108,6 +108,38 @@ func TestPathManagerOutgoingPathProbing(t *testing.T) {
 	})
 }
 
+func TestPathManagerOutgoingAdvertisesValidatedPath(t *testing.T) {
+	connID := protocol.ParseConnectionID([]byte{1, 2, 3, 4})
+	var statuses []struct {
+		id     pathID
+		backup bool
+	}
+	pm := newPathManagerOutgoing(
+		func(pathID) (protocol.ConnectionID, bool) { return connID, true },
+		func(pathID) {},
+		func() {},
+	)
+	pm.SetPathStatus(func(id pathID, backup bool) {
+		statuses = append(statuses, struct {
+			id     pathID
+			backup bool
+		}{id: id, backup: backup})
+	})
+
+	p := pm.NewPath(&Transport{}, time.Second, func() {})
+	pm.addPath(p, p.enablePath)
+	pm.enqueueProbe(p)
+	_, _, frame, _, ok := pm.NextPathToProbe()
+	require.True(t, ok)
+	challenge := frame.Frame.(*wire.PathChallengeFrame)
+	pm.HandlePathResponseFrame(&wire.PathResponseFrame{Data: challenge.Data})
+	pm.HandlePathResponseFrame(&wire.PathResponseFrame{Data: challenge.Data})
+	require.Equal(t, []struct {
+		id     pathID
+		backup bool
+	}{{id: p.id, backup: false}}, statuses)
+}
+
 func TestPathManagerOutgoingRequeuesLostProbe(t *testing.T) {
 	connID := protocol.ParseConnectionID([]byte{1, 2, 3, 4})
 	pm := newPathManagerOutgoing(
