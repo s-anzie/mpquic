@@ -59,6 +59,20 @@ func TestRetransmissionQueueCryptoFrames(t *testing.T) {
 	})
 }
 
+func TestRetransmissionQueueOnlyRetransmitsLatestPathStatus(t *testing.T) {
+	q := newRetransmissionQueue()
+	oldStatus := &wire.PathStatusAvailableFrame{PathID: 2, SequenceNumber: 3}
+	newStatus := &wire.PathStatusBackupFrame{PathID: 2, SequenceNumber: 4}
+	q.TrackPathStatus(oldStatus)
+	q.TrackPathStatus(newStatus)
+
+	ackHandler := q.AckHandler(protocol.Encryption1RTT)
+	ackHandler.OnLost(oldStatus)
+	require.False(t, q.HasData(protocol.Encryption1RTT))
+	ackHandler.OnLost(newStatus)
+	require.Equal(t, newStatus, q.GetFrame(protocol.Encryption1RTT, protocol.MaxByteCount, protocol.Version1))
+}
+
 func testRetransmissionQueueCryptoFrames(t *testing.T, encLevel protocol.EncryptionLevel) {
 	q := newRetransmissionQueue()
 
