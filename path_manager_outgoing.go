@@ -371,21 +371,24 @@ func (pm *pathManagerOutgoing) NextPathForApplication() (_ pathID, _ protocol.Co
 	}
 	slices.Sort(validated)
 
-	selected := validated[0]
-	for _, id := range validated {
+	start := 0
+	for i, id := range validated {
 		if id >= pm.nextApplicationPath {
-			selected = id
+			start = i
 			break
 		}
 	}
-	pm.nextApplicationPath = selected + 1
-
-	connID, ok := pm.getConnID(selected)
-	if !ok {
-		pm.cidsBlocked(selected)
-		return invalidPathID, protocol.ConnectionID{}, nil, false
+	for i := range validated {
+		selected := validated[(start+i)%len(validated)]
+		connID, ok := pm.getConnID(selected)
+		if !ok {
+			pm.cidsBlocked(selected)
+			continue
+		}
+		pm.nextApplicationPath = selected + 1
+		return selected, connID, pm.paths[selected].tr, true
 	}
-	return selected, connID, pm.paths[selected].tr, true
+	return invalidPathID, protocol.ConnectionID{}, nil, false
 }
 
 func (pm *pathManagerOutgoing) HandlePathResponseFrame(f *wire.PathResponseFrame) {
