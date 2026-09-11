@@ -66,6 +66,11 @@ func TestConnIDGeneratorIssuePathConnectionID(t *testing.T) {
 	pathID, ok = g.PathIDForConnectionID(replacement.ConnectionID)
 	require.True(t, ok)
 	require.Equal(t, uint64(2), pathID)
+	g.observePathDestination(2, replacement.ConnectionID)
+	err = g.retirePathConnectionID(2, 1, protocol.ParseConnectionID([]byte{9, 9, 9, 9}))
+	var transportErr *qerr.TransportError
+	require.ErrorAs(t, err, &transportErr)
+	require.Equal(t, qerr.ProtocolViolation, transportErr.ErrorCode)
 }
 
 func TestConnIDGeneratorDoesNotReplenishAbandonedPath(t *testing.T) {

@@ -1230,12 +1230,14 @@ func (c *Conn) handleShortHeaderPacket(
 		}
 		return false, nil
 	}
-	pathID := uint64(0)
+	packetPathID := uint64(0)
 	if c.multipathEnabled {
-		var known bool
-		pathID, known = c.connIDGenerator.PathIDForConnectionID(destConnID)
-		if !known {
-			pathID, _ = c.multipath.pathIDForConnectionID(destConnID)
+		localPathID, known := c.connIDGenerator.PathIDForConnectionID(destConnID)
+		if known {
+			packetPathID = localPathID
+			c.connIDGenerator.observePathDestination(pathID(localPathID), destConnID)
+		} else {
+			packetPathID, _ = c.multipath.pathIDForConnectionID(destConnID)
 		}
 	}
 	var pn protocol.PacketNumber
@@ -1243,7 +1245,7 @@ func (c *Conn) handleShortHeaderPacket(
 	var keyPhase protocol.KeyPhaseBit
 	var data []byte
 	if pathUnpacker, ok := c.unpacker.(pathAwareUnpacker); ok {
-		pn, pnLen, keyPhase, data, err = pathUnpacker.UnpackShortHeaderForPath(pathID, p.rcvTime, p.data)
+		pn, pnLen, keyPhase, data, err = pathUnpacker.UnpackShortHeaderForPath(packetPathID, p.rcvTime, p.data)
 	} else {
 		pn, pnLen, keyPhase, data, err = c.unpacker.UnpackShortHeader(p.rcvTime, p.data)
 	}
@@ -1270,8 +1272,8 @@ func (c *Conn) handleShortHeaderPacket(
 	}
 
 	isDuplicate := c.receivedPacketHandler.IsPotentiallyDuplicate(pn, protocol.Encryption1RTT)
-	if pathID != 0 {
-		isDuplicate = c.receivedPacketHandler.IsPotentiallyDuplicateForPath(pathID, pn)
+	if packetPathID != 0 {
+		isDuplicate = c.receivedPacketHandler.IsPotentiallyDuplicateForPath(packetPathID, pn)
 	}
 	if isDuplicate {
 		c.logger.Debugf("Dropping (potentially) duplicate packet.")
@@ -1309,7 +1311,7 @@ func (c *Conn) handleShortHeaderPacket(
 			})
 		}
 	}
-	isNonProbing, pathChallenge, err := c.handleUnpackedShortHeaderPacket(pathID, destConnID, pn, data, p.ecn, p.rcvTime, log)
+	isNonProbing, pathChallenge, err := c.handleUnpackedShortHeaderPacket(packetPathID, destConnID, pn, data, p.ecn, p.rcvTime, log)
 	if err != nil {
 		return false, err
 	}
