@@ -148,6 +148,10 @@ const MaxMaxAckDelay = (1<<14 - 1) * time.Millisecond
 // MaxConnIDLen is the maximum length of the connection ID
 const MaxConnIDLen = 20
 
+// MaxPathID is the largest path ID allowed by the Multipath QUIC extension.
+// The limit is imposed by the path-and-packet-number AEAD nonce construction.
+const MaxPathID uint64 = 1<<32 - 1
+
 // InvalidPacketLimitAES is the maximum number of packets that we can fail to decrypt when using
 // AEAD_AES_128_GCM or AEAD_AES_265_GCM.
 const InvalidPacketLimitAES = 1 << 52

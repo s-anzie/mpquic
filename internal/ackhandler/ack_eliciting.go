@@ -6,7 +6,7 @@ import "github.com/quic-go/quic-go/internal/wire"
 func IsFrameTypeAckEliciting(t wire.FrameType) bool {
 	//nolint:exhaustive // The default case catches the rest.
 	switch t {
-	case wire.FrameTypeAck, wire.FrameTypeAckECN:
+	case wire.FrameTypeAck, wire.FrameTypeAckECN, wire.FrameTypePathAck, wire.FrameTypePathAckECN:
 		return false
 	case wire.FrameTypeConnectionClose, wire.FrameTypeApplicationClose:
 		return false

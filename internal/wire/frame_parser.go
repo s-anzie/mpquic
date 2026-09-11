@@ -18,6 +18,7 @@ type FrameParser struct {
 	supportsDatagrams     bool
 	supportsResetStreamAt bool
 	supportsAckFrequency  bool
+	supportsMultipath     bool
 
 	// To avoid allocating when parsing, keep a single ACK frame struct.
 	// It is used over and over again.
@@ -55,7 +56,8 @@ func (p *FrameParser) ParseType(b []byte, encLevel protocol.EncryptionLevel) (Fr
 		valid := ft.isValidRFC9000() ||
 			(p.supportsDatagrams && ft.IsDatagramFrameType()) ||
 			(p.supportsResetStreamAt && ft == FrameTypeResetStreamAt) ||
-			(p.supportsAckFrequency && (ft == FrameTypeAckFrequency || ft == FrameTypeImmediateAck))
+			(p.supportsAckFrequency && (ft == FrameTypeAckFrequency || ft == FrameTypeImmediateAck)) ||
+			(p.supportsMultipath && ft.isMultipathFrameType())
 		if !valid {
 			return 0, parsed, &qerr.TransportError{
 				ErrorCode:    qerr.FrameEncodingError,
@@ -165,6 +167,20 @@ func (p *FrameParser) ParseLessCommonFrame(frameType FrameType, data []byte, v p
 		frame, l, err = parseAckFrequencyFrame(data, v)
 	case FrameTypeImmediateAck:
 		frame = &ImmediateAckFrame{}
+	case FrameTypePathAbandon:
+		frame, l, err = parsePathAbandonFrame(data, v)
+	case FrameTypePathStatusAvailable, FrameTypePathStatusBackup:
+		frame, l, err = parsePathStatusFrame(data, frameType, v)
+	case FrameTypePathNewConnectionID:
+		frame, l, err = parsePathNewConnectionIDFrame(data, v)
+	case FrameTypePathRetireConnectionID:
+		frame, l, err = parsePathRetireConnectionIDFrame(data, v)
+	case FrameTypeMaxPathID:
+		frame, l, err = parseMaxPathIDFrame(data, v)
+	case FrameTypePathsBlocked:
+		frame, l, err = parsePathsBlockedFrame(data, v)
+	case FrameTypePathCIDsBlocked:
+		frame, l, err = parsePathCIDsBlockedFrame(data, v)
 	default:
 		err = errUnknownFrameType
 	}
@@ -182,6 +198,12 @@ func (p *FrameParser) ParseLessCommonFrame(frameType FrameType, data []byte, v p
 // This value is used to scale the ACK Delay field in the ACK frame.
 func (p *FrameParser) SetAckDelayExponent(exp uint8) {
 	p.ackDelayExponent = exp
+}
+
+// SetMultipath enables parsing frames defined by the Multipath QUIC extension.
+// It is enabled only after the extension has been negotiated by both endpoints.
+func (p *FrameParser) SetMultipath(enabled bool) {
+	p.supportsMultipath = enabled
 }
 
 func replaceUnexpectedEOF(e error) error {
