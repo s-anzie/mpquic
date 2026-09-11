@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/quic-go/quic-go/internal/ackhandler"
 	"github.com/quic-go/quic-go/internal/monotime"
 	"github.com/quic-go/quic-go/internal/protocol"
 	"github.com/quic-go/quic-go/internal/qerr"
@@ -19,7 +20,10 @@ type multipathPacketNumberSpace struct {
 }
 
 type multipathSentPacket struct {
-	sentAt monotime.Time
+	sentAt       monotime.Time
+	isProbe      bool
+	frames       []ackhandler.Frame
+	streamFrames []ackhandler.StreamFrame
 }
 
 func newMultipathPacketNumberSpace() multipathPacketNumberSpace {
@@ -178,6 +182,17 @@ func (m *multipathState) handlePathAck(f *wire.AckFrame) error {
 	for packetNumber := range p.sentPackets {
 		for _, ackRange := range f.AckRanges {
 			if packetNumber >= ackRange.Smallest && packetNumber <= ackRange.Largest {
+				packet := p.sentPackets[packetNumber]
+				for _, frame := range packet.frames {
+					if frame.Handler != nil && frame.Frame != nil {
+						frame.Handler.OnAcked(frame.Frame)
+					}
+				}
+				for _, frame := range packet.streamFrames {
+					if frame.Handler != nil && frame.Frame != nil {
+						frame.Handler.OnAcked(frame.Frame)
+					}
+				}
 				delete(p.sentPackets, packetNumber)
 				break
 			}
@@ -199,7 +214,28 @@ func (m *multipathState) recordSentPacket(pathID uint64, packetNumber protocol.P
 	if packetNumber < 0 || packetNumber > protocol.MaxPathAndPacketNumber {
 		return fmt.Errorf("sent invalid path packet number %d", packetNumber)
 	}
-	p.sentPackets[packetNumber] = multipathSentPacket{sentAt: sentAt}
+	p.sentPackets[packetNumber] = multipathSentPacket{sentAt: sentAt, isProbe: true}
+	return nil
+}
+
+// recordSentApplicationPacket tracks a packet that carries application data
+// in a path-specific packet number space.
+func (m *multipathState) recordSentApplicationPacket(pathID uint64, packetNumber protocol.PacketNumber, sentAt monotime.Time, frames []ackhandler.Frame, streamFrames []ackhandler.StreamFrame) error {
+	if pathID == 0 {
+		return nil
+	}
+	p, err := m.path(pathID)
+	if err != nil {
+		return err
+	}
+	if packetNumber < 0 || packetNumber > protocol.MaxPathAndPacketNumber {
+		return fmt.Errorf("sent invalid path packet number %d", packetNumber)
+	}
+	p.sentPackets[packetNumber] = multipathSentPacket{
+		sentAt:       sentAt,
+		frames:       frames,
+		streamFrames: streamFrames,
+	}
 	return nil
 }
 
@@ -225,8 +261,20 @@ func (m *multipathState) detectLostPathProbes(now monotime.Time, lossDelay time.
 		}
 		for packetNumber, packet := range p.sentPackets {
 			if !packet.sentAt.After(lossTime) {
+				for _, frame := range packet.frames {
+					if frame.Handler != nil && frame.Frame != nil {
+						frame.Handler.OnLost(frame.Frame)
+					}
+				}
+				for _, frame := range packet.streamFrames {
+					if frame.Handler != nil && frame.Frame != nil {
+						frame.Handler.OnLost(frame.Frame)
+					}
+				}
 				delete(p.sentPackets, packetNumber)
-				lostPaths[pathID] = struct{}{}
+				if packet.isProbe {
+					lostPaths[pathID] = struct{}{}
+				}
 			}
 		}
 	}

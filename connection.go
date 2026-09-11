@@ -2937,6 +2937,13 @@ func (c *Conn) registerPackedShortHeaderPacket(p shortHeaderPacket, ecn protocol
 		)
 		return
 	}
+	if c.multipathEnabled && p.PathID != 0 {
+		if err := c.multipath.recordSentApplicationPacket(p.PathID, p.PacketNumber, now, p.Frames, p.StreamFrames); err != nil {
+			c.setCloseError(&closeError{err: err})
+			return
+		}
+		return
+	}
 	if c.firstAckElicitingPacketAfterIdleSentTime.IsZero() && (len(p.StreamFrames) > 0 || ackhandler.HasAckElicitingFrames(p.Frames)) {
 		c.firstAckElicitingPacketAfterIdleSentTime = now
 	}

@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/quic-go/quic-go/internal/ackhandler"
 	"github.com/quic-go/quic-go/internal/monotime"
 	"github.com/quic-go/quic-go/internal/protocol"
 	"github.com/quic-go/quic-go/internal/qerr"
@@ -238,6 +239,46 @@ func TestMultipathStateAcknowledgesPacketRanges(t *testing.T) {
 	require.False(t, state.hasOutstandingPacket(1, 5))
 	require.True(t, state.hasOutstandingPacket(1, 7))
 	require.False(t, state.hasOutstandingPacket(1, 9))
+}
+
+type multipathTestFrameHandler struct {
+	acked int
+	lost  int
+}
+
+func (h *multipathTestFrameHandler) OnAcked(wire.Frame) { h.acked++ }
+func (h *multipathTestFrameHandler) OnLost(wire.Frame)  { h.lost++ }
+
+func TestMultipathStateAcknowledgesAndDetectsLostApplicationFrames(t *testing.T) {
+	state := newMultipathState(3)
+	handler := &multipathTestFrameHandler{}
+	frame := &wire.PingFrame{}
+	now := monotime.Now()
+	require.NoError(t, state.recordSentApplicationPacket(
+		1,
+		4,
+		now,
+		[]ackhandler.Frame{{Frame: frame, Handler: handler}},
+		nil,
+	))
+
+	pathID := uint64(1)
+	require.NoError(t, state.handlePathAck(&wire.AckFrame{
+		PathID:    &pathID,
+		AckRanges: []wire.AckRange{{Smallest: 4, Largest: 4}},
+	}))
+	require.Equal(t, 1, handler.acked)
+	require.Zero(t, handler.lost)
+
+	require.NoError(t, state.recordSentApplicationPacket(
+		1,
+		5,
+		now.Add(-time.Second),
+		[]ackhandler.Frame{{Frame: frame, Handler: handler}},
+		nil,
+	))
+	require.Empty(t, state.detectLostPathProbes(now, time.Second))
+	require.Equal(t, 1, handler.lost)
 }
 
 func TestMultipathStateAllocatesIndependentPacketNumbers(t *testing.T) {
