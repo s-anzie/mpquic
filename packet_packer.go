@@ -129,6 +129,7 @@ type packetPacker struct {
 	token []byte
 
 	pnManager           packetNumberManager
+	pathPacketNumbers   func(uint64) (protocol.PacketNumber, protocol.PacketNumberLen, error)
 	framer              frameSource
 	acks                ackFrameSource
 	datagramQueue       *datagramQueue
@@ -136,6 +137,10 @@ type packetPacker struct {
 	rand                rand.Rand
 
 	numNonAckElicitingAcks int
+}
+
+func (p *packetPacker) setPathPacketNumberSource(source func(uint64) (protocol.PacketNumber, protocol.PacketNumberLen, error)) {
+	p.pathPacketNumbers = source
 }
 
 var _ packer = &packetPacker{}
@@ -819,7 +824,17 @@ func (p *packetPacker) PackPathProbePacket(connID protocol.ConnectionID, frames 
 // PackPathProbePacketForPath packs a PATH_CHALLENGE probe using the packet
 // number space and packet protection nonce for pathID.
 func (p *packetPacker) PackPathProbePacketForPath(pathID uint64, connID protocol.ConnectionID, frames []ackhandler.Frame, v protocol.Version) (shortHeaderPacket, *packetBuffer, error) {
-	pn, pnLen := p.pnManager.PeekPacketNumber(protocol.Encryption1RTT)
+	var pn protocol.PacketNumber
+	var pnLen protocol.PacketNumberLen
+	var err error
+	if pathID != 0 && p.pathPacketNumbers != nil {
+		pn, pnLen, err = p.pathPacketNumbers(pathID)
+		if err != nil {
+			return shortHeaderPacket{}, nil, err
+		}
+	} else {
+		pn, pnLen = p.pnManager.PeekPacketNumber(protocol.Encryption1RTT)
+	}
 	buf := getPacketBuffer()
 	s, err := p.get1RTTSealer(pathID)
 	if err != nil {
@@ -834,7 +849,12 @@ func (p *packetPacker) PackPathProbePacketForPath(pathID uint64, connID protocol
 		length: l,
 	}
 	padding := protocol.MinInitialPacketSize - p.shortHeaderPacketLength(connID, pnLen, payload) - protocol.ByteCount(s.Overhead())
-	packet, err := p.appendShortHeaderPacket(buf, connID, pn, pnLen, s.KeyPhase(), payload, padding, protocol.MinInitialPacketSize, s, false, v)
+	var packet shortHeaderPacket
+	if pathID != 0 && p.pathPacketNumbers != nil {
+		packet, err = p.appendShortHeaderPacketForPath(buf, connID, pn, pnLen, s.KeyPhase(), payload, padding, protocol.MinInitialPacketSize, s, false, pathID, v)
+	} else {
+		packet, err = p.appendShortHeaderPacket(buf, connID, pn, pnLen, s.KeyPhase(), payload, padding, protocol.MinInitialPacketSize, s, false, v)
+	}
 	if err != nil {
 		return shortHeaderPacket{}, nil, err
 	}
@@ -923,6 +943,22 @@ func (p *packetPacker) appendShortHeaderPacket(
 	isMTUProbePacket bool,
 	v protocol.Version,
 ) (shortHeaderPacket, error) {
+	return p.appendShortHeaderPacketForPath(buffer, connID, pn, pnLen, kp, pl, padding, maxPacketSize, sealer, isMTUProbePacket, 0, v)
+}
+
+func (p *packetPacker) appendShortHeaderPacketForPath(
+	buffer *packetBuffer,
+	connID protocol.ConnectionID,
+	pn protocol.PacketNumber,
+	pnLen protocol.PacketNumberLen,
+	kp protocol.KeyPhaseBit,
+	pl payload,
+	padding, maxPacketSize protocol.ByteCount,
+	sealer sealer,
+	isMTUProbePacket bool,
+	pathID uint64,
+	v protocol.Version,
+) (shortHeaderPacket, error) {
 	var paddingLen protocol.ByteCount
 	if pl.length < 4-protocol.ByteCount(pnLen) {
 		paddingLen = 4 - protocol.ByteCount(pnLen) - pl.length
@@ -949,8 +985,10 @@ func (p *packetPacker) appendShortHeaderPacket(
 	raw = p.encryptPacket(raw, sealer, pn, payloadOffset, protocol.ByteCount(pnLen))
 	buffer.Data = buffer.Data[:len(buffer.Data)+len(raw)]
 
-	if newPN := p.pnManager.PopPacketNumber(protocol.Encryption1RTT); newPN != pn {
-		return shortHeaderPacket{}, fmt.Errorf("packetPacker BUG: Peeked and Popped packet numbers do not match: expected %d, got %d", pn, newPN)
+	if pathID == 0 {
+		if newPN := p.pnManager.PopPacketNumber(protocol.Encryption1RTT); newPN != pn {
+			return shortHeaderPacket{}, fmt.Errorf("packetPacker BUG: Peeked and Popped packet numbers do not match: expected %d, got %d", pn, newPN)
+		}
 	}
 	return shortHeaderPacket{
 		PacketNumber:         pn,

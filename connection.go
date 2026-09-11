@@ -383,7 +383,8 @@ var newConnection = func(
 		s.version,
 	)
 	s.cryptoStreamHandler = cs
-	s.packer = newPacketPacker(srcConnID, s.connIDManager.Get, s.initialStream, s.handshakeStream, s.sentPacketHandler, s.retransmissionQueue, cs, s.framer, &s.receivedPacketHandler, s.datagramQueue, s.perspective)
+	p := newPacketPacker(srcConnID, s.connIDManager.Get, s.initialStream, s.handshakeStream, s.sentPacketHandler, s.retransmissionQueue, cs, s.framer, &s.receivedPacketHandler, s.datagramQueue, s.perspective)
+	s.packer = p
 	s.unpacker = newPacketUnpacker(cs, s.srcConnIDLen)
 	s.cryptoStreamManager = newCryptoStreamManager(s.initialStream, s.handshakeStream, s.oneRTTStream)
 	return &wrappedConn{Conn: s}
@@ -513,7 +514,8 @@ var newClientConnection = func(
 	s.cryptoStreamHandler = cs
 	s.cryptoStreamManager = newCryptoStreamManager(s.initialStream, s.handshakeStream, oneRTTStream)
 	s.unpacker = newPacketUnpacker(cs, s.srcConnIDLen)
-	s.packer = newPacketPacker(srcConnID, s.connIDManager.Get, s.initialStream, s.handshakeStream, s.sentPacketHandler, s.retransmissionQueue, cs, s.framer, &s.receivedPacketHandler, s.datagramQueue, s.perspective)
+	p := newPacketPacker(srcConnID, s.connIDManager.Get, s.initialStream, s.handshakeStream, s.sentPacketHandler, s.retransmissionQueue, cs, s.framer, &s.receivedPacketHandler, s.datagramQueue, s.perspective)
+	s.packer = p
 	if len(tlsConf.ServerName) > 0 {
 		s.tokenStoreKey = tlsConf.ServerName
 	} else {
@@ -700,6 +702,15 @@ runLoop:
 			if err := c.sentPacketHandler.OnLossDetectionTimeout(now); err != nil {
 				c.setCloseError(&closeError{err: err})
 				break runLoop
+			}
+		}
+		if c.multipathEnabled {
+			if timeout := c.multipath.nextPathProbeLossTime(time.Second); !timeout.IsZero() && !timeout.After(now) {
+				if pm := c.pathManagerOutgoing.Load(); pm != nil {
+					for _, id := range c.multipath.detectLostPathProbes(now, time.Second) {
+						pm.requeueProbe(pathID(id))
+					}
+				}
 			}
 		}
 
@@ -913,6 +924,11 @@ func (c *Conn) maybeResetTimer() {
 	}
 	if t := c.sentPacketHandler.GetLossDetectionTimeout(); !t.IsZero() && t.Before(deadline) {
 		deadline = t
+	}
+	if c.multipathEnabled {
+		if t := c.multipath.nextPathProbeLossTime(time.Second); !t.IsZero() && t.Before(deadline) {
+			deadline = t
+		}
 	}
 	if c.blocked == blockModeCongestionLimited {
 		c.timer.Reset(monotime.Until(deadline))
@@ -2526,6 +2542,13 @@ func (c *Conn) applyTransportParameters() {
 	c.multipathEnabled = c.config.EnableMultipath && params.InitialMaxPathID != nil
 	c.frameParser.SetMultipath(c.multipathEnabled)
 	c.connIDManager.SetMultipath(c.multipathEnabled)
+	if p, ok := c.packer.(*packetPacker); ok {
+		if c.multipathEnabled {
+			p.setPathPacketNumberSource(c.multipath.allocatePacketNumber)
+		} else {
+			p.setPathPacketNumberSource(nil)
+		}
+	}
 	if cs, ok := c.cryptoStreamHandler.(handshake.MultipathCryptoSetup); ok {
 		cs.SetMultipath(c.multipathEnabled)
 	}
@@ -2891,6 +2914,7 @@ func (c *Conn) registerPackedShortHeaderPacket(p shortHeaderPacket, ecn protocol
 				c.setCloseError(&closeError{err: err})
 				return
 			}
+			return
 		}
 		c.sentPacketHandler.SentPacket(
 			now,

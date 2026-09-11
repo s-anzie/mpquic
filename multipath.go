@@ -2,6 +2,7 @@ package quic
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/quic-go/quic-go/internal/monotime"
 	"github.com/quic-go/quic-go/internal/protocol"
@@ -128,6 +129,18 @@ func (m *multipathState) nextPacketNumber(pathID uint64) (protocol.PacketNumber,
 	return p.packetNumberSpace.popPacketNumber()
 }
 
+func (m *multipathState) allocatePacketNumber(pathID uint64) (protocol.PacketNumber, protocol.PacketNumberLen, error) {
+	p, err := m.path(pathID)
+	if err != nil {
+		return protocol.InvalidPacketNumber, 0, err
+	}
+	pn, err := p.packetNumberSpace.popPacketNumber()
+	if err != nil {
+		return protocol.InvalidPacketNumber, 0, err
+	}
+	return pn, protocol.PacketNumberLengthForHeader(pn, p.packetNumberSpace.largestAcknowledged), nil
+}
+
 func (m *multipathState) observeReceivedPacketNumber(pathID uint64, pn protocol.PacketNumber) error {
 	p, err := m.path(pathID)
 	if err != nil {
@@ -187,6 +200,40 @@ func (m *multipathState) recordSentPacket(pathID uint64, packetNumber protocol.P
 	}
 	p.sentPackets[packetNumber] = multipathSentPacket{sentAt: sentAt}
 	return nil
+}
+
+func (m *multipathState) nextPathProbeLossTime(lossDelay time.Duration) monotime.Time {
+	var earliest monotime.Time
+	for _, p := range m.paths {
+		for _, packet := range p.sentPackets {
+			lossTime := packet.sentAt.Add(lossDelay)
+			if earliest.IsZero() || lossTime.Before(earliest) {
+				earliest = lossTime
+			}
+		}
+	}
+	return earliest
+}
+
+func (m *multipathState) detectLostPathProbes(now monotime.Time, lossDelay time.Duration) []uint64 {
+	lossTime := now.Add(-lossDelay)
+	lostPaths := make(map[uint64]struct{})
+	for pathID, p := range m.paths {
+		if p.abandoned {
+			continue
+		}
+		for packetNumber, packet := range p.sentPackets {
+			if !packet.sentAt.After(lossTime) {
+				delete(p.sentPackets, packetNumber)
+				lostPaths[pathID] = struct{}{}
+			}
+		}
+	}
+	result := make([]uint64, 0, len(lostPaths))
+	for pathID := range lostPaths {
+		result = append(result, pathID)
+	}
+	return result
 }
 
 func (m *multipathState) hasOutstandingPacket(pathID uint64, packetNumber protocol.PacketNumber) bool {

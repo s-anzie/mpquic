@@ -1075,3 +1075,23 @@ func TestPackPathProbePacket(t *testing.T) {
 	require.True(t, p.IsPathProbePacket)
 	require.False(t, p.IsPathMTUProbePacket)
 }
+
+func TestPackPathProbePacketUsesPathPacketNumberSpace(t *testing.T) {
+	mockCtrl := gomock.NewController(t)
+	tp := newTestPacketPacker(t, mockCtrl, protocol.PerspectiveClient)
+	tp.packer.setPathPacketNumberSource(func(pathID uint64) (protocol.PacketNumber, protocol.PacketNumberLen, error) {
+		require.Equal(t, uint64(2), pathID)
+		return 0x12, protocol.PacketNumberLen2, nil
+	})
+	tp.sealingManager.EXPECT().Get1RTTSealer().Return(newMockShortHeaderSealer(mockCtrl), nil)
+
+	p, _, err := tp.packer.PackPathProbePacketForPath(
+		2,
+		protocol.ParseConnectionID([]byte{1, 2, 3, 4}),
+		[]ackhandler.Frame{{Frame: &wire.PathChallengeFrame{}}},
+		protocol.Version1,
+	)
+	require.NoError(t, err)
+	require.Equal(t, protocol.PacketNumber(0x12), p.PacketNumber)
+	require.Equal(t, uint64(2), p.PathID)
+}

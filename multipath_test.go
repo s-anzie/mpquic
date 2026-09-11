@@ -2,6 +2,7 @@ package quic
 
 import (
 	"testing"
+	"time"
 
 	"github.com/quic-go/quic-go/internal/monotime"
 	"github.com/quic-go/quic-go/internal/protocol"
@@ -197,4 +198,26 @@ func TestMultipathStateAcknowledgesPacketRanges(t *testing.T) {
 	require.False(t, state.hasOutstandingPacket(1, 5))
 	require.True(t, state.hasOutstandingPacket(1, 7))
 	require.False(t, state.hasOutstandingPacket(1, 9))
+}
+
+func TestMultipathStateAllocatesIndependentPacketNumbers(t *testing.T) {
+	state := newMultipathState(3)
+	pn, pnLen, err := state.allocatePacketNumber(1)
+	require.NoError(t, err)
+	require.Equal(t, protocol.PacketNumber(0), pn)
+	require.Equal(t, protocol.PacketNumberLen2, pnLen)
+	pn, _, err = state.allocatePacketNumber(2)
+	require.NoError(t, err)
+	require.Equal(t, protocol.PacketNumber(0), pn)
+}
+
+func TestMultipathStateDetectsLostPathProbes(t *testing.T) {
+	state := newMultipathState(3)
+	now := monotime.Now()
+	require.NoError(t, state.recordSentPacket(1, 0, now.Add(-time.Second)))
+	require.NoError(t, state.recordSentPacket(2, 0, now))
+	require.False(t, state.nextPathProbeLossTime(time.Second).IsZero())
+	require.Equal(t, []uint64{1}, state.detectLostPathProbes(now, time.Second))
+	require.False(t, state.hasOutstandingPacket(1, 0))
+	require.True(t, state.hasOutstandingPacket(2, 0))
 }
