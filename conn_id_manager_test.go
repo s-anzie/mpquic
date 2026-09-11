@@ -366,6 +366,8 @@ func TestConnIDManagerMultipath(t *testing.T) {
 	connID, ok := m.GetConnIDForPath(1)
 	require.True(t, ok)
 	require.Equal(t, pathOneCID, connID)
+	require.Equal(t, uint64(1), m.NextPathConnectionIDSequence(1))
+	require.Equal(t, uint64(0), m.NextPathConnectionIDSequence(3))
 	connID, ok = m.GetConnIDForPath(2)
 	require.True(t, ok)
 	require.Equal(t, pathTwoCID, connID)

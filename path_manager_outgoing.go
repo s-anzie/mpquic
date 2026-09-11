@@ -121,6 +121,7 @@ type pathManagerOutgoing struct {
 	retireConnID    func(pathID)
 	abandonPath     func(pathID)
 	statusPath      func(pathID pathID, backup bool)
+	cidsBlocked     func(pathID)
 	scheduleSending func()
 
 	mx             sync.Mutex
@@ -147,6 +148,7 @@ func newPathManagerOutgoing(
 		retireConnID:    retireConnID,
 		abandonPath:     func(pathID) {},
 		statusPath:      func(pathID pathID, backup bool) {},
+		cidsBlocked:     func(pathID) {},
 		scheduleSending: scheduleSending,
 		paths:           make(map[pathID]*pathOutgoing, 4),
 		maxPathID:       pathID(protocol.MaxPathID),
@@ -162,6 +164,12 @@ func (pm *pathManagerOutgoing) SetAbandonPath(abandonPath func(pathID)) {
 func (pm *pathManagerOutgoing) SetPathStatus(statusPath func(pathID pathID, backup bool)) {
 	pm.mx.Lock()
 	pm.statusPath = statusPath
+	pm.mx.Unlock()
+}
+
+func (pm *pathManagerOutgoing) SetPathCIDsBlocked(cidsBlocked func(pathID)) {
+	pm.mx.Lock()
+	pm.cidsBlocked = cidsBlocked
 	pm.mx.Unlock()
 }
 
@@ -298,6 +306,8 @@ func (pm *pathManagerOutgoing) NextPathToProbe() (_ pathID, _ protocol.Connectio
 
 	connID, ok := pm.getConnID(id)
 	if !ok {
+		pm.pathsToProbe = pm.pathsToProbe[1:]
+		pm.cidsBlocked(id)
 		return invalidPathID, protocol.ConnectionID{}, ackhandler.Frame{}, nil, false
 	}
 
