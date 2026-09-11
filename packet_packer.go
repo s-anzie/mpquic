@@ -488,7 +488,32 @@ func (p *packetPacker) PackApplicationPacketForPath(
 ) (shortHeaderPacket, *packetBuffer, error) {
 	if pathID == 0 {
 		buf := getPacketBuffer()
-		packet, err := p.AppendPacket(buf, maxPacketSize, now, v)
+		sealer, err := p.get1RTTSealer(0)
+		if err != nil {
+			buf.Release()
+			return shortHeaderPacket{}, nil, err
+		}
+		pn, pnLen := p.pnManager.PeekPacketNumber(protocol.Encryption1RTT)
+		hdrLen := wire.ShortHeaderLen(connID, pnLen)
+		pl := p.maybeGetShortHeaderPacket(sealer, hdrLen, maxPacketSize, false, now, v)
+		if pathAck != nil {
+			remaining := maxPacketSize - hdrLen - protocol.ByteCount(sealer.Overhead()) - pl.length
+			if remaining > 0 {
+				pathAck.Truncate(remaining, v)
+				if pathAck.Length(v) > 0 {
+					pl.frames = append(pl.frames, ackhandler.Frame{Frame: pathAck})
+					pl.length += pathAck.Length(v)
+				}
+			}
+		}
+		if pl.length == 0 {
+			buf.Release()
+			return shortHeaderPacket{}, nil, errNothingToPack
+		}
+		packet, err := p.appendShortHeaderPacket(buf, connID, pn, pnLen, sealer.KeyPhase(), pl, 0, maxPacketSize, sealer, false, v)
+		if err != nil {
+			buf.Release()
+		}
 		return packet, buf, err
 	}
 	if p.pathPacketNumbers == nil {

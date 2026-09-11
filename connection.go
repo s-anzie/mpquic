@@ -2892,11 +2892,41 @@ func (c *Conn) sendMultipathApplicationPacket(now monotime.Time) (bool, error) {
 // lets a server acknowledge a path before it has a local path scheduler.
 func (c *Conn) sendMultipathAckOnlyPacket(now monotime.Time) (bool, error) {
 	pathPacker, ok := c.packer.(pathAwareApplicationPacker)
-	if !ok || c.multipath.isPathAbandoned(0) {
+	if !ok {
 		return false, nil
 	}
-	for id, p := range c.multipath.paths {
-		if id == 0 || p.abandoned {
+	if c.multipath.isPathAbandoned(0) {
+		pm := c.pathManagerOutgoing.Load()
+		if pm == nil {
+			return false, nil
+		}
+		pathID, connID, tr, ok := pm.NextPathForApplication()
+		if !ok || pathID == 0 {
+			return false, nil
+		}
+		pathAck := c.receivedPacketHandler.GetAckFrameForPath(uint64(pathID), now, true)
+		packet, buf, err := pathPacker.PackApplicationPacketForPath(
+			uint64(pathID), connID, pathAck, c.maxPacketSize(), now, c.version,
+		)
+		if err == errNothingToPack {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		c.logger.Debugf("sending final ACKs on multipath path %d", pathID)
+		c.logShortHeaderPacket(packet, protocol.ECNNon, buf.Len())
+		c.registerPackedShortHeaderPacket(packet, protocol.ECNNon, now)
+		_, err = tr.WriteTo(buf.Data, c.conn.RemoteAddr())
+		if err != nil {
+			buf.Release()
+			return false, err
+		}
+		c.scheduleSending()
+		return true, nil
+	}
+	for id := range c.multipath.paths {
+		if id == 0 {
 			continue
 		}
 		pathAck := c.receivedPacketHandler.GetAckFrameForPath(id, now, true)
@@ -3482,6 +3512,7 @@ func (c *Conn) getPathManager() *pathManagerOutgoing {
 			return
 		}
 		c.multipath.markPathAbandoned(uint64(id))
+		c.receivedPacketHandler.AbandonPath(uint64(id))
 		c.connIDGenerator.AbandonPath(id)
 		c.connIDManager.AbandonPath(id)
 		c.queueControlFrame(&wire.PathAbandonFrame{PathID: uint64(id)})
