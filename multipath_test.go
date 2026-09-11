@@ -165,6 +165,14 @@ func TestMultipathStatePathAbandonIsIdempotent(t *testing.T) {
 	require.False(t, echo)
 }
 
+func TestMultipathStateMarksAbandonedPathsUnavailableForValidation(t *testing.T) {
+	state := newMultipathState(3)
+	echo, err := state.handlePathAbandon(&wire.PathAbandonFrame{PathID: 1})
+	require.NoError(t, err)
+	require.True(t, echo)
+	require.True(t, state.isPathAbandoned(1))
+}
+
 func TestMultipathStateAllowsInitialPathAbandon(t *testing.T) {
 	state := newMultipathState(3)
 	echo, err := state.handlePathAbandon(&wire.PathAbandonFrame{PathID: 0})
