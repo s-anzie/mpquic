@@ -328,6 +328,23 @@ func TestMultipathStateReportsNextPathPacingTime(t *testing.T) {
 	require.False(t, ok)
 }
 
+func TestMultipathStateSynchronizesPathMaximumDatagramSize(t *testing.T) {
+	state := newMultipathState(3)
+	var connStats utils.ConnectionStats
+	state.configurePathCongestion(protocol.ByteCount(protocol.InitialPacketSize), &connStats)
+	path, err := state.path(1)
+	require.NoError(t, err)
+
+	state.setMaxDatagramSize(1400)
+	require.Equal(t, protocol.ByteCount(1400), state.maxDatagramSize)
+	require.NotNil(t, path.congestion)
+
+	path, err = state.path(2)
+	require.NoError(t, err)
+	require.NotNil(t, path.congestion)
+	require.Equal(t, protocol.ByteCount(1400), state.maxDatagramSize)
+}
+
 func TestMultipathStateFeedsRTTIntoPathCongestionController(t *testing.T) {
 	state := newMultipathState(3)
 	var connStats utils.ConnectionStats

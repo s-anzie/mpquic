@@ -96,8 +96,9 @@ type multipathPathState struct {
 }
 
 type multipathState struct {
-	localMaxPathID uint64
-	maxAckDelay    time.Duration
+	localMaxPathID  uint64
+	maxAckDelay     time.Duration
+	maxDatagramSize protocol.ByteCount
 
 	peerInitialMaxPathID uint64
 	peerMaxPathID        uint64
@@ -111,6 +112,7 @@ type multipathState struct {
 // every Multipath path. The connection statistics remain shared so that the
 // public connection metrics include all paths.
 func (m *multipathState) configurePathCongestion(initialMaxDatagramSize protocol.ByteCount, connStats *utils.ConnectionStats) {
+	m.maxDatagramSize = initialMaxDatagramSize
 	m.newPathCongestion = func() (*utils.RTTStats, congestion.SendAlgorithmWithDebugInfos) {
 		rttStats := utils.NewRTTStats()
 		rttStats.SetMaxAckDelay(m.maxAckDelay)
@@ -118,7 +120,7 @@ func (m *multipathState) configurePathCongestion(initialMaxDatagramSize protocol
 			congestion.DefaultClock{},
 			rttStats,
 			connStats,
-			initialMaxDatagramSize,
+			m.maxDatagramSize,
 			true,
 			nil,
 		)
@@ -126,6 +128,15 @@ func (m *multipathState) configurePathCongestion(initialMaxDatagramSize protocol
 	for _, p := range m.paths {
 		if p.congestion == nil {
 			p.rttStats, p.congestion = m.newPathCongestion()
+		}
+	}
+}
+
+func (m *multipathState) setMaxDatagramSize(maxDatagramSize protocol.ByteCount) {
+	m.maxDatagramSize = maxDatagramSize
+	for _, p := range m.paths {
+		if p.congestion != nil {
+			p.congestion.SetMaxDatagramSize(maxDatagramSize)
 		}
 	}
 }
