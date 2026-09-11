@@ -284,6 +284,20 @@ func (h *connIDManager) AddPath(f *wire.PathNewConnectionIDFrame) error {
 	h.pathMx.Lock()
 	defer h.pathMx.Unlock()
 	id := pathID(f.PathID)
+	if id == 0 {
+		if err := h.add(&wire.NewConnectionIDFrame{
+			SequenceNumber:      f.SequenceNumber,
+			RetirePriorTo:       f.RetirePriorTo,
+			ConnectionID:        f.ConnectionID,
+			StatelessResetToken: f.StatelessResetToken,
+		}); err != nil {
+			return err
+		}
+		if len(h.queue) >= protocol.MaxActiveConnectionIDs {
+			return &qerr.TransportError{ErrorCode: qerr.ConnectionIDLimitError}
+		}
+		return nil
+	}
 
 	if h.activeConnectionID.Len() == 0 {
 		return &qerr.TransportError{
