@@ -2026,9 +2026,15 @@ func (c *Conn) handleFrame(
 		if err == nil {
 			c.connIDGenerator.AbandonPath(pathID(frame.PathID))
 			c.connIDManager.AbandonPath(pathID(frame.PathID))
-		}
-		if echo && err == nil {
-			c.queueControlFrame(&wire.PathAbandonFrame{PathID: frame.PathID, ErrorCode: frame.ErrorCode})
+			if echo {
+				c.queueControlFrame(&wire.PathAbandonFrame{PathID: frame.PathID, ErrorCode: frame.ErrorCode})
+			}
+			if !c.multipath.hasUsablePathExcept(frame.PathID) {
+				c.closeLocal(&qerr.TransportError{
+					ErrorCode:    qerr.NoViablePathError,
+					ErrorMessage: fmt.Sprintf("path %d was abandoned and no usable path remains", frame.PathID),
+				})
+			}
 		}
 	case *wire.PathStatusAvailableFrame:
 		err = c.multipath.handlePathStatus(frame.PathID, frame.SequenceNumber, false)
@@ -2635,6 +2641,10 @@ func (c *Conn) triggerSending(now monotime.Time) error {
 			c.blocked = blockModeNone
 			return nil
 		}
+		if c.multipath.isPathAbandoned(0) {
+			c.blocked = blockModeCongestionLimited
+			return nil
+		}
 	}
 	switch sendMode {
 	case ackhandler.SendAny:
@@ -2702,6 +2712,9 @@ func (c *Conn) sendPackets(now monotime.Time) error {
 			return err
 		}
 		if sent {
+			return nil
+		}
+		if c.multipath.isPathAbandoned(0) {
 			return nil
 		}
 	}

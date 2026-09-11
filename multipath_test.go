@@ -165,13 +165,14 @@ func TestMultipathStatePathAbandonIsIdempotent(t *testing.T) {
 	require.False(t, echo)
 }
 
-func TestMultipathStateRejectsInitialPathAbandon(t *testing.T) {
+func TestMultipathStateAllowsInitialPathAbandon(t *testing.T) {
 	state := newMultipathState(3)
-	_, err := state.handlePathAbandon(&wire.PathAbandonFrame{PathID: 0})
-	var transportErr *qerr.TransportError
-	require.ErrorAs(t, err, &transportErr)
-	require.Equal(t, qerr.ProtocolViolation, transportErr.ErrorCode)
-	require.ErrorAs(t, state.markPathAbandoned(0), &transportErr)
+	echo, err := state.handlePathAbandon(&wire.PathAbandonFrame{PathID: 0})
+	require.NoError(t, err)
+	require.True(t, echo)
+	require.True(t, state.isPathAbandoned(0))
+	require.False(t, state.hasUsablePathExcept(0))
+	require.NoError(t, state.markPathAbandoned(0))
 }
 
 func TestMultipathStateUsesAnIndependentPacketNumberSpacePerPath(t *testing.T) {
