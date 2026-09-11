@@ -54,6 +54,31 @@ func TestMultipathStatePathConnectionIDSequences(t *testing.T) {
 	require.Equal(t, qerr.ProtocolViolation, transportErr.ErrorCode)
 }
 
+func TestMultipathStateAcceptsReorderedRetirePriorTo(t *testing.T) {
+	state := newMultipathState(3)
+	connID := protocol.ParseConnectionID([]byte{1, 2, 3, 4, 5, 6, 7, 8})
+
+	// A higher sequence number can arrive before the connection IDs covered by
+	// Retire Prior To. Those older sequence numbers are retired implicitly.
+	require.NoError(t, state.handlePathNewConnectionID(&wire.PathNewConnectionIDFrame{
+		PathID:         1,
+		SequenceNumber: 4,
+		RetirePriorTo:  3,
+		ConnectionID:   connID,
+	}))
+	require.Equal(t, uint64(3), state.paths[1].highestRetiredConnectionID)
+	require.Equal(t, uint64(5), state.paths[1].nextConnectionIDSequence)
+
+	// A delayed frame for a sequence below the threshold is silently ignored.
+	require.NoError(t, state.handlePathNewConnectionID(&wire.PathNewConnectionIDFrame{
+		PathID:         1,
+		SequenceNumber: 1,
+		RetirePriorTo:  0,
+		ConnectionID:   protocol.ParseConnectionID([]byte{8, 7, 6, 5, 4, 3, 2, 1}),
+	}))
+	require.NotContains(t, state.paths[1].connectionIDs, uint64(1))
+}
+
 func TestMultipathStatePathAbandonIsIdempotent(t *testing.T) {
 	state := newMultipathState(3)
 	f := &wire.PathAbandonFrame{PathID: 1, ErrorCode: 0}

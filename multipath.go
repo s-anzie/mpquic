@@ -63,8 +63,12 @@ type multipathPathState struct {
 	statusBackup   bool
 
 	nextConnectionIDSequence uint64
-	connectionIDs            map[uint64]wire.PathNewConnectionIDFrame
-	retiredConnectionIDs     map[uint64]bool
+	// highestRetiredConnectionID is the Retire Prior To threshold. Sequence
+	// numbers below this value are retired, even when their frames arrived
+	// after the frame that advanced the threshold.
+	highestRetiredConnectionID uint64
+	connectionIDs              map[uint64]wire.PathNewConnectionIDFrame
+	retiredConnectionIDs       map[uint64]bool
 }
 
 type multipathState struct {
@@ -184,17 +188,18 @@ func (m *multipathState) handlePathNewConnectionID(f *wire.PathNewConnectionIDFr
 		}
 		return nil
 	}
-	if f.RetirePriorTo > p.nextConnectionIDSequence {
-		return &qerr.TransportError{
-			ErrorCode:    qerr.ProtocolViolation,
-			ErrorMessage: fmt.Sprintf("PATH_NEW_CONNECTION_ID retires an unknown sequence number %d for path %d", f.RetirePriorTo, f.PathID),
+	if f.RetirePriorTo > p.highestRetiredConnectionID {
+		for sequenceNumber := range p.connectionIDs {
+			if sequenceNumber < f.RetirePriorTo {
+				delete(p.connectionIDs, sequenceNumber)
+				p.retiredConnectionIDs[sequenceNumber] = true
+			}
 		}
+		p.highestRetiredConnectionID = f.RetirePriorTo
 	}
-	for sequenceNumber := range p.connectionIDs {
-		if sequenceNumber < f.RetirePriorTo {
-			delete(p.connectionIDs, sequenceNumber)
-			p.retiredConnectionIDs[sequenceNumber] = true
-		}
+	if f.SequenceNumber < p.highestRetiredConnectionID {
+		p.retiredConnectionIDs[f.SequenceNumber] = true
+		return nil
 	}
 	p.connectionIDs[f.SequenceNumber] = *f
 	if f.SequenceNumber >= p.nextConnectionIDSequence {
@@ -213,6 +218,9 @@ func (m *multipathState) handlePathRetireConnectionID(f *wire.PathRetireConnecti
 			ErrorCode:    qerr.ProtocolViolation,
 			ErrorMessage: fmt.Sprintf("PATH_RETIRE_CONNECTION_ID references unknown sequence number %d for path %d", f.SequenceNumber, f.PathID),
 		}
+	}
+	if f.SequenceNumber < p.highestRetiredConnectionID {
+		return nil
 	}
 	delete(p.connectionIDs, f.SequenceNumber)
 	p.retiredConnectionIDs[f.SequenceNumber] = true
