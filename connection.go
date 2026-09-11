@@ -211,6 +211,9 @@ type Conn struct {
 
 	peerParams *wire.TransportParameters
 
+	// multipathEnabled is true after both endpoints have advertised support.
+	multipathEnabled bool
+
 	timer *time.Timer
 	// keepAlivePingSent stores whether a keep alive PING is in flight.
 	// It is reset as soon as we receive a packet from the peer.
@@ -346,6 +349,10 @@ var newConnection = func(
 		RetrySourceConnectionID:   retrySrcConnID,
 		EnableResetStreamAt:       conf.EnableStreamResetPartialDelivery,
 	}
+	if s.config.EnableMultipath {
+		maxPathID := s.config.MaxPathID
+		params.InitialMaxPathID = &maxPathID
+	}
 	if s.config.EnableDatagrams {
 		params.MaxDatagramFrameSize = wire.MaxDatagramSize
 	} else {
@@ -471,6 +478,10 @@ var newClientConnection = func(
 		ActiveConnectionIDLimit:   protocol.MaxActiveConnectionIDs,
 		InitialSourceConnectionID: srcConnID,
 		EnableResetStreamAt:       conf.EnableStreamResetPartialDelivery,
+	}
+	if s.config.EnableMultipath {
+		maxPathID := s.config.MaxPathID
+		params.InitialMaxPathID = &maxPathID
 	}
 	if s.config.EnableDatagrams {
 		params.MaxDatagramFrameSize = wire.MaxDatagramSize
@@ -780,9 +791,11 @@ func (c *Conn) ConnectionState() ConnectionState {
 	if c.peerParams != nil {
 		c.connState.SupportsDatagrams.Remote = c.supportsDatagrams()
 		c.connState.SupportsStreamResetPartialDelivery.Remote = c.peerParams.EnableResetStreamAt
+		c.connState.SupportsMultipath.Remote = c.peerParams.InitialMaxPathID != nil
 	}
 	c.connState.SupportsDatagrams.Local = c.config.EnableDatagrams
 	c.connState.SupportsStreamResetPartialDelivery.Local = c.config.EnableStreamResetPartialDelivery
+	c.connState.SupportsMultipath.Local = c.config.EnableMultipath
 	c.connState.GSO = c.conn.capabilities().GSO
 	return c.connState
 }
@@ -2425,6 +2438,8 @@ func (c *Conn) applyTransportParameters() {
 	c.keepAliveInterval = min(c.config.KeepAlivePeriod, c.idleTimeout/2)
 	c.streamsMap.HandleTransportParameters(params)
 	c.frameParser.SetAckDelayExponent(params.AckDelayExponent)
+	c.multipathEnabled = c.config.EnableMultipath && params.InitialMaxPathID != nil
+	c.frameParser.SetMultipath(c.multipathEnabled)
 	c.connFlowController.UpdateSendWindow(params.InitialMaxData)
 	c.rttStats.SetMaxAckDelay(params.MaxAckDelay)
 	c.connIDGenerator.SetMaxActiveConnIDs(params.ActiveConnectionIDLimit)
