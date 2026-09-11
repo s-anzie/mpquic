@@ -415,6 +415,24 @@ func (h *connIDManager) GetConnIDForPath(id pathID) (protocol.ConnectionID, bool
 	return front.ConnectionID, true
 }
 
+// NextPathConnectionIDSequence returns the next sequence number that the peer
+// is expected to issue for a path.
+func (h *connIDManager) NextPathConnectionIDSequence(id pathID) uint64 {
+	h.pathMx.Lock()
+	defer h.pathMx.Unlock()
+
+	next := h.pathHighestRetired[id]
+	if h.pathProbing != nil {
+		if entry, ok := h.pathProbing[id]; ok {
+			next = max(next, entry.SequenceNumber+1)
+		}
+	}
+	for _, entry := range h.pathQueues[id] {
+		next = max(next, entry.SequenceNumber+1)
+	}
+	return next
+}
+
 func (h *connIDManager) RetireConnIDForPath(pathID pathID) {
 	h.pathMx.Lock()
 	defer h.pathMx.Unlock()

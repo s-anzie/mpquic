@@ -3278,6 +3278,15 @@ func (c *Conn) getPathManager() *pathManagerOutgoing {
 		}
 		c.queueControlFrame(frame)
 	})
+	new.SetPathCIDsBlocked(func(id pathID) {
+		if !c.multipathEnabled {
+			return
+		}
+		c.queueControlFrame(&wire.PathCIDsBlockedFrame{
+			PathID:             uint64(id),
+			NextSequenceNumber: c.connIDManager.NextPathConnectionIDSequence(id),
+		})
+	})
 	if c.multipathEnabled {
 		new.SetMaxPathID(c.multipath.peerMaxPathID)
 	}
@@ -3298,6 +3307,7 @@ func (c *Conn) AddPath(t *Transport) (*Path, error) {
 	}
 	pm := c.getPathManager()
 	if c.multipathEnabled && !pm.canCreatePath() {
+		c.queueControlFrame(&wire.PathsBlockedFrame{MaximumPathID: uint64(c.multipath.peerMaxPathID)})
 		return nil, errPeerPathLimitReached
 	}
 	if err := t.init(false); err != nil {
@@ -3319,6 +3329,9 @@ func (c *Conn) AddPath(t *Transport) (*Path, error) {
 		},
 	)
 	if path == nil {
+		if c.multipathEnabled {
+			c.queueControlFrame(&wire.PathsBlockedFrame{MaximumPathID: uint64(c.multipath.peerMaxPathID)})
+		}
 		return nil, errPeerPathLimitReached
 	}
 	return path, nil

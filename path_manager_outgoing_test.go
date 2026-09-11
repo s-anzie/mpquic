@@ -165,6 +165,24 @@ func TestPathManagerOutgoingRequeuesLostProbe(t *testing.T) {
 	require.True(t, ok)
 }
 
+func TestPathManagerOutgoingReportsBlockedConnectionIDs(t *testing.T) {
+	var blocked []pathID
+	pm := newPathManagerOutgoing(
+		func(pathID) (protocol.ConnectionID, bool) { return protocol.ConnectionID{}, false },
+		func(pathID) {},
+		func() {},
+	)
+	pm.SetPathCIDsBlocked(func(id pathID) { blocked = append(blocked, id) })
+	p := pm.NewPath(&Transport{}, time.Second, func() {})
+	pm.addPath(p, p.enablePath)
+	pm.enqueueProbe(p)
+	_, _, _, _, ok := pm.NextPathToProbe()
+	require.False(t, ok)
+	_, _, _, _, ok = pm.NextPathToProbe()
+	require.False(t, ok)
+	require.Equal(t, []pathID{p.id}, blocked)
+}
+
 func TestPathManagerOutgoingAbandonsPathOnClose(t *testing.T) {
 	var abandoned []pathID
 	pm := newPathManagerOutgoing(
