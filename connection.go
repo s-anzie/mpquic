@@ -938,6 +938,13 @@ func (c *Conn) maybeResetTimer() {
 		if t := c.multipath.nextPathProbeLossTime(time.Second); !t.IsZero() && t.Before(deadline) {
 			deadline = t
 		}
+		if t, ok := c.multipath.nextPathPacingTime(); ok {
+			if t.IsZero() {
+				deadline = deadlineSendImmediately
+			} else if t.Before(deadline) {
+				deadline = t
+			}
+		}
 	}
 	if c.blocked == blockModeCongestionLimited {
 		c.timer.Reset(monotime.Until(deadline))
