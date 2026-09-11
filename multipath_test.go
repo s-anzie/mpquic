@@ -3,6 +3,7 @@ package quic
 import (
 	"testing"
 
+	"github.com/quic-go/quic-go/internal/monotime"
 	"github.com/quic-go/quic-go/internal/protocol"
 	"github.com/quic-go/quic-go/internal/qerr"
 	"github.com/quic-go/quic-go/internal/wire"
@@ -175,4 +176,25 @@ func TestMultipathStateHandlesPathAckPerPath(t *testing.T) {
 	ack.AckRanges[0].Largest = 20
 	require.NoError(t, state.handlePathAck(ack))
 	require.Equal(t, protocol.PacketNumber(9), state.paths[1].packetNumberSpace.largestAcknowledged)
+}
+
+func TestMultipathStateAcknowledgesPacketRanges(t *testing.T) {
+	state := newMultipathState(3)
+	now := monotime.Now()
+	for _, packetNumber := range []protocol.PacketNumber{4, 5, 7, 9} {
+		require.NoError(t, state.recordSentPacket(1, packetNumber, now))
+	}
+
+	pathID := uint64(1)
+	require.NoError(t, state.handlePathAck(&wire.AckFrame{
+		PathID: &pathID,
+		AckRanges: []wire.AckRange{
+			{Smallest: 9, Largest: 9},
+			{Smallest: 4, Largest: 5},
+		},
+	}))
+	require.False(t, state.hasOutstandingPacket(1, 4))
+	require.False(t, state.hasOutstandingPacket(1, 5))
+	require.True(t, state.hasOutstandingPacket(1, 7))
+	require.False(t, state.hasOutstandingPacket(1, 9))
 }

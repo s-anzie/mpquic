@@ -2883,6 +2883,12 @@ func (c *Conn) appendOneShortHeaderPacket(buf *packetBuffer, maxSize protocol.By
 
 func (c *Conn) registerPackedShortHeaderPacket(p shortHeaderPacket, ecn protocol.ECN, now monotime.Time) {
 	if p.IsPathProbePacket {
+		if c.multipathEnabled && p.PathID != 0 {
+			if err := c.multipath.recordSentPacket(p.PathID, p.PacketNumber, now); err != nil {
+				c.setCloseError(&closeError{err: err})
+				return
+			}
+		}
 		c.sentPacketHandler.SentPacket(
 			now,
 			p.PacketNumber,

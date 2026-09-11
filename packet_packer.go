@@ -52,6 +52,7 @@ type longHeaderPacket struct {
 
 type shortHeaderPacket struct {
 	PacketNumber         protocol.PacketNumber
+	PathID               uint64
 	Frames               []ackhandler.Frame
 	StreamFrames         []ackhandler.StreamFrame
 	Ack                  *wire.AckFrame
@@ -838,6 +839,7 @@ func (p *packetPacker) PackPathProbePacketForPath(pathID uint64, connID protocol
 		return shortHeaderPacket{}, nil, err
 	}
 	packet.IsPathProbePacket = true
+	packet.PathID = pathID
 	return packet, buf, err
 }
 

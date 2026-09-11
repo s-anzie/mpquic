@@ -3,6 +3,7 @@ package quic
 import (
 	"fmt"
 
+	"github.com/quic-go/quic-go/internal/monotime"
 	"github.com/quic-go/quic-go/internal/protocol"
 	"github.com/quic-go/quic-go/internal/qerr"
 	"github.com/quic-go/quic-go/internal/wire"
@@ -14,6 +15,10 @@ type multipathPacketNumberSpace struct {
 	nextPacketNumber    protocol.PacketNumber
 	largestReceived     protocol.PacketNumber
 	largestAcknowledged protocol.PacketNumber
+}
+
+type multipathSentPacket struct {
+	sentAt monotime.Time
 }
 
 func newMultipathPacketNumberSpace() multipathPacketNumberSpace {
@@ -57,6 +62,7 @@ type multipathPathState struct {
 	abandoned bool
 
 	packetNumberSpace multipathPacketNumberSpace
+	sentPackets       map[protocol.PacketNumber]multipathSentPacket
 
 	hasStatus      bool
 	statusSequence uint64
@@ -105,6 +111,7 @@ func (m *multipathState) path(pathID uint64) (*multipathPathState, error) {
 	if !ok {
 		p = &multipathPathState{
 			packetNumberSpace:    newMultipathPacketNumberSpace(),
+			sentPackets:          make(map[protocol.PacketNumber]multipathSentPacket),
 			connectionIDs:        make(map[uint64]wire.PathNewConnectionIDFrame),
 			retiredConnectionIDs: make(map[uint64]bool),
 		}
@@ -151,7 +158,44 @@ func (m *multipathState) handlePathAck(f *wire.AckFrame) error {
 	if p.abandoned {
 		return nil
 	}
-	return p.packetNumberSpace.observeAcknowledged(f.LargestAcked())
+	if err := p.packetNumberSpace.observeAcknowledged(f.LargestAcked()); err != nil {
+		return err
+	}
+	for packetNumber := range p.sentPackets {
+		for _, ackRange := range f.AckRanges {
+			if packetNumber >= ackRange.Smallest && packetNumber <= ackRange.Largest {
+				delete(p.sentPackets, packetNumber)
+				break
+			}
+		}
+	}
+	return nil
+}
+
+// recordSentPacket records a packet that belongs to a Multipath path. The
+// packet number is retained until a PATH_ACK acknowledges it.
+func (m *multipathState) recordSentPacket(pathID uint64, packetNumber protocol.PacketNumber, sentAt monotime.Time) error {
+	if pathID == 0 {
+		return nil
+	}
+	p, err := m.path(pathID)
+	if err != nil {
+		return err
+	}
+	if packetNumber < 0 || packetNumber > protocol.MaxPathAndPacketNumber {
+		return fmt.Errorf("sent invalid path packet number %d", packetNumber)
+	}
+	p.sentPackets[packetNumber] = multipathSentPacket{sentAt: sentAt}
+	return nil
+}
+
+func (m *multipathState) hasOutstandingPacket(pathID uint64, packetNumber protocol.PacketNumber) bool {
+	p, ok := m.paths[pathID]
+	if !ok {
+		return false
+	}
+	_, ok = p.sentPackets[packetNumber]
+	return ok
 }
 
 func (m *multipathState) setPeerInitialMaxPathID(maxPathID uint64) {
