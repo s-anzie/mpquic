@@ -177,7 +177,8 @@ func TestAbandonPathStopsMultipathAckAlarm(t *testing.T) {
 
 	handler.AbandonPath(1)
 	require.True(t, handler.GetAlarmTimeout().IsZero())
-	require.Nil(t, handler.GetAckFrameForPath(1, now.Add(time.Second), true))
+	// The final ACK remains available for immediate delivery on another path.
+	require.NotNil(t, handler.GetAckFrameForPath(1, now.Add(time.Second), true))
 
 	// Delayed packets on an abandoned path remain tracked but must not re-arm
 	// the ACK alarm.
@@ -195,7 +196,8 @@ func TestAbandonInitialPathStopsAckAlarm(t *testing.T) {
 
 	handler.AbandonPath(0)
 	require.True(t, handler.GetAlarmTimeout().IsZero())
-	require.Nil(t, handler.GetAckFrame(protocol.Encryption1RTT, now.Add(time.Second), true))
+	// The final ACK remains available for immediate delivery on another path.
+	require.NotNil(t, handler.GetAckFrame(protocol.Encryption1RTT, now.Add(time.Second), true))
 
 	require.NoError(t, handler.ReceivedPacket(2, protocol.ECNNon, protocol.Encryption1RTT, now, true))
 	require.True(t, handler.GetAlarmTimeout().IsZero())

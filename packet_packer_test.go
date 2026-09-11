@@ -1124,3 +1124,29 @@ func TestPackApplicationPacketForPathUsesPathPacketNumberSpace(t *testing.T) {
 	require.Equal(t, uint64(2), p.PathID)
 	require.Contains(t, p.Frames, ackhandler.Frame{Frame: pathAck})
 }
+
+func TestPackApplicationPacketForPathCanCarryPathAckOnInitialPath(t *testing.T) {
+	mockCtrl := gomock.NewController(t)
+	tp := newTestPacketPacker(t, mockCtrl, protocol.PerspectiveServer)
+	tp.framer.EXPECT().HasData().Return(false)
+	tp.ackFramer.EXPECT().GetAckFrame(protocol.Encryption1RTT, gomock.Any(), true).Return(nil)
+	tp.sealingManager.EXPECT().Get1RTTSealer().Return(newMockShortHeaderSealer(mockCtrl), nil)
+	tp.pnManager.EXPECT().PeekPacketNumber(protocol.Encryption1RTT).Return(protocol.PacketNumber(0x23), protocol.PacketNumberLen2)
+	tp.pnManager.EXPECT().PopPacketNumber(protocol.Encryption1RTT).Return(protocol.PacketNumber(0x23))
+
+	pathAck := &wire.AckFrame{
+		PathID:    func() *uint64 { id := uint64(2); return &id }(),
+		AckRanges: []wire.AckRange{{Smallest: 4, Largest: 4}},
+	}
+	p, _, err := tp.packer.PackApplicationPacketForPath(
+		0,
+		protocol.ParseConnectionID([]byte{1, 2, 3, 4}),
+		pathAck,
+		protocol.MaxByteCount,
+		monotime.Now(),
+		protocol.Version1,
+	)
+	require.NoError(t, err)
+	require.Equal(t, protocol.PacketNumber(0x23), p.PacketNumber)
+	require.Contains(t, p.Frames, ackhandler.Frame{Frame: pathAck})
+}

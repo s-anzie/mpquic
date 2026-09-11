@@ -144,9 +144,6 @@ func (h *ReceivedPacketHandler) GetAckFrame(encLevel protocol.EncryptionLevel, n
 		}
 		return nil
 	case protocol.Encryption1RTT:
-		if h.abandonedPaths[0] {
-			return nil
-		}
 		return h.appDataPackets.GetAckFrame(now, onlyIfQueued)
 	default:
 		// 0-RTT packets can't contain ACK frames
@@ -180,9 +177,6 @@ func (h *ReceivedPacketHandler) IsPotentiallyDuplicateForPath(pathID uint64, pn 
 // GetAckFrameForPath returns a PATH_ACK for a Multipath path when an ACK is
 // due. The caller is responsible for placing the frame on that path.
 func (h *ReceivedPacketHandler) GetAckFrameForPath(pathID uint64, now monotime.Time, onlyIfQueued bool) *wire.AckFrame {
-	if h.abandonedPaths[pathID] {
-		return nil
-	}
 	tracker, ok := h.multipathPackets[pathID]
 	if !ok {
 		return nil
