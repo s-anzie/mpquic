@@ -3160,6 +3160,9 @@ func (c *Conn) tryQueueingUndecryptablePacket(p receivedPacket, pt qlog.PacketTy
 }
 
 func (c *Conn) queueControlFrame(f wire.Frame) {
+	if c.retransmissionQueue != nil {
+		c.retransmissionQueue.TrackPathStatus(f)
+	}
 	c.framer.QueueControlFrame(f)
 	c.scheduleSending()
 }

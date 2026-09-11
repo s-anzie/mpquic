@@ -18,12 +18,41 @@ type retransmissionQueue struct {
 	initial   *framesToRetransmit
 	handshake *framesToRetransmit
 	appData   framesToRetransmit
+
+	latestPathStatus map[uint64]uint64
 }
 
 func newRetransmissionQueue() *retransmissionQueue {
 	return &retransmissionQueue{
-		initial:   &framesToRetransmit{},
-		handshake: &framesToRetransmit{},
+		initial:          &framesToRetransmit{},
+		handshake:        &framesToRetransmit{},
+		latestPathStatus: make(map[uint64]uint64),
+	}
+}
+
+func pathStatusFrameInfo(f wire.Frame) (pathID, sequenceNumber uint64, ok bool) {
+	switch f := f.(type) {
+	case *wire.PathStatusAvailableFrame:
+		return f.PathID, f.SequenceNumber, true
+	case *wire.PathStatusBackupFrame:
+		return f.PathID, f.SequenceNumber, true
+	default:
+		return 0, 0, false
+	}
+}
+
+// TrackPathStatus records the newest status queued for each path. Older status
+// frames must not be retransmitted after a newer status has been sent.
+func (q *retransmissionQueue) TrackPathStatus(f wire.Frame) {
+	pathID, sequenceNumber, ok := pathStatusFrameInfo(f)
+	if !ok {
+		return
+	}
+	if q.latestPathStatus == nil {
+		q.latestPathStatus = make(map[uint64]uint64)
+	}
+	if latest, exists := q.latestPathStatus[pathID]; !exists || sequenceNumber > latest {
+		q.latestPathStatus[pathID] = sequenceNumber
 	}
 }
 
@@ -154,5 +183,10 @@ type retransmissionQueueAppDataAckHandler retransmissionQueue
 
 func (q *retransmissionQueueAppDataAckHandler) OnAcked(wire.Frame) {}
 func (q *retransmissionQueueAppDataAckHandler) OnLost(f wire.Frame) {
+	if pathID, sequenceNumber, ok := pathStatusFrameInfo(f); ok {
+		if latest, exists := q.latestPathStatus[pathID]; exists && sequenceNumber < latest {
+			return
+		}
+	}
 	(*retransmissionQueue)(q).addAppData(f)
 }
