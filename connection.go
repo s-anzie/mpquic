@@ -711,10 +711,14 @@ runLoop:
 		}
 		if c.multipathEnabled {
 			if timeout := c.multipath.nextPathProbeLossTime(time.Second); !timeout.IsZero() && !timeout.After(now) {
+				lostPaths, lostPackets := c.multipath.detectLostPathPackets(now, time.Second)
 				if pm := c.pathManagerOutgoing.Load(); pm != nil {
-					for _, id := range c.multipath.detectLostPathProbes(now, time.Second) {
+					for _, id := range lostPaths {
 						pm.requeueProbe(pathID(id))
 					}
+				}
+				if lostPackets {
+					c.scheduleSending()
 				}
 			}
 		}

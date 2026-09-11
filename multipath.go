@@ -395,7 +395,13 @@ func (m *multipathState) nextPathProbeLossTime(lossDelay time.Duration) monotime
 }
 
 func (m *multipathState) detectLostPathProbes(now monotime.Time, lossDelay time.Duration) []uint64 {
+	lostPaths, _ := m.detectLostPathPackets(now, lossDelay)
+	return lostPaths
+}
+
+func (m *multipathState) detectLostPathPackets(now monotime.Time, lossDelay time.Duration) ([]uint64, bool) {
 	lostPaths := make(map[uint64]struct{})
+	lostPackets := false
 	for pathID, p := range m.paths {
 		if p.abandoned {
 			continue
@@ -407,6 +413,7 @@ func (m *multipathState) detectLostPathProbes(now monotime.Time, lossDelay time.
 		lossTime := now.Add(-pathLossDelay)
 		for packetNumber, packet := range p.sentPackets {
 			if !packet.sentAt.After(lossTime) {
+				lostPackets = true
 				if packet.ackEliciting && packet.size > 0 {
 					priorInFlight := p.bytesInFlight
 					p.bytesInFlight -= min(p.bytesInFlight, packet.size)
@@ -436,7 +443,7 @@ func (m *multipathState) detectLostPathProbes(now monotime.Time, lossDelay time.
 		result = append(result, pathID)
 	}
 	slices.Sort(result)
-	return result
+	return result, lostPackets
 }
 
 func (m *multipathState) hasOutstandingPacket(pathID uint64, packetNumber protocol.PacketNumber) bool {
