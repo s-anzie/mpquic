@@ -1216,7 +1216,11 @@ func (c *Conn) handleShortHeaderPacket(
 	}
 	pathID := uint64(0)
 	if c.multipathEnabled {
-		pathID, _ = c.multipath.pathIDForConnectionID(destConnID)
+		var known bool
+		pathID, known = c.connIDGenerator.PathIDForConnectionID(destConnID)
+		if !known {
+			pathID, _ = c.multipath.pathIDForConnectionID(destConnID)
+		}
 	}
 	var pn protocol.PacketNumber
 	var pnLen protocol.PacketNumberLen
@@ -1985,12 +1989,19 @@ func (c *Conn) handleFrame(
 	case *wire.PathNewConnectionIDFrame:
 		err = c.multipath.handlePathNewConnectionID(frame)
 	case *wire.PathRetireConnectionIDFrame:
-		err = c.multipath.handlePathRetireConnectionID(frame)
+		if frame.PathID == 0 {
+			err = c.connIDGenerator.Retire(frame.SequenceNumber, destConnID, rcvTime.Add(3*c.rttStats.PTO(false)))
+		} else {
+			err = c.connIDGenerator.retirePathConnectionID(pathID(frame.PathID), frame.SequenceNumber, destConnID)
+		}
 	case *wire.MaxPathIDFrame:
 		err = c.multipath.handleMaxPathID(frame)
 		if err == nil {
 			if pm := c.pathManagerOutgoing.Load(); pm != nil {
 				pm.SetMaxPathID(c.multipath.peerMaxPathID)
+			}
+			if c.multipathEnabled {
+				c.provisionMultipathPathConnectionIDs()
 			}
 		}
 	case *wire.PathsBlockedFrame:
@@ -2506,6 +2517,9 @@ func (c *Conn) applyTransportParameters() {
 		if pm := c.pathManagerOutgoing.Load(); pm != nil {
 			pm.SetMaxPathID(c.multipath.peerMaxPathID)
 		}
+		if c.multipathEnabled {
+			c.provisionMultipathPathConnectionIDs()
+		}
 	}
 	c.connFlowController.UpdateSendWindow(params.InitialMaxData)
 	c.rttStats.SetMaxAckDelay(params.MaxAckDelay)
@@ -2528,6 +2542,19 @@ func (c *Conn) applyTransportParameters() {
 		maxPacketSize,
 		c.qlogger,
 	)
+}
+
+func (c *Conn) provisionMultipathPathConnectionIDs() {
+	maxPathID := min(c.config.MaxPathID, c.multipath.peerMaxPathID)
+	// Keep initial provisioning bounded. Applications can raise MAX_PATH_ID
+	// later when they need more paths.
+	maxPathID = min(maxPathID, uint64(protocol.MaxIssuedConnectionIDs))
+	for id := uint64(1); id <= maxPathID; id++ {
+		if err := c.connIDGenerator.ensurePathConnectionID(pathID(id)); err != nil {
+			c.setCloseError(&closeError{err: err})
+			return
+		}
+	}
 }
 
 func (c *Conn) triggerSending(now monotime.Time) error {

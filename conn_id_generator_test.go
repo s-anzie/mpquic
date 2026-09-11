@@ -22,6 +22,43 @@ func TestConnIDGeneratorIssueAndRetire(t *testing.T) {
 	})
 }
 
+func TestConnIDGeneratorIssuePathConnectionID(t *testing.T) {
+	var (
+		added        []protocol.ConnectionID
+		removed      []protocol.ConnectionID
+		queuedFrames []wire.Frame
+	)
+	g := newConnIDGenerator(
+		&packetHandlerMap{},
+		protocol.ParseConnectionID([]byte{1, 1, 1, 1}),
+		nil,
+		newStatelessResetter(&StatelessResetKey{1, 2, 3, 4}),
+		connRunnerCallbacks{
+			AddConnectionID:    func(c protocol.ConnectionID) { added = append(added, c) },
+			RemoveConnectionID: func(c protocol.ConnectionID) { removed = append(removed, c) },
+			ReplaceWithClosed:  func([]protocol.ConnectionID, []byte, time.Duration) {},
+		},
+		func(f wire.Frame) { queuedFrames = append(queuedFrames, f) },
+		&protocol.DefaultConnectionIDGenerator{ConnLen: 5},
+	)
+
+	frame, err := g.issuePathConnectionID(2)
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), frame.PathID)
+	require.Equal(t, uint64(0), frame.SequenceNumber)
+	require.Equal(t, []protocol.ConnectionID{frame.ConnectionID}, added)
+	require.Equal(t, []wire.Frame{&frame}, queuedFrames)
+
+	pathID, ok := g.PathIDForConnectionID(frame.ConnectionID)
+	require.True(t, ok)
+	require.Equal(t, uint64(2), pathID)
+
+	require.NoError(t, g.retirePathConnectionID(2, 0, protocol.ParseConnectionID([]byte{9, 9, 9, 9})))
+	require.Equal(t, []protocol.ConnectionID{frame.ConnectionID}, removed)
+	_, ok = g.PathIDForConnectionID(frame.ConnectionID)
+	require.False(t, ok)
+}
+
 func testConnIDGeneratorIssueAndRetire(t *testing.T, hasInitialClientDestConnID bool) {
 	var (
 		added   []protocol.ConnectionID

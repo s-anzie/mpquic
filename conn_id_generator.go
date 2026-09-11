@@ -49,6 +49,9 @@ type connIDGenerator struct {
 	connRunners connRunners
 
 	activeSrcConnIDs        map[uint64]protocol.ConnectionID
+	pathConnectionIDs       map[pathID]map[uint64]protocol.ConnectionID
+	pathConnectionIDToPath  map[protocol.ConnectionID]pathID
+	nextPathConnectionIDSeq map[pathID]uint64
 	connIDsToRetire         []connIDToRetire       // sorted by t
 	initialClientDestConnID *protocol.ConnectionID // nil for the client
 
@@ -67,11 +70,14 @@ func newConnIDGenerator(
 	generator ConnectionIDGenerator,
 ) *connIDGenerator {
 	m := &connIDGenerator{
-		generator:         generator,
-		activeSrcConnIDs:  make(map[uint64]protocol.ConnectionID),
-		statelessResetter: statelessResetter,
-		connRunners:       map[connRunner]connRunnerCallbacks{runner: callbacks},
-		queueControlFrame: queueControlFrame,
+		generator:               generator,
+		activeSrcConnIDs:        make(map[uint64]protocol.ConnectionID),
+		pathConnectionIDs:       make(map[pathID]map[uint64]protocol.ConnectionID),
+		pathConnectionIDToPath:  make(map[protocol.ConnectionID]pathID),
+		nextPathConnectionIDSeq: make(map[pathID]uint64),
+		statelessResetter:       statelessResetter,
+		connRunners:             map[connRunner]connRunnerCallbacks{runner: callbacks},
+		queueControlFrame:       queueControlFrame,
 	}
 	m.activeSrcConnIDs[0] = initialConnectionID
 	m.initialClientDestConnID = initialClientDestConnID
@@ -150,6 +156,85 @@ func (m *connIDGenerator) issueNewConnID() error {
 	return nil
 }
 
+// issuePathConnectionID creates and advertises a Connection ID for a
+// Multipath path. Path-specific sequence numbers start at zero for every path.
+func (m *connIDGenerator) issuePathConnectionID(id pathID) (wire.PathNewConnectionIDFrame, error) {
+	if id <= 0 || uint64(id) > protocol.MaxPathID {
+		return wire.PathNewConnectionIDFrame{}, fmt.Errorf("invalid path ID %d", id)
+	}
+	if m.generator.ConnectionIDLen() == 0 {
+		return wire.PathNewConnectionIDFrame{}, &qerr.TransportError{
+			ErrorCode:    qerr.ProtocolViolation,
+			ErrorMessage: "cannot issue a path Connection ID when zero-length Connection IDs are in use",
+		}
+	}
+	if m.pathConnectionIDs[id] == nil {
+		m.pathConnectionIDs[id] = make(map[uint64]protocol.ConnectionID)
+	}
+	sequenceNumber := m.nextPathConnectionIDSeq[id]
+	connID, err := m.generator.GenerateConnectionID()
+	if err != nil {
+		return wire.PathNewConnectionIDFrame{}, err
+	}
+	if _, exists := m.pathConnectionIDToPath[connID]; exists {
+		return wire.PathNewConnectionIDFrame{}, fmt.Errorf("generated duplicate path Connection ID %s", connID)
+	}
+	frame := wire.PathNewConnectionIDFrame{
+		PathID:              uint64(id),
+		SequenceNumber:      sequenceNumber,
+		ConnectionID:        connID,
+		StatelessResetToken: m.statelessResetter.GetStatelessResetToken(connID),
+	}
+	m.pathConnectionIDs[id][sequenceNumber] = connID
+	m.pathConnectionIDToPath[connID] = id
+	m.nextPathConnectionIDSeq[id] = sequenceNumber + 1
+	m.connRunners.AddConnectionID(connID)
+	m.queueControlFrame(&frame)
+	return frame, nil
+}
+
+func (m *connIDGenerator) ensurePathConnectionID(id pathID) error {
+	if len(m.pathConnectionIDs[id]) > 0 {
+		return nil
+	}
+	_, err := m.issuePathConnectionID(id)
+	return err
+}
+
+// PathIDForConnectionID returns the path associated with a locally issued
+// Connection ID. The initial path uses path ID zero.
+func (m *connIDGenerator) PathIDForConnectionID(connID protocol.ConnectionID) (uint64, bool) {
+	if connID == m.activeSrcConnIDs[0] {
+		return 0, true
+	}
+	pathID, ok := m.pathConnectionIDToPath[connID]
+	if !ok {
+		return 0, false
+	}
+	return uint64(pathID), true
+}
+
+func (m *connIDGenerator) retirePathConnectionID(id pathID, sequenceNumber uint64, sentWithDestConnID protocol.ConnectionID) error {
+	connections := m.pathConnectionIDs[id]
+	connID, ok := connections[sequenceNumber]
+	if !ok {
+		return &qerr.TransportError{
+			ErrorCode:    qerr.ProtocolViolation,
+			ErrorMessage: fmt.Sprintf("retired path Connection ID %d for unknown path %d", sequenceNumber, id),
+		}
+	}
+	if connID == sentWithDestConnID {
+		return &qerr.TransportError{
+			ErrorCode:    qerr.ProtocolViolation,
+			ErrorMessage: fmt.Sprintf("retired path Connection ID %d currently in use on path %d", sequenceNumber, id),
+		}
+	}
+	delete(connections, sequenceNumber)
+	delete(m.pathConnectionIDToPath, connID)
+	m.connRunners.RemoveConnectionID(connID)
+	return nil
+}
+
 func (m *connIDGenerator) SetHandshakeComplete(connIDExpiry monotime.Time) {
 	if m.initialClientDestConnID != nil {
 		m.queueConnIDForRetiring(*m.initialClientDestConnID, connIDExpiry)
@@ -177,17 +262,25 @@ func (m *connIDGenerator) RemoveAll() {
 	for _, connID := range m.activeSrcConnIDs {
 		m.connRunners.RemoveConnectionID(connID)
 	}
+	for _, connections := range m.pathConnectionIDs {
+		for _, connID := range connections {
+			m.connRunners.RemoveConnectionID(connID)
+		}
+	}
 	for _, c := range m.connIDsToRetire {
 		m.connRunners.RemoveConnectionID(c.connID)
 	}
 }
 
 func (m *connIDGenerator) ReplaceWithClosed(connClose []byte, expiry time.Duration) {
-	connIDs := make([]protocol.ConnectionID, 0, len(m.activeSrcConnIDs)+len(m.connIDsToRetire)+1)
+	connIDs := make([]protocol.ConnectionID, 0, len(m.activeSrcConnIDs)+len(m.pathConnectionIDToPath)+len(m.connIDsToRetire)+1)
 	if m.initialClientDestConnID != nil {
 		connIDs = append(connIDs, *m.initialClientDestConnID)
 	}
 	for _, connID := range m.activeSrcConnIDs {
+		connIDs = append(connIDs, connID)
+	}
+	for connID := range m.pathConnectionIDToPath {
 		connIDs = append(connIDs, connID)
 	}
 	for _, c := range m.connIDsToRetire {
@@ -207,6 +300,9 @@ func (m *connIDGenerator) AddConnRunner(runner connRunner, r connRunnerCallbacks
 		r.AddConnectionID(*m.initialClientDestConnID)
 	}
 	for _, connID := range m.activeSrcConnIDs {
+		r.AddConnectionID(connID)
+	}
+	for connID := range m.pathConnectionIDToPath {
 		r.AddConnectionID(connID)
 	}
 }
