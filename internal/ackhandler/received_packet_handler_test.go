@@ -142,3 +142,21 @@ func TestPacketDuplicateDetection(t *testing.T) {
 	require.NoError(t, handler.ReceivedPacket(4, protocol.ECNNon, protocol.Encryption1RTT, sendTime, true))
 	require.True(t, handler.IsPotentiallyDuplicate(4, protocol.Encryption1RTT))
 }
+
+func TestMultipathPacketNumberSpaces(t *testing.T) {
+	handler := NewReceivedPacketHandler(utils.DefaultLogger)
+	now := monotime.Now()
+
+	require.False(t, handler.IsPotentiallyDuplicateForPath(1, 3))
+	require.NoError(t, handler.ReceivedPacketForPath(1, 3, protocol.ECNNon, now, true))
+	require.True(t, handler.IsPotentiallyDuplicateForPath(1, 3))
+	// The same packet number is independent on another Multipath path.
+	require.False(t, handler.IsPotentiallyDuplicateForPath(2, 3))
+	require.NoError(t, handler.ReceivedPacketForPath(2, 3, protocol.ECNNon, now, true))
+
+	ack := handler.GetAckFrameForPath(1, now.Add(time.Second), true)
+	require.NotNil(t, ack)
+	require.NotNil(t, ack.PathID)
+	require.Equal(t, uint64(1), *ack.PathID)
+	require.Equal(t, []wire.AckRange{{Smallest: 3, Largest: 3}}, ack.AckRanges)
+}

@@ -13,6 +13,7 @@ type ReceivedPacketHandler struct {
 	initialPackets   *receivedPacketTracker
 	handshakePackets *receivedPacketTracker
 	appDataPackets   appDataReceivedPacketTracker
+	multipathPackets map[uint64]*appDataReceivedPacketTracker
 
 	lowest1RTTPacket protocol.PacketNumber
 }
@@ -22,8 +23,26 @@ func NewReceivedPacketHandler(logger utils.Logger) *ReceivedPacketHandler {
 		initialPackets:   newReceivedPacketTracker(),
 		handshakePackets: newReceivedPacketTracker(),
 		appDataPackets:   *newAppDataReceivedPacketTracker(logger),
+		multipathPackets: make(map[uint64]*appDataReceivedPacketTracker),
 		lowest1RTTPacket: protocol.InvalidPacketNumber,
 	}
+}
+
+// ReceivedPacketForPath records a 1-RTT packet in the independent packet
+// number space of a Multipath path.
+func (h *ReceivedPacketHandler) ReceivedPacketForPath(
+	pathID uint64,
+	pn protocol.PacketNumber,
+	ecn protocol.ECN,
+	rcvTime monotime.Time,
+	ackEliciting bool,
+) error {
+	tracker, ok := h.multipathPackets[pathID]
+	if !ok {
+		tracker = newAppDataReceivedPacketTracker(h.appDataPackets.logger)
+		h.multipathPackets[pathID] = tracker
+	}
+	return tracker.ReceivedPacket(pn, ecn, rcvTime, ackEliciting)
 }
 
 func (h *ReceivedPacketHandler) ReceivedPacket(
@@ -116,4 +135,27 @@ func (h *ReceivedPacketHandler) IsPotentiallyDuplicate(pn protocol.PacketNumber,
 		return h.appDataPackets.IsPotentiallyDuplicate(pn)
 	}
 	panic("unexpected encryption level")
+}
+
+// IsPotentiallyDuplicateForPath checks the packet number space of a
+// Multipath path instead of the regular application-data packet number space.
+func (h *ReceivedPacketHandler) IsPotentiallyDuplicateForPath(pathID uint64, pn protocol.PacketNumber) bool {
+	tracker, ok := h.multipathPackets[pathID]
+	return ok && tracker.IsPotentiallyDuplicate(pn)
+}
+
+// GetAckFrameForPath returns a PATH_ACK for a Multipath path when an ACK is
+// due. The caller is responsible for placing the frame on that path.
+func (h *ReceivedPacketHandler) GetAckFrameForPath(pathID uint64, now monotime.Time, onlyIfQueued bool) *wire.AckFrame {
+	tracker, ok := h.multipathPackets[pathID]
+	if !ok {
+		return nil
+	}
+	ack := tracker.GetAckFrame(now, onlyIfQueued)
+	if ack == nil {
+		return nil
+	}
+	ackPathID := pathID
+	ack.PathID = &ackPathID
+	return ack
 }

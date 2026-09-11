@@ -1253,7 +1253,11 @@ func (c *Conn) handleShortHeaderPacket(
 		wire.LogShortHeader(c.logger, destConnID, pn, pnLen, keyPhase)
 	}
 
-	if c.receivedPacketHandler.IsPotentiallyDuplicate(pn, protocol.Encryption1RTT) {
+	isDuplicate := c.receivedPacketHandler.IsPotentiallyDuplicate(pn, protocol.Encryption1RTT)
+	if pathID != 0 {
+		isDuplicate = c.receivedPacketHandler.IsPotentiallyDuplicateForPath(pathID, pn)
+	}
+	if isDuplicate {
 		c.logger.Debugf("Dropping (potentially) duplicate packet.")
 		if c.qlogger != nil {
 			c.qlogger.RecordEvent(qlog.PacketDropped{
@@ -1289,7 +1293,7 @@ func (c *Conn) handleShortHeaderPacket(
 			})
 		}
 	}
-	isNonProbing, pathChallenge, err := c.handleUnpackedShortHeaderPacket(destConnID, pn, data, p.ecn, p.rcvTime, log)
+	isNonProbing, pathChallenge, err := c.handleUnpackedShortHeaderPacket(pathID, destConnID, pn, data, p.ecn, p.rcvTime, log)
 	if err != nil {
 		return false, err
 	}
@@ -1777,6 +1781,7 @@ func (c *Conn) handleUnpackedLongHeaderPacket(
 }
 
 func (c *Conn) handleUnpackedShortHeaderPacket(
+	pathID uint64,
 	destConnID protocol.ConnectionID,
 	pn protocol.PacketNumber,
 	data []byte,
@@ -1793,7 +1798,12 @@ func (c *Conn) handleUnpackedShortHeaderPacket(
 		return false, nil, err
 	}
 	c.sentPacketHandler.ReceivedPacket(protocol.Encryption1RTT, rcvTime)
-	if err := c.receivedPacketHandler.ReceivedPacket(pn, ecn, protocol.Encryption1RTT, rcvTime, isAckEliciting); err != nil {
+	if pathID != 0 {
+		err = c.receivedPacketHandler.ReceivedPacketForPath(pathID, pn, ecn, rcvTime, isAckEliciting)
+	} else {
+		err = c.receivedPacketHandler.ReceivedPacket(pn, ecn, protocol.Encryption1RTT, rcvTime, isAckEliciting)
+	}
+	if err != nil {
 		return false, nil, err
 	}
 	return isNonProbing, pathChallenge, nil
