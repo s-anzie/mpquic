@@ -147,6 +147,39 @@ func TestPathManagerOutgoingSelectsValidatedApplicationPathsRoundRobin(t *testin
 	require.Equal(t, p1.id, id)
 }
 
+func TestPathManagerOutgoingSchedulesInitialPathWithSecondaryPaths(t *testing.T) {
+	connIDs := map[pathID]protocol.ConnectionID{
+		0: protocol.ParseConnectionID([]byte{0}),
+	}
+	pm := newPathManagerOutgoing(
+		func(id pathID) (protocol.ConnectionID, bool) {
+			connID, ok := connIDs[id]
+			return connID, ok
+		},
+		func(pathID) {},
+		func() {},
+	)
+	pm.EnableInitialPathScheduling()
+
+	tr := &Transport{}
+	p := pm.NewPath(tr, time.Second, func() {})
+	pm.addPath(p, p.enablePath)
+	pm.paths[p.id].isValidated = true
+	connIDs[p.id] = protocol.ParseConnectionID([]byte{1})
+
+	id, connID, selectedTransport, ok := pm.NextPathForApplication()
+	require.True(t, ok)
+	require.Equal(t, p.id, id)
+	require.Equal(t, connIDs[p.id], connID)
+	require.Equal(t, tr, selectedTransport)
+
+	id, connID, selectedTransport, ok = pm.NextPathForApplication()
+	require.True(t, ok)
+	require.Zero(t, id)
+	require.Equal(t, connIDs[0], connID)
+	require.Nil(t, selectedTransport)
+}
+
 func TestPathManagerOutgoingSkipsApplicationPathWithoutConnectionID(t *testing.T) {
 	var blocked []pathID
 	connIDs := map[pathID]protocol.ConnectionID{}

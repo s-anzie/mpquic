@@ -439,6 +439,23 @@ func (t *Transport) WriteTo(b []byte, addr net.Addr) (int, error) {
 	return t.conn.WritePacket(b, addr, nil, 0, protocol.ECNUnsupported)
 }
 
+// writePacket sends a packet or a GSO batch on the transport's UDP socket.
+// It is used internally for efficient Multipath QUIC application sending.
+func (t *Transport) writePacket(b []byte, addr net.Addr, gsoSize uint16) error {
+	if err := t.init(false); err != nil {
+		return err
+	}
+	_, err := t.conn.WritePacket(b, addr, nil, gsoSize, protocol.ECNUnsupported)
+	return err
+}
+
+func (t *Transport) supportsGSO() bool {
+	if err := t.init(false); err != nil {
+		return false
+	}
+	return t.conn.capabilities().GSO
+}
+
 func (t *Transport) runSendQueue() {
 	for {
 		select {

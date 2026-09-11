@@ -2883,6 +2883,9 @@ func (c *Conn) sendMultipathApplicationPacket(now monotime.Time) (bool, error) {
 	if !ok {
 		return false, nil
 	}
+	if pathID == 0 && c.sendQueue.WouldBlock() {
+		return false, nil
+	}
 	pathAck := c.receivedPacketHandler.GetAckFrameForPath(uint64(pathID), now, true)
 	packet, buf, err := pathPacker.PackApplicationPacketForPath(
 		uint64(pathID), connID, pathAck, c.maxPacketSize(), now, c.version,
@@ -2896,7 +2899,86 @@ func (c *Conn) sendMultipathApplicationPacket(now monotime.Time) (bool, error) {
 	c.logger.Debugf("sending multipath application packet on path %d", pathID)
 	c.logShortHeaderPacket(packet, protocol.ECNNon, buf.Len())
 	c.registerPackedShortHeaderPacket(packet, protocol.ECNNon, now)
-	tr.WriteTo(buf.Data, c.conn.RemoteAddr())
+
+	maxSize := c.maxPacketSize()
+	useGSO := packet.Length == maxSize
+	if useGSO {
+		if pathID == 0 {
+			useGSO = c.conn.capabilities().GSO
+		} else {
+			useGSO = tr != nil && tr.supportsGSO()
+		}
+	}
+	if !useGSO {
+		if pathID == 0 {
+			c.sendQueue.Send(buf, 0, protocol.ECNNon)
+		} else {
+			_, err = tr.WriteTo(buf.Data, c.conn.RemoteAddr())
+			buf.Release()
+			if err != nil {
+				return false, err
+			}
+		}
+		c.scheduleSending()
+		return true, nil
+	}
+
+	batch := getLargePacketBuffer()
+	batch.Data = append(batch.Data, buf.Data...)
+	buf.Release()
+	var tail *packetBuffer
+	for batch.Len()+maxSize <= batch.Cap() {
+		if pathID == 0 {
+			if c.sentPacketHandler.SendMode(now) != ackhandler.SendAny {
+				break
+			}
+		} else if !c.multipath.canSendOnPath(uint64(pathID), now) {
+			break
+		}
+		pathAck = c.receivedPacketHandler.GetAckFrameForPath(uint64(pathID), now, true)
+		nextPacket, nextBuf, nextErr := pathPacker.PackApplicationPacketForPath(
+			uint64(pathID), connID, pathAck, maxSize, now, c.version,
+		)
+		if nextErr == errNothingToPack {
+			break
+		}
+		if nextErr != nil {
+			batch.Release()
+			return false, nextErr
+		}
+		c.logShortHeaderPacket(nextPacket, protocol.ECNNon, nextBuf.Len())
+		c.registerPackedShortHeaderPacket(nextPacket, protocol.ECNNon, now)
+		if nextPacket.Length != maxSize {
+			tail = nextBuf
+			break
+		}
+		batch.Data = append(batch.Data, nextBuf.Data...)
+		nextBuf.Release()
+	}
+
+	if pathID == 0 {
+		c.sendQueue.Send(batch, uint16(maxSize), protocol.ECNNon)
+	} else {
+		err = tr.writePacket(batch.Data, c.conn.RemoteAddr(), uint16(maxSize))
+		batch.Release()
+		if err != nil {
+			if tail != nil {
+				tail.Release()
+			}
+			return false, err
+		}
+	}
+	if tail != nil {
+		if pathID == 0 {
+			c.sendQueue.Send(tail, 0, protocol.ECNNon)
+		} else {
+			_, err = tr.WriteTo(tail.Data, c.conn.RemoteAddr())
+			tail.Release()
+			if err != nil {
+				return false, err
+			}
+		}
+	}
 	c.scheduleSending()
 	return true, nil
 }
@@ -3542,7 +3624,12 @@ func (c *Conn) getPathManager() *pathManagerOutgoing {
 
 	// Initialize the path manager
 	new := newPathManagerOutgoing(
-		c.connIDManager.GetConnIDForPath,
+		func(id pathID) (protocol.ConnectionID, bool) {
+			if id == 0 {
+				return c.connIDManager.Get(), true
+			}
+			return c.connIDManager.GetConnIDForPath(id)
+		},
 		c.connIDManager.RetireConnIDForPath,
 		c.scheduleSending,
 	)
@@ -3584,9 +3671,16 @@ func (c *Conn) getPathManager() *pathManagerOutgoing {
 		})
 	})
 	new.SetPathApplicationAvailability(func(id pathID) bool {
+		if id == 0 {
+			return c.sentPacketHandler.SendMode(monotime.Now()) == ackhandler.SendAny
+		}
+		if c.multipath.isPathAbandoned(uint64(id)) {
+			return false
+		}
 		return c.multipath.canSendOnPath(uint64(id), monotime.Now())
 	})
 	if c.multipathEnabled {
+		new.EnableInitialPathScheduling()
 		new.SetMaxPathID(c.multipath.peerMaxPathID)
 	}
 	if c.pathManagerOutgoing.CompareAndSwap(old, new) {

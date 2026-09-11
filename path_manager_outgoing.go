@@ -145,9 +145,18 @@ type pathManagerOutgoing struct {
 	paths               map[pathID]*pathOutgoing
 	nextPathID          pathID
 	nextApplicationPath pathID
+	includeInitialPath  bool
 	maxPathID           pathID
 	pathToSwitchTo      *pathOutgoing
 	pathToSwitchFrom    pathID
+}
+
+// EnableInitialPathScheduling includes the handshake path in application
+// scheduling. It is enabled only for Multipath QUIC connections.
+func (pm *pathManagerOutgoing) EnableInitialPathScheduling() {
+	pm.mx.Lock()
+	pm.includeInitialPath = true
+	pm.mx.Unlock()
 }
 
 // newPathManagerOutgoing creates a new pathManagerOutgoing object. This
@@ -379,6 +388,9 @@ func (pm *pathManagerOutgoing) NextPathForApplication() (_ pathID, _ protocol.Co
 	defer pm.mx.Unlock()
 
 	validated := make([]pathID, 0, len(pm.paths))
+	if pm.includeInitialPath {
+		validated = append(validated, 0)
+	}
 	for id, p := range pm.paths {
 		if p.isValidated {
 			validated = append(validated, id)
@@ -407,6 +419,9 @@ func (pm *pathManagerOutgoing) NextPathForApplication() (_ pathID, _ protocol.Co
 			continue
 		}
 		pm.nextApplicationPath = selected + 1
+		if selected == 0 {
+			return selected, connID, nil, true
+		}
 		return selected, connID, pm.paths[selected].tr, true
 	}
 	return invalidPathID, protocol.ConnectionID{}, nil, false

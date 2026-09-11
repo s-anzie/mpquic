@@ -97,6 +97,7 @@ func TestMultipathEndToEnd(t *testing.T) {
 	}()
 
 	path2BeforeData := path2Packets.Load()
+	path1BeforeData := path1Packets.Load()
 	_, err = stream.Write(payload)
 	require.NoError(t, err)
 	require.NoError(t, stream.Close())
@@ -110,7 +111,7 @@ func TestMultipathEndToEnd(t *testing.T) {
 		t.Fatal("timed out waiting for multipath stream data")
 	}
 	require.Greater(t, path2Packets.Load(), path2BeforeData, "application data must use the validated secondary path")
-	require.Greater(t, path1Packets.Load(), int64(0), "the initial path must carry the handshake")
+	require.Greater(t, path1Packets.Load(), path1BeforeData, "application data must also use the initial path")
 
 	require.NoError(t, path.Close())
 	fallbackPayload := []byte("fallback after path close")
