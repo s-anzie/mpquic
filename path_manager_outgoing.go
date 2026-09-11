@@ -138,14 +138,15 @@ type pathManagerOutgoing struct {
 	cidsBlocked     func(pathID)
 	scheduleSending func()
 
-	mx               sync.Mutex
-	activePath       pathID
-	pathsToProbe     []pathID
-	paths            map[pathID]*pathOutgoing
-	nextPathID       pathID
-	maxPathID        pathID
-	pathToSwitchTo   *pathOutgoing
-	pathToSwitchFrom pathID
+	mx                  sync.Mutex
+	activePath          pathID
+	pathsToProbe        []pathID
+	paths               map[pathID]*pathOutgoing
+	nextPathID          pathID
+	nextApplicationPath pathID
+	maxPathID           pathID
+	pathToSwitchTo      *pathOutgoing
+	pathToSwitchFrom    pathID
 }
 
 // newPathManagerOutgoing creates a new pathManagerOutgoing object. This
@@ -157,16 +158,17 @@ func newPathManagerOutgoing(
 	scheduleSending func(),
 ) *pathManagerOutgoing {
 	return &pathManagerOutgoing{
-		activePath:      0, // at initialization time, we're guaranteed to be using the handshake path
-		nextPathID:      1,
-		getConnID:       getConnID,
-		retireConnID:    retireConnID,
-		abandonPath:     func(pathID) {},
-		statusPath:      func(pathID pathID, backup bool) {},
-		cidsBlocked:     func(pathID) {},
-		scheduleSending: scheduleSending,
-		paths:           make(map[pathID]*pathOutgoing, 4),
-		maxPathID:       pathID(protocol.MaxPathID),
+		activePath:          0, // at initialization time, we're guaranteed to be using the handshake path
+		nextPathID:          1,
+		nextApplicationPath: 1,
+		getConnID:           getConnID,
+		retireConnID:        retireConnID,
+		abandonPath:         func(pathID) {},
+		statusPath:          func(pathID pathID, backup bool) {},
+		cidsBlocked:         func(pathID) {},
+		scheduleSending:     scheduleSending,
+		paths:               make(map[pathID]*pathOutgoing, 4),
+		maxPathID:           pathID(protocol.MaxPathID),
 	}
 }
 
@@ -349,6 +351,41 @@ func (pm *pathManagerOutgoing) NextPathToProbe() (_ pathID, _ protocol.Connectio
 		Handler: &pathManagerOutgoingAckHandler{manager: pm, pathID: id},
 	}
 	return id, connID, frame, p.tr, true
+}
+
+// NextPathForApplication selects the next validated path for application data.
+// Paths are selected in ascending ID order and wrapped around to provide a
+// deterministic round-robin scheduler.
+func (pm *pathManagerOutgoing) NextPathForApplication() (_ pathID, _ protocol.ConnectionID, _ *Transport, ok bool) {
+	pm.mx.Lock()
+	defer pm.mx.Unlock()
+
+	validated := make([]pathID, 0, len(pm.paths))
+	for id, p := range pm.paths {
+		if p.isValidated {
+			validated = append(validated, id)
+		}
+	}
+	if len(validated) == 0 {
+		return invalidPathID, protocol.ConnectionID{}, nil, false
+	}
+	slices.Sort(validated)
+
+	selected := validated[0]
+	for _, id := range validated {
+		if id >= pm.nextApplicationPath {
+			selected = id
+			break
+		}
+	}
+	pm.nextApplicationPath = selected + 1
+
+	connID, ok := pm.getConnID(selected)
+	if !ok {
+		pm.cidsBlocked(selected)
+		return invalidPathID, protocol.ConnectionID{}, nil, false
+	}
+	return selected, connID, pm.paths[selected].tr, true
 }
 
 func (pm *pathManagerOutgoing) HandlePathResponseFrame(f *wire.PathResponseFrame) {
