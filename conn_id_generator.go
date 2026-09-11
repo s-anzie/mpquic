@@ -239,7 +239,7 @@ func (m *connIDGenerator) observePathDestination(id pathID, connID protocol.Conn
 	m.currentPathDestConnIDs[id] = connID
 }
 
-func (m *connIDGenerator) retirePathConnectionID(id pathID, sequenceNumber uint64, sentWithDestConnID protocol.ConnectionID) error {
+func (m *connIDGenerator) retirePathConnectionID(id pathID, sequenceNumber uint64, sentWithDestConnID protocol.ConnectionID, packetPathID ...uint64) error {
 	connections := m.pathConnectionIDs[id]
 	connID, ok := connections[sequenceNumber]
 	if !ok {
@@ -250,9 +250,14 @@ func (m *connIDGenerator) retirePathConnectionID(id pathID, sequenceNumber uint6
 	}
 	currentConnID, hasCurrentConnID := m.currentPathDestConnIDs[id]
 	if (hasCurrentConnID && connID == currentConnID) || (!hasCurrentConnID && connID == sentWithDestConnID) {
-		return &qerr.TransportError{
-			ErrorCode:    qerr.ProtocolViolation,
-			ErrorMessage: fmt.Sprintf("retired path Connection ID %d currently in use on path %d", sequenceNumber, id),
+		// PATH_RETIRE_CONNECTION_ID can be sent on another open path. In
+		// that case the peer can retire the old path CID before sending any
+		// further packet on that path.
+		if len(packetPathID) == 0 || packetPathID[0] == uint64(id) {
+			return &qerr.TransportError{
+				ErrorCode:    qerr.ProtocolViolation,
+				ErrorMessage: fmt.Sprintf("retired path Connection ID %d currently in use on path %d", sequenceNumber, id),
+			}
 		}
 	}
 	delete(connections, sequenceNumber)

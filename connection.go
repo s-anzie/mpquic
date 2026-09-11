@@ -1988,7 +1988,6 @@ func (c *Conn) handleFramesForPath(
 			return false, false, nil, handleErr
 		}
 	}
-
 	// Handle completion of the handshake after processing all the frames.
 	// This ensures that we correctly handle the following case on the server side:
 	// We receive a Handshake packet that contains the CRYPTO frame that allows us to complete the handshake,
@@ -2077,7 +2076,7 @@ func (c *Conn) handleFrameForPath(
 		if frame.PathID == 0 {
 			err = c.connIDGenerator.Retire(frame.SequenceNumber, destConnID, rcvTime.Add(3*c.rttStats.PTO(false)))
 		} else {
-			err = c.connIDGenerator.retirePathConnectionID(pathID(frame.PathID), frame.SequenceNumber, destConnID)
+			err = c.connIDGenerator.retirePathConnectionID(pathID(frame.PathID), frame.SequenceNumber, destConnID, packetPathID)
 		}
 	case *wire.MaxPathIDFrame:
 		err = c.multipath.handleMaxPathID(frame)
