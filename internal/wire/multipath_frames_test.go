@@ -1,12 +1,35 @@
 package wire
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/quic-go/quic-go/internal/protocol"
 	"github.com/stretchr/testify/require"
 )
+
+func TestPathNewConnectionIDLengths(t *testing.T) {
+	for length := 0; length <= protocol.MaxConnIDLen+1; length++ {
+		t.Run(fmt.Sprint(length), func(t *testing.T) {
+			// The wire diagram specifies 8..160 bits, i.e. 1..20 bytes.
+			data := append([]byte{1, 0, 0, byte(length)}, make([]byte, length+16)...)
+			frame, n, err := parsePathNewConnectionIDFrame(data, protocol.Version1)
+			if length == 0 || length > protocol.MaxConnIDLen {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, len(data), n)
+			require.Equal(t, length, frame.ConnectionID.Len())
+			encoded, err := frame.Append(nil, protocol.Version1)
+			require.NoError(t, err)
+			require.Equal(t, frame.Length(protocol.Version1), protocol.ByteCount(len(encoded)))
+		})
+	}
+	_, err := (&PathNewConnectionIDFrame{}).Append(nil, protocol.Version1)
+	require.Error(t, err)
+}
 
 func TestMultipathFrameRoundTrip(t *testing.T) {
 	connID := protocol.ParseConnectionID([]byte{0, 1, 2, 3, 4, 5, 6, 7})
