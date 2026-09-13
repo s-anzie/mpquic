@@ -184,6 +184,15 @@ type Config struct {
 	// Enable Multipath QUIC support.
 	// See https://datatracker.ietf.org/doc/draft-ietf-quic-multipath/.
 	EnableMultipath bool
+	// DisableAutomaticPathDiscovery leaves path creation to the application.
+	// Otherwise, multipath clients discover and validate additional local addresses
+	// after the handshake. Servers never initiate discovery.
+	DisableAutomaticPathDiscovery bool
+	// PathDiscoveryAddresses optionally supplies local address candidates instead
+	// of enumerating active OS interfaces. It is ignored when discovery is disabled.
+	// It must return promptly and be safe for concurrent calls across connections.
+	// Errors preserve existing paths; an empty successful result removes them.
+	PathDiscoveryAddresses func() ([]net.IP, error)
 	// MaxPathID is the largest path ID this endpoint is willing to accept.
 	// It is only used when EnableMultipath is true. A value of zero negotiates
 	// Multipath QUIC without permitting additional paths at connection start.

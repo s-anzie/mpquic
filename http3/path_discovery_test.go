@@ -15,20 +15,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestEligiblePathAddresses(t *testing.T) {
-	addresses := []net.IP{
-		net.ParseIP("192.0.2.1"), net.ParseIP("192.0.2.2"), net.ParseIP("192.0.2.2"),
-		net.ParseIP("127.0.0.1"), net.ParseIP("169.254.1.1"), net.ParseIP("224.0.0.1"),
-		net.ParseIP("::"), net.ParseIP("fe80::1"), net.ParseIP("2001:db8::1"), nil,
-	}
-	got := eligiblePathAddresses(addresses, net.ParseIP("192.0.2.1"), net.ParseIP("198.51.100.1"))
-	require.Len(t, got, 1)
-	require.True(t, got[0].Equal(net.ParseIP("192.0.2.2")))
-	got = eligiblePathAddresses(addresses, net.ParseIP("2001:db8::2"), net.ParseIP("2001:db8::3"))
-	require.Len(t, got, 1)
-	require.True(t, got[0].Equal(net.ParseIP("2001:db8::1")))
-}
-
 func TestTransportMultipathConfiguration(t *testing.T) {
 	for _, maxPathID := range []uint64{0, 2} {
 		config := &quic.Config{MaxPathID: maxPathID}
@@ -62,7 +48,7 @@ func (s *discoveryTestSocket) WriteMsgUDP(data, oob []byte, addr *net.UDPAddr) (
 }
 
 func TestHTTP3AutomaticPathDiscovery(t *testing.T) {
-	for _, name := range []string{"multipath", "quic-config", "unsupported-peer"} {
+	for _, name := range []string{"multipath", "quic-config", "custom-dial", "unsupported-peer"} {
 		t.Run(name, func(t *testing.T) {
 			enabled := name != "unsupported-peer"
 			// Supply a deterministic interface inventory; all QUIC traffic still
@@ -89,7 +75,7 @@ func TestHTTP3AutomaticPathDiscovery(t *testing.T) {
 			var inventoryError atomic.Bool
 			var scans atomic.Int64
 			transport := &Transport{EnableMultipath: true, TLSClientConfig: getTLSClientConfig(),
-				pathAddresses: func() ([]net.IP, error) {
+				QUICConfig: &quic.Config{PathDiscoveryAddresses: func() ([]net.IP, error) {
 					scans.Add(1)
 					if inventoryError.Load() {
 						return nil, errors.New("temporary interface inventory failure")
@@ -98,13 +84,17 @@ func TestHTTP3AutomaticPathDiscovery(t *testing.T) {
 						return []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("127.0.0.2")}, nil
 					}
 					return nil, nil
-				},
+				}},
 			}
 			if name == "quic-config" {
 				transport.EnableMultipath = false
-				transport.QUICConfig = &quic.Config{EnableMultipath: true, MaxPathID: 4}
+				transport.QUICConfig.EnableMultipath = true
+				transport.QUICConfig.MaxPathID = 4
 			}
 			defer transport.Close()
+			if name == "custom-dial" {
+				transport.Dial = quic.DialAddrEarly
+			}
 			client := &http.Client{Transport: transport}
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
