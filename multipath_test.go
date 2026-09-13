@@ -443,6 +443,7 @@ func TestMultipathStateAcknowledgesAndDetectsLostApplicationFrames(t *testing.T)
 		[]ackhandler.Frame{{Frame: frame, Handler: handler}},
 		nil,
 	))
+	state.paths[1].packetNumberSpace.largestAcknowledged = 6
 	require.Empty(t, state.detectLostPathProbes(now, time.Second))
 	require.Equal(t, 1, handler.lost)
 }
@@ -458,6 +459,7 @@ func TestMultipathStateReportsApplicationLossWithoutProbeLoss(t *testing.T) {
 		nil,
 	))
 
+	state.paths[1].packetNumberSpace.largestAcknowledged = 5
 	lostPaths, lostPackets := state.detectLostPathPackets(now, time.Second)
 	require.Empty(t, lostPaths)
 	require.True(t, lostPackets)
@@ -484,7 +486,7 @@ func TestMultipathStateUsesIndependentPathCongestionControllers(t *testing.T) {
 	require.Equal(t, protocol.ByteCount(1200), state.paths[2].bytesInFlight)
 
 	require.Empty(t, state.detectLostPathProbes(now.Add(time.Second), time.Second))
-	require.Zero(t, state.paths[2].bytesInFlight)
+	require.Equal(t, protocol.ByteCount(1200), state.paths[2].bytesInFlight, "PTO must not discard the flight")
 }
 
 func TestMultipathStateAllocatesIndependentPacketNumbers(t *testing.T) {

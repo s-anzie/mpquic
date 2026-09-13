@@ -48,8 +48,8 @@ for path in a b; do
   server ip address add "10.66.$subnet.2/24" dev "mpq-s$path"
   ip link set "mpq-c$path" up
   server ip link set "mpq-s$path" up
-  tc qdisc add dev "mpq-c$path" root netem delay 2ms rate 200mbit
-  server tc qdisc add dev "mpq-s$path" root netem delay 2ms rate 200mbit
+  tc qdisc add dev "mpq-c$path" root netem delay 2ms loss "${MPQUIC_LOSS:-0%}" rate 200mbit
+  server tc qdisc add dev "mpq-s$path" root netem delay 2ms loss "${MPQUIC_LOSS:-0%}" rate 200mbit
 done
 ip route add 10.66.0.1/32 via 10.66.1.2 dev mpq-ca src 10.66.1.1
 ip rule add from 10.66.2.1/32 table 102

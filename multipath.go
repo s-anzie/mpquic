@@ -93,6 +93,8 @@ type multipathPathState struct {
 	latestRTT         time.Duration
 	smoothedRTT       time.Duration
 	lossDelay         time.Duration
+	ptoCount          uint
+	lastPTO           monotime.Time
 
 	hasStatus          bool
 	statusSequence     uint64
@@ -261,6 +263,10 @@ func (m *multipathState) handlePathAck(f *wire.AckFrame, receivedAt ...monotime.
 		for _, ackRange := range f.AckRanges {
 			if packetNumber >= ackRange.Smallest && packetNumber <= ackRange.Largest {
 				packet := p.sentPackets[packetNumber]
+				if packet.ackEliciting {
+					p.ptoCount = 0
+					p.lastPTO = 0
+				}
 				if packetNumber == f.LargestAcked() && packet.ackEliciting {
 					m.updatePathRTT(p, packet, f.DelayTime, rcvTime)
 					if p.congestion != nil {
@@ -432,11 +438,17 @@ func (m *multipathState) nextPathProbeLossTime(lossDelay time.Duration) monotime
 		if pathLossDelay <= 0 {
 			pathLossDelay = lossDelay
 		}
-		for _, packet := range p.sentPackets {
+		for pn, packet := range p.sentPackets {
+			if !packet.isProbe && pn > p.packetNumberSpace.largestAcknowledged {
+				continue
+			}
 			lossTime := packet.sentAt.Add(pathLossDelay)
 			if earliest.IsZero() || lossTime.Before(earliest) {
 				earliest = lossTime
 			}
+		}
+		if deadline := p.probeTimeout(lossDelay); !deadline.IsZero() && (earliest.IsZero() || deadline.Before(earliest)) {
+			earliest = deadline
 		}
 	}
 	return earliest
@@ -460,6 +472,11 @@ func (m *multipathState) detectLostPathPackets(now monotime.Time, lossDelay time
 		}
 		lossTime := now.Add(-pathLossDelay)
 		for packetNumber, packet := range p.sentPackets {
+			// An elapsed time alone is not evidence of application packet loss.
+			// Validation probes have their own retry lifecycle.
+			if !packet.isProbe && packetNumber > p.packetNumberSpace.largestAcknowledged {
+				continue
+			}
 			if !packet.sentAt.After(lossTime) {
 				lostPackets = true
 				if packet.ackEliciting && packet.size > 0 {
