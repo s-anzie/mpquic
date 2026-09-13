@@ -80,7 +80,7 @@ Never reconstruct an authority with counters reset for an existing connection.
 | --- | --- | --- |
 | C01 | Local authority: exclusive path grants, monotonic packet numbers, shared stream range and credit reservations, final size, closure, concurrent tests | Implemented as an internal primitive |
 | C02a | Bind a confirmed multipath server's additional-path packet allocation to the authority, preserving existing high-water marks | Implemented behind an internal staging hook |
-| C02b | Import stream/credit state and enforce primary and worker stream reservations through the same authority | Pending |
+| C02b | Import primary stream/credit state and account ordinary writes, pre-reserved buffers, and FIN through the authority | Implemented; remote reservations remain disabled |
 | C03 | Authenticated worker coordination contract, range/content ledger, ACK/control routing, bounded queues and loss of coordination behavior | Pending |
 | C04 | Secure worker bootstrap and packet protection state, coordinated key updates and global AEAD accounting | Pending |
 | C05 | Negotiated source endpoint advertisement and client validation for different server IPs | Pending |
@@ -94,15 +94,16 @@ single-connection safety rules merely to produce an early demo.
 
 `internal/cloning.Authority` is deliberately internal and process-local. C02a
 now provides optional integration with `Conn` and additional-path packet packing,
-as described below. TLS, HTTP/3 state, and stream flow control are not cloned.
-Default QUIC traffic is unchanged. The library currently exposes no public
+as described below. C02b adds live primary stream accounting. TLS and HTTP/3
+state are not cloned. Cloning remains opt-in through an internal hook; ordinary
+streams retain their flow-control semantics. The library currently exposes no public
 session-cloning switch and no network snapshot import/export API.
 
 The authority uses opaque local grants. Worker names are labels, not verified
 identities. Both packet allocation and stream reservation are serialized; ranges
 start at zero and streams must be registered before any data emission. This is
-not yet suitable for attaching to an already active stream without importing
-its authoritative high-water mark. Likewise, a zero-based path grant must precede
+not suitable for attaching to an already active stream without the C02b primary
+adapter, which imports its authoritative high-water mark. Likewise, a zero-based path grant must precede
 all server packets on that path, including validation responses; it cannot be
 attached to a path that already sent packets. MAX_STREAMS eligibility must be checked by
 the future connection adapter, not inferred from a valid stream ID.
@@ -137,11 +138,11 @@ not a competing allocator. Abandonment revokes its grant; connection shutdown
 closes the authority. The initial path continues to use quic-go's original
 allocator, remains primary-owned, and cannot be handed to a worker.
 
-The staging authority intentionally starts with zero connection credit and no
-registered streams. Do not enable data reservations until C02b imports the real
-stream offsets and control limits and connects ordinary primary emission to the
-same ledger. This prevents treating packet-number integration as permission to
-reserve already-used stream offsets or duplicate flow-control credit.
+Originally the staging authority started with zero connection credit. C02b now
+binds the actual connection credit before publishing activation, and lazily imports
+live stream state under the existing write locks. Remote range reservations remain
+disabled: packet-number integration alone does not authorize a worker to reserve
+already-used offsets or consume credit outside the live stream state.
 
 Coverage includes synthetic imported counters, skipped numbers, late-created
 paths, exhaustion, atomic activation failure, and grant retirement. A real UDP
@@ -156,3 +157,47 @@ worker or multi-source transfer.
 go test -race . -run 'TestCloning|TestQUICAutomaticPathDiscovery/cloning' -count=10
 go test -race ./internal/cloning
 ```
+
+## C02b: primary stream accounting
+
+Activation imports the connection's current send window and total consumed
+credit while holding its send-side lock. This total includes bytes pre-reserved
+by `TryWriteAll` and bytes belonging to streams removed from the live stream map.
+It must not be recomputed by summing only currently open streams.
+
+Each stream is imported at its first subsequent credit reservation, using its
+flow controller's high-water mark, not its last acknowledged offset or buffer
+length. Imported bytes are not charged again. Ordinary writes, limited writes,
+and eager buffer reservations pass through one connection-level reservation
+operation. Pending pre-reserved frames and retransmissions bypass fresh credit
+allocation. Received window increases are reflected in the ledger on the next
+reservation. FIN records the exact already-accounted final size, including empty
+streams. Accounting disagreement fails closed through connection shutdown.
+
+Lock order is SendStream -> connection send-side -> authority. Activation needs
+only the latter two locks and does not traverse and lock every active stream.
+This permits application writes concurrent with activation without an inconsistent
+snapshot or reverse lock ordering.
+
+Tests cover shared credit across streams, activation with pre-reserved but unsent
+data, frame splitting, retransmission without additional credit, window increases,
+write limiters, final size, stale offsets, and concurrent streams across activation.
+The real UDP test now pauses an open stream after a received prefix, activates the
+authority, then verifies the suffix and final offset on that same stream/connection.
+
+This completes primary accounting, not worker data delegation. Once bound to a
+live primary, `Authority.Reserve` explicitly returns `ErrDelegationNotReady`.
+Allowing a worker to allocate ranges now would leave the live primary's offsets
+behind. C03 must couple worker ranges to SendStream state, content identity,
+delivery ownership, reset/STOP_SENDING and RESET_STREAM_AT lifecycle, and retries.
+Cancellation currently retains consumed credit through the ordinary QUIC stack;
+there is not yet a distributed terminal-state ledger for canceled streams.
+
+Validation note: an initial full-suite run timed out in the cloning test's first
+warmup transfer, before authority activation, while another test invocation ran
+concurrently. Targeted repeated race runs and the subsequent isolated full-suite
+run passed. The timeout's cause is not established; it is not evidence that
+distributed cloning has been validated or that the transport is failure-free.
+Final validation of C02b passed `go test ./...` followed sequentially by
+`go test -race . ./http3 ./internal/cloning`. Targeted cloning tests, including
+the live activation case, also passed ten race-enabled repetitions.

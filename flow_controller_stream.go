@@ -129,14 +129,8 @@ func (c *streamFlowController) UpdateSendWindow(offset protocol.ByteCount) (upda
 
 // TryAddBytesSent adds n bytes if sufficient stream- and connection-level send credit is available.
 func (c *streamFlowController) TryAddBytesSent(n protocol.ByteCount) bool {
-	if c.bytesSent > c.sendWindow || n > c.sendWindow-c.bytesSent {
-		return false
-	}
-	if !c.connection.TryAddBytesSent(n) {
-		return false
-	}
-	c.bytesSent += n
-	return true
+	_, _, ok := c.connection.reserveStream(c, n, nil)
+	return ok
 }
 
 // AddBytesSentWithLimiter adds the limiter-approved portion of the available stream- and connection-level send credit.
@@ -144,12 +138,7 @@ func (c *streamFlowController) AddBytesSentWithLimiter(
 	n protocol.ByteCount,
 	limiter func(int) int,
 ) (protocol.ByteCount, bool) {
-	if c.bytesSent >= c.sendWindow {
-		return 0, false
-	}
-	n = min(n, c.sendWindow-c.bytesSent)
-	added, limited := c.connection.AddBytesSentWithLimiter(n, limiter)
-	c.bytesSent += added
+	added, limited, _ := c.connection.reserveStream(c, n, limiter)
 	return added, limited
 }
 
