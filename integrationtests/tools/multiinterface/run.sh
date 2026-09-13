@@ -64,8 +64,8 @@ ip route get 10.66.0.1 from 10.66.2.1 > "$results/route-b.txt"
 server ip -j address > "$results/server-addresses.json"
 
 failed=0
-for protocol in quic http3; do
-  for scenario in single multipath cut-secondary cut-primary; do
+for protocol in ${MPQUIC_PROTOCOLS:-quic http3}; do
+  for scenario in ${MPQUIC_SCENARIOS:-single multipath cut-secondary cut-primary}; do
     name="$protocol-$scenario"
     ip link set mpq-ca up
     ip link set mpq-cb up
@@ -87,7 +87,7 @@ for protocol in quic http3; do
       exit 1
     fi
     echo "RUN $name bytes=$bytes"
-    if timeout 170 "$binary" -protocol "$protocol" -multipath="$enabled" -bytes "$bytes" -cut "$cut" > "$results/$name.json" 2> "$results/$name-client.log"; then
+    if timeout 170 "$binary" -protocol "$protocol" -multipath="$enabled" -bytes "$bytes" -cut "$cut" -timeout "${MPQUIC_TIMEOUT:-150s}" > "$results/$name.json" 2> "$results/$name-client.log"; then
       echo "PASS $name"
     else
       echo "FAIL $name"

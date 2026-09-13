@@ -187,6 +187,7 @@ type Conn struct {
 	notifyReceivedPacket chan struct{}
 	sendingScheduled     chan struct{}
 	multipathActions     chan func()
+	pathSendErrors       chan error
 	receivedPacketMx     sync.Mutex
 	receivedPackets      ringbuffer.RingBuffer[receivedPacket]
 
@@ -541,7 +542,7 @@ func (c *Conn) preSetup() {
 	c.largestRcvdAppData = protocol.InvalidPacketNumber
 	c.initialStream = newInitialCryptoStream(c.perspective == protocol.PerspectiveClient)
 	c.handshakeStream = newCryptoStream()
-	c.sendQueue = newSendQueue(c.conn)
+	c.sendQueue = c.newConnectionSendQueue()
 	c.retransmissionQueue = newRetransmissionQueue()
 	c.frameParser = *wire.NewFrameParser(
 		c.config.EnableDatagrams,
@@ -656,6 +657,13 @@ runLoop:
 			}
 		}
 	multipathActionsDrained:
+		select {
+		case err := <-c.pathSendErrors:
+			if err = c.handlePathSendError(0, err); err != nil {
+				c.setCloseError(&closeError{err: err})
+			}
+		default:
+		}
 
 		// no need to set a timer if we can send packets immediately
 		if c.pacingDeadline != deadlineSendImmediately {
@@ -724,7 +732,7 @@ runLoop:
 		// Check for loss detection timeout.
 		// This could cause packets to be declared lost, and retransmissions to be enqueued.
 		now := monotime.Now()
-		if timeout := c.sentPacketHandler.GetLossDetectionTimeout(); !timeout.IsZero() && !timeout.After(now) {
+		if timeout := c.sentPacketHandler.GetLossDetectionTimeout(); !c.multipath.isPathAbandoned(0) && !timeout.IsZero() && !timeout.After(now) {
 			if err := c.sentPacketHandler.OnLossDetectionTimeout(now); err != nil {
 				c.setCloseError(&closeError{err: err})
 				break runLoop
@@ -956,7 +964,7 @@ func (c *Conn) maybeResetTimer() {
 	if t := c.receivedPacketHandler.GetAlarmTimeout(); !t.IsZero() && t.Before(deadline) {
 		deadline = t
 	}
-	if t := c.sentPacketHandler.GetLossDetectionTimeout(); !t.IsZero() && t.Before(deadline) {
+	if t := c.sentPacketHandler.GetLossDetectionTimeout(); !c.multipath.isPathAbandoned(0) && !t.IsZero() && t.Before(deadline) {
 		deadline = t
 	}
 	if c.multipathEnabled {
@@ -1000,7 +1008,7 @@ func (c *Conn) switchToNewPath(tr *Transport, now monotime.Time) {
 	c.mtuDiscoverer.Reset(now, initialPacketSize, maxPacketSize)
 	c.conn = newSendConn(tr.conn, c.conn.RemoteAddr(), packetInfo{}, utils.DefaultLogger) // TODO: find a better way
 	c.sendQueue.Close()
-	c.sendQueue = newSendQueue(c.conn)
+	c.sendQueue = c.newConnectionSendQueue()
 	go func() {
 		if err := c.sendQueue.Run(); err != nil {
 			c.destroyImpl(err)
@@ -2092,6 +2100,9 @@ func (c *Conn) handleFrameForPath(
 		var echo bool
 		echo, err = c.multipath.handlePathAbandon(frame)
 		if err == nil {
+			if echo && frame.PathID == 0 {
+				c.requeueInitialPathPackets()
+			}
 			c.receivedPacketHandler.AbandonPath(frame.PathID)
 			c.connIDGenerator.AbandonPath(pathID(frame.PathID))
 			c.connIDManager.AbandonPath(pathID(frame.PathID))
@@ -2770,6 +2781,24 @@ func (c *Conn) provisionMultipathPathConnectionIDs() {
 
 func (c *Conn) triggerSending(now monotime.Time) error {
 	c.pacingDeadline = 0
+	// Connection-wide control data must be generated even when path 0 is
+	// unavailable and all packets are sent by the multipath scheduler.
+	if c.handshakeConfirmed {
+		if offset := c.connFlowController.GetWindowUpdate(now); offset > 0 {
+			c.framer.QueueControlFrame(&wire.MaxDataFrame{MaximumData: offset})
+		}
+		if cf := c.cryptoStreamManager.GetPostHandshakeData(protocol.MaxPostHandshakeCryptoFrameSize); cf != nil {
+			c.queueControlFrame(cf)
+		}
+	}
+	if c.multipathEnabled && c.multipath.isPathAbandoned(0) {
+		sent, err := c.sendMultipathApplicationPacket(now)
+		if err != nil || sent {
+			return err
+		}
+		_, err = c.sendMultipathAckOnlyPacket(now)
+		return err
+	}
 
 	sendMode := c.sentPacketHandler.SendMode(now)
 	if c.multipathEnabled && c.handshakeConfirmed &&
@@ -3068,6 +3097,7 @@ func (c *Conn) sendMultipathAckOnlyPacket(now monotime.Time) (bool, error) {
 				c.logShortHeaderPacket(packet, protocol.ECNNon, buf.Len())
 				c.registerPackedShortHeaderPacket(packet, protocol.ECNNon, now)
 				c.sendQueue.SendProbe(buf, path.remoteAddr, path.packetInfo)
+				buf.Release()
 				c.scheduleSending()
 				return true, nil
 			}
@@ -3091,9 +3121,9 @@ func (c *Conn) sendMultipathAckOnlyPacket(now monotime.Time) (bool, error) {
 		c.logShortHeaderPacket(packet, protocol.ECNNon, buf.Len())
 		c.registerPackedShortHeaderPacket(packet, protocol.ECNNon, now)
 		_, err = tr.WriteTo(buf.Data, c.conn.RemoteAddr())
+		buf.Release()
 		if err != nil {
-			buf.Release()
-			return false, err
+			return false, c.handlePathSendError(uint64(pathID), err)
 		}
 		c.scheduleSending()
 		return true, nil

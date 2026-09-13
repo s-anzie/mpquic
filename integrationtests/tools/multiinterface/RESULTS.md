@@ -1,5 +1,8 @@
 # Multi-interface validation results — 2026-09-13
 
+This is the lot 67 baseline. See [lot 68 results](RESULTS-lot68.md) for
+subsequent path-failure fixes and the remaining performance limitations.
+
 ## Verdict
 
 Automatic discovery and complete downloads work over two independently routed

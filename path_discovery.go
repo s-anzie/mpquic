@@ -56,6 +56,7 @@ func eligiblePathAddresses(addresses []net.IP, primary, remote net.IP) []net.IP 
 }
 
 type discoveredPath struct {
+	conn      *Conn
 	path      *Path
 	transport *Transport
 	socket    *net.UDPConn
@@ -63,6 +64,7 @@ type discoveredPath struct {
 
 func (p *discoveredPath) close() {
 	_ = p.path.Close()
+	p.conn.detachDiscoveredTransport(p.transport)
 	_ = p.transport.Close()
 	_ = p.socket.Close()
 }
@@ -147,7 +149,7 @@ func (conn *Conn) startPathDiscovery() <-chan struct{} {
 						break // Peer path limits may change on a later scan.
 					}
 					attempted[key] = true
-					p := &discoveredPath{path: path, transport: tr, socket: socket}
+					p := &discoveredPath{conn: conn, path: path, transport: tr, socket: socket}
 					probeCtx, cancelProbe := context.WithTimeout(ctx, 2*time.Second)
 					err = path.Probe(probeCtx)
 					cancelProbe()

@@ -93,7 +93,12 @@ func (c *Conn) nextServerApplicationPath(now monotime.Time) (pathID, protocol.Co
 	return 0, protocol.ConnectionID{}, false
 }
 
-func (c *Conn) writeMultipathApplication(id uint64, tr *Transport, data []byte, gsoSize uint16) error {
+func (c *Conn) writeMultipathApplication(id uint64, tr *Transport, data []byte, gsoSize uint16) (err error) {
+	defer func() {
+		if err != nil {
+			err = c.handlePathSendError(id, err)
+		}
+	}()
 	if c.perspective == protocol.PerspectiveClient {
 		return tr.writePacket(data, c.conn.RemoteAddr(), gsoSize)
 	}

@@ -398,6 +398,23 @@ type multipathTestFrameHandler struct {
 func (h *multipathTestFrameHandler) OnAcked(wire.Frame) { h.acked++ }
 func (h *multipathTestFrameHandler) OnLost(wire.Frame)  { h.lost++ }
 
+func TestMultipathAbandonRequeuesFramesExactlyOnce(t *testing.T) {
+	state := newMultipathState(3)
+	control, stream := &multipathTestFrameHandler{}, &multipathTestFrameHandler{}
+	require.NoError(t, state.recordSentApplicationPacketWithSize(1, 1, monotime.Now(), 1200, true,
+		[]ackhandler.Frame{{Frame: &wire.PingFrame{}, Handler: control}},
+		[]ackhandler.StreamFrame{{Frame: &wire.StreamFrame{StreamID: 0, Data: []byte("pending")}, Handler: stream}}))
+	require.NoError(t, state.markPathAbandoned(1))
+	require.Equal(t, 1, control.lost)
+	require.Equal(t, 1, stream.lost)
+	require.Empty(t, state.paths[1].sentPackets)
+	require.Zero(t, state.paths[1].bytesInFlight)
+	echo, err := state.handlePathAbandon(&wire.PathAbandonFrame{PathID: 1})
+	require.NoError(t, err)
+	require.False(t, echo)
+	require.Equal(t, 1, stream.lost)
+}
+
 func TestMultipathStateAcknowledgesAndDetectsLostApplicationFrames(t *testing.T) {
 	state := newMultipathState(3)
 	handler := &multipathTestFrameHandler{}
