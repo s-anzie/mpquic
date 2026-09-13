@@ -81,7 +81,8 @@ Never reconstruct an authority with counters reset for an existing connection.
 | C01 | Local authority: exclusive path grants, monotonic packet numbers, shared stream range and credit reservations, final size, closure, concurrent tests | Implemented as an internal primitive |
 | C02a | Bind a confirmed multipath server's additional-path packet allocation to the authority, preserving existing high-water marks | Implemented behind an internal staging hook |
 | C02b | Import primary stream/credit state and account ordinary writes, pre-reserved buffers, and FIN through the authority | Implemented; remote reservations remain disabled |
-| C03 | Authenticated worker coordination contract, range/content ledger, ACK/control routing, bounded queues and loss of coordination behavior | Pending |
+| C03a | Bounded content/range ledger connected to live SendStream offsets and completion, partial delivery, retries and cancellation | Implemented as internal local primitives |
+| C03b | Authenticated worker coordination contract, packet-to-byte ACK evidence, control routing and bounded communication queues | Pending |
 | C04 | Secure worker bootstrap and packet protection state, coordinated key updates and global AEAD accounting | Pending |
 | C05 | Negotiated source endpoint advertisement and client validation for different server IPs | Pending |
 | C06 | Direct multi-server transmission and cross-path retransmission of distinct ranges | Pending |
@@ -185,13 +186,10 @@ write limiters, final size, stale offsets, and concurrent streams across activat
 The real UDP test now pauses an open stream after a received prefix, activates the
 authority, then verifies the suffix and final offset on that same stream/connection.
 
-This completes primary accounting, not worker data delegation. Once bound to a
-live primary, `Authority.Reserve` explicitly returns `ErrDelegationNotReady`.
-Allowing a worker to allocate ranges now would leave the live primary's offsets
-behind. C03 must couple worker ranges to SendStream state, content identity,
-delivery ownership, reset/STOP_SENDING and RESET_STREAM_AT lifecycle, and retries.
-Cancellation currently retains consumed credit through the ordinary QUIC stack;
-there is not yet a distributed terminal-state ledger for canceled streams.
+The bare `Authority.Reserve` method still returns `ErrDelegationNotReady` on a
+bound primary: bypassing SendStream would leave its offsets behind. C03a adds a
+separate trusted adapter that couples retained content and reservations to that
+live stream. There is still no authenticated remote coordination interface.
 
 Validation note: an initial full-suite run timed out in the cloning test's first
 warmup transfer, before authority activation, while another test invocation ran
@@ -201,3 +199,59 @@ distributed cloning has been validated or that the transport is failure-free.
 Final validation of C02b passed `go test ./...` followed sequentially by
 `go test -race . ./http3 ./internal/cloning`. Targeted cloning tests, including
 the live activation case, also passed ten race-enabled repetitions.
+
+## C03a: retained ranges and delivery ownership
+
+The internal `SendStream.delegateCloningRange` adapter reserves credit, retains a
+copy of the supplied bytes, advances the live stream offset, and adds one delivery
+obligation while holding the stream and connection send locks. Normal subsequent
+writes start after that range. Pending primary write buffers must be drained first;
+the adapter returns `ErrWouldBlock` rather than silently reorder them. A FIN may
+be sent and acknowledged while delegated bytes are missing, but stream completion
+waits for every delegated byte too.
+
+Each range has an immutable identity, stream interval and SHA-256 digest. Attempts
+bind that range to a path grant and a monotonically increasing generation. Retained
+bytes are copied on admission and readout. The primary currently holds the bytes
+needed to retry: this first implementation is not a content-reference-only design
+and does not establish an efficient geographically distributed data plane. A later
+content-provider contract may replace retention, but must guarantee reproducible
+identical bytes after source failure without making that source indispensable.
+
+Loss or source-path retirement allows another attempt on a valid path, without
+changing offsets, content, stream completion obligations, or flow-control credit.
+Stale loss notifications do not invalidate a newer attempt. Old attempts cannot
+retrieve content for new work, but their late delivery evidence still counts.
+Byte-level ACK bitmaps deduplicate overlapping or repeated intervals; only full
+coverage produces a completion transition. An invalid interval cannot acknowledge
+bytes outside the assigned range.
+
+Bounds are currently fixed: 64 KiB per range, 256 pending ranges, 8 MiB retained
+payload per authority, plus bounded ACK bitmaps. Completed/canceled payload and
+bitmaps are released; connection credit is never refunded. Range identifiers are
+never reused. Held attempt handles retain small terminal metadata, not payload.
+Capacity exhaustion rejects admission without consuming stream offsets or credit.
+
+Ordinary cancellation, STOP_SENDING and shutdown invalidate pending ranges before
+their callbacks can complete the stream, and retain a local canceled-stream
+tombstone to reject fresh assignments. Those identities last until connection
+teardown; compacting long-lived stream history remains future work. Partial reliable reset (`RESET_STREAM_AT`)
+is intentionally rejected at delegation admission until reliable-prefix ownership
+is implemented. Already supplied bytes cannot be recalled from a failed worker;
+retirement and cancellation here are local bookkeeping, not remote fencing.
+
+No packet sender or RPC receiver invokes the new delegation callbacks yet. The
+`acknowledge` callback requires authenticated QUIC packet delivery evidence, not a
+worker's claim of successful sending. C03b must map packet ACKs to the exact byte
+intervals carried, route cross-path control events, authenticate workers and bound
+its queues. Calling a local callback in a test is not network delivery proof.
+
+Tests exercise copied content, stable digests, partial and overlapping ACKs,
+late ACKs after reassignment/retirement, exactly-once completion, bounded retention,
+credit conservation, live-stream continuation, FIN-before-data-ACK behavior,
+cancellation, STOP_SENDING, shutdown, and admission guards. These are local state
+and SendStream integration tests, not a multi-source client/server transfer.
+
+C03a validation passed the full Go suite, race-enabled QUIC/HTTP/3/cloning tests,
+and ten race-enabled repetitions of the delegation tests. No remote-worker
+benchmark or multi-source wire interoperability claim is made by this lot.

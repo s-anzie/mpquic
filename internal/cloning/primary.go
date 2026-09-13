@@ -29,10 +29,14 @@ func (a *Authority) BindPrimary(limit, used uint64) error {
 func (a *Authority) AccountPrimary(id protocol.StreamID, offset, limit, length, connectionLimit uint64) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	return a.accountPrimary(id, offset, limit, length, connectionLimit)
+}
+
+func (a *Authority) accountPrimary(id protocol.StreamID, offset, limit, length, connectionLimit uint64) error {
 	if a.closed {
 		return ErrClosed
 	}
-	if !a.primaryBound || id < 0 || id > protocol.MaxStreamID || id%4 == 2 {
+	if !a.primaryBound || id < 0 || id > protocol.MaxStreamID || id%4 == 2 || a.canceledStreams[id] {
 		return ErrStream
 	}
 	if offset > limit || limit > uint64(protocol.MaxByteCount) || connectionLimit < a.connectionLimit || connectionLimit > uint64(protocol.MaxByteCount) {
