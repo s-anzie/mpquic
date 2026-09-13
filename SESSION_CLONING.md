@@ -79,7 +79,8 @@ Never reconstruct an authority with counters reset for an existing connection.
 | Lot | Deliverable | Status |
 | --- | --- | --- |
 | C01 | Local authority: exclusive path grants, monotonic packet numbers, shared stream range and credit reservations, final size, closure, concurrent tests | Implemented as an internal primitive |
-| C02 | Connect authority to a confirmed server connection, import packet-number and stream/credit high-water marks, enforce all primary and worker emissions through the same authority | Pending |
+| C02a | Bind a confirmed multipath server's additional-path packet allocation to the authority, preserving existing high-water marks | Implemented behind an internal staging hook |
+| C02b | Import stream/credit state and enforce primary and worker stream reservations through the same authority | Pending |
 | C03 | Authenticated worker coordination contract, range/content ledger, ACK/control routing, bounded queues and loss of coordination behavior | Pending |
 | C04 | Secure worker bootstrap and packet protection state, coordinated key updates and global AEAD accounting | Pending |
 | C05 | Negotiated source endpoint advertisement and client validation for different server IPs | Pending |
@@ -91,9 +92,10 @@ single-connection safety rules merely to produce an early demo.
 
 ## C01: what exists now
 
-`internal/cloning.Authority` is deliberately internal and process-local. It is
-not used by `Conn`, packet packing, TLS, HTTP/3, or live flow-control handlers yet.
-Existing QUIC traffic is unchanged. The library currently exposes no public
+`internal/cloning.Authority` is deliberately internal and process-local. C02a
+now provides optional integration with `Conn` and additional-path packet packing,
+as described below. TLS, HTTP/3 state, and stream flow control are not cloned.
+Default QUIC traffic is unchanged. The library currently exposes no public
 session-cloning switch and no network snapshot import/export API.
 
 The authority uses opaque local grants. Worker names are labels, not verified
@@ -113,4 +115,44 @@ They do not constitute an end-to-end cloned connection test.
 ```sh
 go test -race ./internal/cloning
 go test ./...
+```
+
+## C02a: live additional-path packet allocation
+
+The internal `Conn.prepareCloningAuthority` staging hook runs on the connection
+loop. It rejects clients, unconfirmed handshakes, and connections without
+negotiated multipath. Repeated activation preserves the same authority.
+
+Activation imports the next unused packet number for every known nonzero path,
+including numbers consumed by validation and unsuccessful packing attempts.
+Retired paths stay retired. The new authority is published only after all imports
+succeed; a failed import does not partially change the connection's allocators.
+New paths are imported on first allocation, allowing packet arrival in a
+different order than client path-ID allocation. No previously imported ID can
+be imported again, even after retirement.
+
+Both multipath packet-number entry points delegate to this authority after
+activation. The original counter becomes a mirror for local state inspection,
+not a competing allocator. Abandonment revokes its grant; connection shutdown
+closes the authority. The initial path continues to use quic-go's original
+allocator, remains primary-owned, and cannot be handed to a worker.
+
+The staging authority intentionally starts with zero connection credit and no
+registered streams. Do not enable data reservations until C02b imports the real
+stream offsets and control limits and connects ordinary primary emission to the
+same ledger. This prevents treating packet-number integration as permission to
+reserve already-used stream offsets or duplicate flow-control credit.
+
+Coverage includes synthetic imported counters, skipped numbers, late-created
+paths, exhaustion, atomic activation failure, and grant retirement. A real UDP
+test transfers data over a discovered secondary path before activation, activates
+the authority on that same server connection, transfers again, checks that the
+path counter advanced, and confirms that shutdown disables further allocations.
+The client uses the ordinary multipath implementation, not a cloning-specific
+wire protocol. This is a live **single-server** integration test, not a remote
+worker or multi-source transfer.
+
+```sh
+go test -race . -run 'TestCloning|TestQUICAutomaticPathDiscovery/cloning' -count=10
+go test -race ./internal/cloning
 ```

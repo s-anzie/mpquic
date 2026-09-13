@@ -1,5 +1,5 @@
 // Package cloning contains experimental coordination primitives for a distributed
-// server endpoint. It is not yet connected to QUIC packet emission.
+// server endpoint. Packet-number integration is internal and opt-in.
 package cloning
 
 import (
@@ -30,6 +30,7 @@ type Authority struct {
 	reserved        uint64
 	streams         map[protocol.StreamID]*stream
 	paths           map[*Path]struct{}
+	pathIDs         map[uint64]struct{}
 }
 
 // Path is an opaque, process-local grant. Copying it is unsupported. Retiring a
@@ -62,15 +63,15 @@ func NewAuthority(connectionLimit uint64) (*Authority, error) {
 	if connectionLimit > uint64(protocol.MaxByteCount) {
 		return nil, ErrLimit
 	}
-	return &Authority{connectionLimit: connectionLimit, streams: make(map[protocol.StreamID]*stream), paths: make(map[*Path]struct{})}, nil
+	return &Authority{connectionLimit: connectionLimit, streams: make(map[protocol.StreamID]*stream), paths: make(map[*Path]struct{}), pathIDs: make(map[uint64]struct{})}, nil
 }
 
 // GrantPath reserves a fresh, increasing, nonzero path ID for one worker.
 // Path zero remains owned by the primary QUIC endpoint. The caller must obtain
 // IDs from client path establishment; this method does not create network paths.
 // It must run before the first server packet on that path, including validation
-// packets. Attaching to a used packet number space requires a future bootstrap
-// API that imports its high-water mark, not a new zero-based grant.
+// packets. A trusted connection adapter attaching to a used packet number space
+// must use ImportPath with its high-water mark, not a new zero-based grant.
 func (a *Authority) GrantPath(id uint64, owner string) (*Path, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -83,6 +84,34 @@ func (a *Authority) GrantPath(id uint64, owner string) (*Path, error) {
 	a.lastPath = id
 	p := &Path{authority: a, id: id, owner: owner}
 	a.paths[p] = struct{}{}
+	a.pathIDs[id] = struct{}{}
+	return p, nil
+}
+
+// ImportPath binds a packet-number space already owned by the primary endpoint.
+// The caller must stop its old allocator before calling this method and supply
+// the next unused number, including numbers consumed by unsuccessful packing.
+// It is not a worker-provided snapshot or a restart API. Imports may arrive out
+// of path-ID order, but a previously bound ID can never be imported again.
+func (a *Authority) ImportPath(id, next uint64, owner string) (*Path, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.closed {
+		return nil, ErrClosed
+	}
+	if id == 0 || id > protocol.MaxPathID || owner == "" {
+		return nil, ErrPath
+	}
+	if _, exists := a.pathIDs[id]; exists {
+		return nil, ErrPath
+	}
+	if next > uint64(protocol.MaxPathAndPacketNumber)+1 {
+		return nil, ErrLimit
+	}
+	p := &Path{authority: a, id: id, owner: owner, nextPacketNumber: next}
+	a.paths[p] = struct{}{}
+	a.pathIDs[id] = struct{}{}
+	a.lastPath = max(a.lastPath, id)
 	return p, nil
 }
 
