@@ -2926,7 +2926,6 @@ func (c *Conn) sendMultipathApplicationPacket(now monotime.Time) (bool, error) {
 	batch := getLargePacketBuffer()
 	batch.Data = append(batch.Data, buf.Data...)
 	buf.Release()
-	var tail *packetBuffer
 	for batch.Len()+maxSize <= batch.Cap() {
 		if pathID == 0 {
 			if c.sentPacketHandler.SendMode(now) != ackhandler.SendAny {
@@ -2948,12 +2947,13 @@ func (c *Conn) sendMultipathApplicationPacket(now monotime.Time) (bool, error) {
 		}
 		c.logShortHeaderPacket(nextPacket, protocol.ECNNon, nextBuf.Len())
 		c.registerPackedShortHeaderPacket(nextPacket, protocol.ECNNon, now)
-		if nextPacket.Length != maxSize {
-			tail = nextBuf
-			break
-		}
 		batch.Data = append(batch.Data, nextBuf.Data...)
 		nextBuf.Release()
+		// GSO permits a shorter final segment. Keep it in the same queue
+		// entry so sending one batch never requires two available slots.
+		if nextPacket.Length != maxSize {
+			break
+		}
 	}
 
 	if pathID == 0 {
@@ -2962,21 +2962,7 @@ func (c *Conn) sendMultipathApplicationPacket(now monotime.Time) (bool, error) {
 		err = tr.writePacket(batch.Data, c.conn.RemoteAddr(), uint16(maxSize))
 		batch.Release()
 		if err != nil {
-			if tail != nil {
-				tail.Release()
-			}
 			return false, err
-		}
-	}
-	if tail != nil {
-		if pathID == 0 {
-			c.sendQueue.Send(tail, 0, protocol.ECNNon)
-		} else {
-			_, err = tr.WriteTo(tail.Data, c.conn.RemoteAddr())
-			tail.Release()
-			if err != nil {
-				return false, err
-			}
 		}
 	}
 	c.scheduleSending()
