@@ -19,6 +19,15 @@ import (
 // TestHTTP3Multipath exercises HTTP request and response streams on a negotiated
 // multipath connection, then reuses the connection after closing the second path.
 func TestHTTP3Multipath(t *testing.T) {
+	testHTTP3Multipath(t, false)
+}
+
+func TestHTTP3MultipathLostValidationPacket(t *testing.T) {
+	testHTTP3Multipath(t, true)
+}
+
+func testHTTP3Multipath(t *testing.T, dropValidation bool) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	config := getQuicConfig(&quic.Config{
@@ -38,8 +47,13 @@ func TestHTTP3Multipath(t *testing.T) {
 	// Count UDP payload bytes by direction and client socket. These include
 	// protocol overhead and retransmissions, and are not application-byte counts.
 	var traffic [2][2]atomic.Int64
+	var dropped atomic.Bool
 	proxy := quicproxy.Proxy{
 		Conn: newUDPConnLocalhost(t), ServerAddr: listener.Addr().(*net.UDPAddr),
+		DropPacket: func(dir quicproxy.Direction, _, to net.Addr, _ []byte) bool {
+			return dropValidation && dir == quicproxy.DirectionOutgoing &&
+				to.String() == secondary.Conn.LocalAddr().String() && dropped.CompareAndSwap(false, true)
+		},
 		DelayPacket: func(dir quicproxy.Direction, from, to net.Addr, packet []byte) time.Duration {
 			direction, addr := 0, from
 			if dir == quicproxy.DirectionOutgoing {
@@ -72,6 +86,9 @@ func TestHTTP3Multipath(t *testing.T) {
 	path, err := client.AddPath(secondary)
 	require.NoError(t, err)
 	require.NoError(t, path.Probe(ctx))
+	if dropValidation {
+		require.True(t, dropped.Load())
+	}
 
 	payload := GeneratePRData(4 * 1024 * 1024)
 	h3server := &http3.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -123,9 +140,7 @@ func TestHTTP3Multipath(t *testing.T) {
 		for p := range 2 {
 			delta := traffic[d][p].Load() - before[d][p]
 			t.Logf("%s path %d: %d UDP payload bytes", label, p, delta)
-			if d == 0 {
-				require.Greater(t, delta, int64(64*1024), "both paths must carry substantial upload traffic")
-			}
+			require.Greater(t, delta, int64(64*1024), "both paths must carry substantial traffic in each direction")
 		}
 	}
 	require.NoError(t, path.Close())

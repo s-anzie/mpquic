@@ -495,17 +495,7 @@ func (p *packetPacker) PackApplicationPacketForPath(
 		}
 		pn, pnLen := p.pnManager.PeekPacketNumber(protocol.Encryption1RTT)
 		hdrLen := wire.ShortHeaderLen(connID, pnLen)
-		pl := p.maybeGetShortHeaderPacket(sealer, hdrLen, maxPacketSize, false, now, v)
-		if pathAck != nil {
-			remaining := maxPacketSize - hdrLen - protocol.ByteCount(sealer.Overhead()) - pl.length
-			if remaining > 0 {
-				pathAck.Truncate(remaining, v)
-				if pathAck.Length(v) > 0 {
-					pl.frames = append(pl.frames, ackhandler.Frame{Frame: pathAck})
-					pl.length += pathAck.Length(v)
-				}
-			}
-		}
+		pl := p.composePathApplicationPayload(sealer, hdrLen, maxPacketSize, pathAck, now, v)
 		if pl.length == 0 {
 			buf.Release()
 			return shortHeaderPacket{}, nil, errNothingToPack
@@ -529,17 +519,7 @@ func (p *packetPacker) PackApplicationPacketForPath(
 		return shortHeaderPacket{}, nil, err
 	}
 	hdrLen := wire.ShortHeaderLen(connID, pnLen)
-	pl := p.maybeGetShortHeaderPacket(sealer, hdrLen, maxPacketSize, false, now, v)
-	if pathAck != nil {
-		remaining := maxPacketSize - hdrLen - protocol.ByteCount(sealer.Overhead()) - pl.length
-		if remaining > 0 {
-			pathAck.Truncate(remaining, v)
-			if pathAck.Length(v) > 0 {
-				pl.frames = append(pl.frames, ackhandler.Frame{Frame: pathAck})
-				pl.length += pathAck.Length(v)
-			}
-		}
-	}
+	pl := p.composePathApplicationPayload(sealer, hdrLen, maxPacketSize, pathAck, now, v)
 	if pl.length == 0 {
 		return shortHeaderPacket{}, nil, errNothingToPack
 	}
@@ -565,6 +545,22 @@ func (p *packetPacker) PackApplicationPacketForPath(
 	}
 	packet.PathID = pathID
 	return packet, buf, nil
+}
+
+// Reserve PATH_ACK space before selecting stream data. Adding it afterwards
+// can exceed the MTU or silently discard an ACK when the packet is full.
+func (p *packetPacker) composePathApplicationPayload(sealer handshake.ShortHeaderSealer, hdrLen, maxPacketSize protocol.ByteCount, pathAck *wire.AckFrame, now monotime.Time, v protocol.Version) payload {
+	var ackLen protocol.ByteCount
+	if pathAck != nil {
+		pathAck.Truncate(maxPacketSize-hdrLen-protocol.ByteCount(sealer.Overhead()), v)
+		ackLen = pathAck.Length(v)
+	}
+	pl := p.maybeGetShortHeaderPacket(sealer, hdrLen, maxPacketSize-ackLen, false, now, v)
+	if pathAck != nil {
+		pl.frames = append(pl.frames, ackhandler.Frame{Frame: pathAck})
+		pl.length += ackLen
+	}
+	return pl
 }
 
 func (p *packetPacker) appendPacket(
