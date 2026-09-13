@@ -72,6 +72,13 @@ type Transport struct {
 	// If nil, reasonable default values will be used.
 	QUICConfig *quic.Config
 
+	// EnableMultipath negotiates Multipath QUIC and automatically discovers
+	// additional local addresses when using the built-in dialer. The server
+	// must also enable multipath. It defaults MaxPathID to 4 when unset.
+	// Discovery is also enabled when QUICConfig.EnableMultipath is true.
+	// Custom Dial functions and NewClientConn retain control of their paths.
+	EnableMultipath bool
+
 	// Dial specifies an optional dial function for creating QUIC
 	// connections for requests.
 	// If [Transport.Dial] is nil, a [net.UDPConn] will be created at the first request
@@ -107,9 +114,13 @@ type Transport struct {
 
 	newClientConn func(*quic.Conn) clientConn
 
-	clients   map[string]*roundTripperWithCount
-	transport *quic.Transport
-	closed    bool
+	clients           map[string]*roundTripperWithCount
+	transport         *quic.Transport
+	closed            bool
+	pathDiscoveryWG   sync.WaitGroup
+	pathDiscoveryCtx  context.Context
+	stopPathDiscovery context.CancelFunc
+	pathAddresses     func() ([]net.IP, error)
 }
 
 var (
@@ -143,6 +154,13 @@ func (t *Transport) init() error {
 		t.QUICConfig = defaultQuicConfig.Clone()
 		t.QUICConfig.EnableDatagrams = t.EnableDatagrams
 	}
+	if t.EnableMultipath {
+		t.QUICConfig = t.QUICConfig.Clone()
+		t.QUICConfig.EnableMultipath = true
+		if t.QUICConfig.MaxPathID == 0 {
+			t.QUICConfig.MaxPathID = 4
+		}
+	}
 	if t.EnableDatagrams && !t.QUICConfig.EnableDatagrams {
 		return errors.New("HTTP Datagrams enabled, but QUIC Datagrams disabled")
 	}
@@ -163,6 +181,7 @@ func (t *Transport) init() error {
 		}
 		t.transport = &quic.Transport{Conn: udpConn}
 	}
+	t.pathDiscoveryCtx, t.stopPathDiscovery = context.WithCancel(context.Background())
 	return nil
 }
 
@@ -386,6 +405,9 @@ func (t *Transport) dial(ctx context.Context, hostname string) (*quic.Conn, clie
 		return nil, nil, err
 	}
 	clientConn := t.newClientConn(conn)
+	if t.Dial == nil && t.QUICConfig.EnableMultipath {
+		t.startPathDiscovery(conn)
+	}
 	go func() {
 		for {
 			str, err := conn.AcceptUniStream(context.Background())
@@ -475,12 +497,16 @@ func (t *Transport) NewRawClientConn(conn *quic.Conn) *RawClientConn {
 func (t *Transport) Close() error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
+	if t.stopPathDiscovery != nil {
+		t.stopPathDiscovery()
+	}
 	for _, cl := range t.clients {
 		if err := cl.Close(); err != nil {
 			return err
 		}
 	}
 	t.clients = nil
+	t.pathDiscoveryWG.Wait()
 	if t.transport != nil {
 		if err := t.transport.Close(); err != nil {
 			return err

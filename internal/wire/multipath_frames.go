@@ -154,7 +154,7 @@ func parsePathNewConnectionIDFrame(b []byte, _ protocol.Version) (*PathNewConnec
 	}
 	connIDLen := int(b[0])
 	b = b[1:]
-	if connIDLen < 8 || connIDLen > protocol.MaxConnIDLen {
+	if connIDLen < 1 || connIDLen > protocol.MaxConnIDLen {
 		return nil, 0, fmt.Errorf("invalid connection ID length: %d", connIDLen)
 	}
 	if len(b) < connIDLen+len(protocol.StatelessResetToken{}) {
@@ -173,7 +173,7 @@ func parsePathNewConnectionIDFrame(b []byte, _ protocol.Version) (*PathNewConnec
 }
 
 func (f *PathNewConnectionIDFrame) Append(b []byte, _ protocol.Version) ([]byte, error) {
-	if f.ConnectionID.Len() < 8 || f.ConnectionID.Len() > protocol.MaxConnIDLen {
+	if f.ConnectionID.Len() < 1 || f.ConnectionID.Len() > protocol.MaxConnIDLen {
 		return nil, fmt.Errorf("invalid connection ID length: %d", f.ConnectionID.Len())
 	}
 	if f.RetirePriorTo > f.SequenceNumber {
