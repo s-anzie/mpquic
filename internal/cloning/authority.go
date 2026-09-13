@@ -21,8 +21,9 @@ var (
 // value is not usable. It must not be copied after construction. An instance
 // must never be recreated for an existing
 // connection: its monotonic counters are safety-critical, not a cache.
-// Owner labels are not authentication; a future RPC adapter must authenticate
-// participants before handing out grants or accepting requests.
+// Owner labels are not authentication; control adapters must authenticate
+// participants before handing out grants or accepting requests. BindWorker
+// provides one internal TLS-based control adapter, not packet-sender handoff.
 type Authority struct {
 	mu                 sync.Mutex
 	closed             bool
@@ -39,6 +40,7 @@ type Authority struct {
 	nextDelegation     uint64
 	delegatedBytes     uint64
 	canceledStreams    map[protocol.StreamID]bool
+	workerCount        int
 }
 
 // Path is an opaque, process-local grant. Copying it is unsupported. Retiring a
@@ -50,6 +52,7 @@ type Path struct {
 	owner            string
 	retired          bool
 	nextPacketNumber uint64
+	worker           *WorkerControl // active channel; disconnect permanently retires the path
 }
 
 type stream struct {
@@ -138,11 +141,16 @@ func (a *Authority) checkPath(p *Path) error {
 
 func (a *Authority) RetirePath(p *Path) error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if err := a.checkPath(p); err != nil {
+		a.mu.Unlock()
 		return err
 	}
 	p.retired = true
+	w := p.worker
+	a.mu.Unlock()
+	if w != nil {
+		w.Close()
+	}
 	return nil
 }
 
@@ -244,9 +252,18 @@ func (a *Authority) Finalize(id protocol.StreamID) (uint64, error) {
 
 func (a *Authority) Close() {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	a.closed = true
 	for _, d := range a.delegations {
 		a.releaseDelegation(d, true)
+	}
+	var workers []*WorkerControl
+	for p := range a.paths {
+		if p.worker != nil {
+			workers = append(workers, p.worker)
+		}
+	}
+	a.mu.Unlock()
+	for _, w := range workers {
+		w.Close()
 	}
 }
