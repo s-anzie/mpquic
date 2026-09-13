@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/quic-go/quic-go/internal/cloning"
+	"github.com/quic-go/quic-go/internal/protocol"
 	"github.com/quic-go/quic-go/internal/testdata"
 	"github.com/stretchr/testify/require"
 )
@@ -30,7 +32,7 @@ func (s *discoveryTestSocket) WriteMsgUDP(b, oob []byte, addr *net.UDPAddr) (int
 }
 
 func TestQUICAutomaticPathDiscovery(t *testing.T) {
-	for _, mode := range []string{"dial-addr", "dial-early", "transport", "disabled", "unsupported-peer"} {
+	for _, mode := range []string{"dial-addr", "dial-early", "transport", "disabled", "unsupported-peer", "cloning"} {
 		t.Run(mode, func(t *testing.T) {
 			probe, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.2")})
 			if err != nil {
@@ -110,6 +112,28 @@ func TestQUICAutomaticPathDiscovery(t *testing.T) {
 					transfer()
 				}
 				require.Greater(t, socket.secondaryBytes.Load(), int64(65536))
+				if mode == "cloning" {
+					require.ErrorIs(t, client.prepareCloningAuthority(), errCloningNotReady)
+					var before protocol.PacketNumber
+					onCloningConnectionLoop(t, server, func() { before = server.multipath.paths[1].packetNumberSpace.nextPacketNumber })
+					require.Positive(t, before, "validation and data must have consumed numbers before activation")
+					require.NoError(t, server.prepareCloningAuthority())
+					wireBefore := socket.secondaryBytes.Load()
+					transfer()
+					require.Greater(t, socket.secondaryBytes.Load(), wireBefore)
+					var after protocol.PacketNumber
+					var authority *cloning.Authority
+					var grant *cloning.Path
+					onCloningConnectionLoop(t, server, func() {
+						p := server.multipath.paths[1]
+						after, authority, grant = p.packetNumberSpace.nextPacketNumber, p.cloningAuthority, p.cloningGrant
+					})
+					require.Greater(t, after, before)
+					require.NotNil(t, grant)
+					require.NoError(t, server.CloseWithError(0, ""))
+					_, err := authority.NextPacketNumber(grant)
+					require.ErrorIs(t, err, cloning.ErrClosed)
+				}
 			}
 			require.Zero(t, serverScans.Load(), "servers never initiate discovery")
 			require.NoError(t, client.CloseWithError(0, ""))

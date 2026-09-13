@@ -598,6 +598,9 @@ func (c *Conn) run() (err error) {
 		c.pathDiscoveryDone = c.startPathDiscovery()
 	}
 	defer func() {
+		if c.multipath.cloningAuthority != nil {
+			c.multipath.cloningAuthority.Close()
+		}
 		c.ctxCancel(err)
 		if c.pathDiscoveryDone != nil {
 			<-c.pathDiscoveryDone

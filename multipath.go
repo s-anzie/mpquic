@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go/internal/ackhandler"
+	"github.com/quic-go/quic-go/internal/cloning"
 	"github.com/quic-go/quic-go/internal/congestion"
 	"github.com/quic-go/quic-go/internal/monotime"
 	"github.com/quic-go/quic-go/internal/protocol"
@@ -70,7 +71,9 @@ func (s *multipathPacketNumberSpace) observeAcknowledged(pn protocol.PacketNumbe
 
 // multipathPathState contains the state that is independent for each path ID.
 type multipathPathState struct {
-	abandoned bool
+	abandoned        bool
+	cloningAuthority *cloning.Authority
+	cloningGrant     *cloning.Path
 
 	// The peer address and local packet information identify the destination
 	// for server-side application sending and path validation.
@@ -111,9 +114,10 @@ type multipathPathState struct {
 }
 
 type multipathState struct {
-	localMaxPathID  uint64
-	maxAckDelay     time.Duration
-	maxDatagramSize protocol.ByteCount
+	cloningAuthority *cloning.Authority
+	localMaxPathID   uint64
+	maxAckDelay      time.Duration
+	maxDatagramSize  protocol.ByteCount
 
 	peerInitialMaxPathID      uint64
 	peerMaxPathID             uint64
@@ -197,11 +201,8 @@ func (m *multipathState) path(pathID uint64) (*multipathPathState, error) {
 }
 
 func (m *multipathState) nextPacketNumber(pathID uint64) (protocol.PacketNumber, error) {
-	p, err := m.path(pathID)
-	if err != nil {
-		return protocol.InvalidPacketNumber, err
-	}
-	return p.packetNumberSpace.popPacketNumber()
+	pn, _, err := m.allocatePacketNumber(pathID)
+	return pn, err
 }
 
 func (m *multipathState) allocatePacketNumber(pathID uint64) (protocol.PacketNumber, protocol.PacketNumberLen, error) {
@@ -209,7 +210,25 @@ func (m *multipathState) allocatePacketNumber(pathID uint64) (protocol.PacketNum
 	if err != nil {
 		return protocol.InvalidPacketNumber, 0, err
 	}
-	pn, err := p.packetNumberSpace.popPacketNumber()
+	if p.abandoned && m.cloningAuthority != nil && pathID != 0 {
+		return protocol.InvalidPacketNumber, 0, cloning.ErrPath
+	}
+	var pn protocol.PacketNumber
+	if m.cloningAuthority != nil && pathID != 0 {
+		if p.cloningGrant == nil {
+			p.cloningGrant, err = m.cloningAuthority.ImportPath(pathID, uint64(p.packetNumberSpace.nextPacketNumber), "primary")
+			if err != nil {
+				return protocol.InvalidPacketNumber, 0, err
+			}
+			p.cloningAuthority = m.cloningAuthority
+		}
+		pn, err = m.cloningAuthority.NextPacketNumber(p.cloningGrant)
+		if err == nil {
+			p.packetNumberSpace.nextPacketNumber = pn + 1
+		}
+	} else {
+		pn, err = p.packetNumberSpace.popPacketNumber()
+	}
 	if err != nil {
 		return protocol.InvalidPacketNumber, 0, err
 	}
@@ -564,6 +583,9 @@ func (m *multipathState) markPathAbandoned(pathID uint64) error {
 
 func (p *multipathPathState) abandon() {
 	p.abandoned = true
+	if p.cloningGrant != nil {
+		_ = p.cloningAuthority.RetirePath(p.cloningGrant)
+	}
 	for pn, packet := range p.sentPackets {
 		for _, frame := range packet.frames {
 			if frame.Handler != nil && frame.Frame != nil {
