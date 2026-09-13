@@ -82,7 +82,7 @@ Never reconstruct an authority with counters reset for an existing connection.
 | C02a | Bind a confirmed multipath server's additional-path packet allocation to the authority, preserving existing high-water marks | Implemented behind an internal staging hook |
 | C02b | Import primary stream/credit state and account ordinary writes, pre-reserved buffers, and FIN through the authority | Implemented; remote reservations remain disabled |
 | C03a | Bounded content/range ledger connected to live SendStream offsets and completion, partial delivery, retries and cancellation | Implemented as internal local primitives |
-| C03b | Authenticated worker coordination contract, packet-to-byte ACK evidence, control routing and bounded communication queues | In progress: internal fragment/ACK adapter implemented; worker transport pending |
+| C03b | Authenticated worker coordination contract, packet-to-byte ACK evidence, control routing and bounded communication queues | In progress: fragment/ACK adapter and bounded mTLS control transport implemented; live packet/control routing pending |
 | C04 | Secure worker bootstrap and packet protection state, coordinated key updates and global AEAD accounting | Pending |
 | C05 | Negotiated source endpoint advertisement and client validation for different server IPs | Pending |
 | C06 | Direct multi-server transmission and cross-path retransmission of distinct ranges | Pending |
@@ -280,8 +280,92 @@ The existing multipath history discards lost packets, so a late wire ACK for a
 discarded packet does not reach this adapter; retained callbacks can safely handle
 late evidence, but late-ACK history retention is not implemented by this increment.
 Loss enables explicit range retry; automatic worker dispatch is still pending.
-Authenticated coordination, bounded message queues and control routing remain
-the unfinished parts of C03b; secure packet protection bootstrap remains C04.
+At this checkpoint, authenticated coordination, bounded message queues and
+control routing remained unfinished; the next increment is described below.
+Secure packet protection bootstrap remains C04.
 
 Validation: the full Go suite, race-enabled QUIC/HTTP/3/cloning suites and ten
 race-enabled repetitions of `TestCloningFrame` passed for this increment.
+
+## C03b, second increment: authenticated worker control transport
+
+`internal/cloning.Authority.BindWorker` now accepts a dedicated raw connection
+and runs a server-side mutual TLS handshake. It requires verified client
+certificates, TLS 1.3, the `mpquic-worker-control/1` ALPN, and an exact SHA-256
+fingerprint of the worker leaf certificate supplied by trusted primary policy.
+A worker-provided label or fingerprint is never an authorization source.
+Configuration-swapping ClientHello callbacks and TLS resumption are rejected.
+The TLS configuration is cloned; trust roots and certificate policy remain the
+caller's responsibility. Go's normal certificate-chain verification is required,
+not replaced by pinning (see the [TLS verification contract](https://pkg.go.dev/crypto/tls#ConnectionState)).
+
+This is an internal reference control transport, not a requirement imposed on
+application-level coordination or energy-source selection. There is no listener
+or public cloning API, and no worker packet-sending executable yet. The caller
+must bound incoming handshakes and supply an already client-established path
+reserved for this worker. Binding does not transfer a path still used by the
+primary sender. Moving that sender and its packet protection state is pending.
+
+Each channel is bound once to one authority and one path, with no remote
+authority/path selector. Up to 16 channels can be active per authority. An
+authenticated competing bind is rejected without interrupting the current one.
+Disconnect, timeout, protocol failure, context cancellation, explicit stop or
+authority closure closes the transport and permanently retires the bound path.
+Capacity becomes reusable for a fresh path, not for resurrecting a retired ID.
+Closed channels are detached from path metadata so their TLS buffers and queues
+can be collected. Existing path-ID tombstones are still retained.
+
+### Reference wire contract
+
+All integers are unsigned and big-endian. Each message has a four-byte body
+length, a one-byte kind and an eight-byte per-direction sequence number starting
+at one. Gaps, repeats, zero and wraparound terminate the channel. TLS supplies
+confidentiality and integrity; sequence numbers are not a replacement for TLS.
+
+| Direction | Kind | Payload after kind and sequence |
+| --- | --- | --- |
+| Primary to worker | 1: welcome | Path ID (8 bytes) |
+| Primary to worker | 2: assignment | Range ID, generation, path ID, stream ID, offset and length (six 8-byte integers), SHA-256 digest (32 bytes), exact retained data |
+| Worker to primary | 3: failed | Range ID and generation (two 8-byte integers) |
+| Worker to primary | 4: stopped | Empty |
+| Worker to primary | 5: heartbeat | Empty |
+
+There is deliberately no worker-to-primary delivery/ACK operation. Failure only
+makes an actually offered, matching current attempt retryable. Unknown IDs,
+unoffered ranges, duplicates and obsolete generations do not change delivery
+state. Reading an assignment never marks its bytes acknowledged. Client QUIC
+packet evidence remains the sole delivery input to the ledger.
+
+`WorkerControl.Queue` admits at most 16 waiting attempt handles without blocking
+on network I/O. It does not reserve new offsets or credit. A full queue returns
+`ErrWorkerBusy`; the caller retains its original reservation and can retry
+admission. Pending metadata is bounded by the 256-range ledger limit and pruned
+on admission. The writer skips canceled/obsolete work before taking a retained
+content snapshot. A snapshot already being sent cannot be recalled.
+The ledger retains at most 8 MiB globally and one range is at most 64 KiB;
+serialization has bounded per-writer buffers rather than queued payload copies.
+Incoming messages are limited to 25 bytes before allocation. Handshakes and
+writes have five-second deadlines. Workers must send a heartbeat or other valid
+control message within 30 seconds, including during transfers.
+
+### Validation and remaining scope
+
+Tests exercise a genuine loopback TCP/TLS control exchange, certificate pinning
+and CA rejection, protocol/version policy, assignment content/digest, scoped
+failure and retry, exclusive binding, replay and malformed input rejection,
+bounded queues/channels, cancellation, disconnect and concurrent shutdown.
+In-memory transports provide deterministic queue backpressure; the codec also
+has a fuzz target. These are control-channel tests, not a cloned QUIC data-plane
+transfer or multi-server throughput benchmark.
+
+Still pending: connecting the channel to the live connection scheduler, routing
+authenticated client control/ACK information to packet owners, remote packet
+history, secure key bootstrap and key updates, endpoint offers and client path
+validation. No traffic secrets are transmitted by this increment. The next lots
+must not use this channel alone as proof that a worker can safely send QUIC.
+
+Validation passed: the full Go suite; race-enabled QUIC, HTTP/3 and cloning
+suites; ten race-enabled repetitions of the entire cloning package; and
+`go vet ./internal/cloning`. A ten-second codec fuzz run completed 137,523
+executions without failure. These results do not establish production readiness
+or multi-source data-plane interoperability.
