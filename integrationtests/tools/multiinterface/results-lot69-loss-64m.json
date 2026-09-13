@@ -1,0 +1,94 @@
+[
+  {
+    "cut_at_seconds": -1,
+    "cut_interface": "",
+    "interface_bytes_rx_tx": {
+      "mpq-ca": [
+        11049754,
+        229186
+      ],
+      "mpq-cb": [
+        57752132,
+        609806
+      ]
+    },
+    "mbps": 217.98227369310084,
+    "multipath": true,
+    "path_traffic_ok": true,
+    "protocol": "quic",
+    "received_bytes": 67108864,
+    "requested_bytes": 67108864,
+    "same_connection_followup_ok": true,
+    "seconds": 2.4629108730000002,
+    "sha256_ok": true
+  },
+  {
+    "cut_at_seconds": 0.572248783,
+    "cut_interface": "mpq-ca",
+    "interface_bytes_rx_tx": {
+      "mpq-ca": [
+        5987448,
+        81797
+      ],
+      "mpq-cb": [
+        62801155,
+        812218
+      ]
+    },
+    "mbps": 194.6700733452222,
+    "multipath": true,
+    "path_traffic_ok": true,
+    "protocol": "quic",
+    "received_bytes": 67108864,
+    "requested_bytes": 67108864,
+    "same_connection_followup_ok": true,
+    "seconds": 2.757850258,
+    "sha256_ok": true
+  },
+  {
+    "cut_at_seconds": -1,
+    "cut_interface": "",
+    "interface_bytes_rx_tx": {
+      "mpq-ca": [
+        9480213,
+        263707
+      ],
+      "mpq-cb": [
+        59406364,
+        619428
+      ]
+    },
+    "mbps": 213.58232593171053,
+    "multipath": true,
+    "path_traffic_ok": true,
+    "protocol": "http3",
+    "received_bytes": 67108864,
+    "requested_bytes": 67108864,
+    "same_connection_followup_ok": true,
+    "seconds": 2.513648588,
+    "sha256_ok": true
+  },
+  {
+    "cut_at_seconds": 0.835847853,
+    "cut_interface": "mpq-ca",
+    "interface_bytes_rx_tx": {
+      "mpq-ca": [
+        2609849,
+        90540
+      ],
+      "mpq-cb": [
+        66265303,
+        856859
+      ]
+    },
+    "mbps": 190.76084092200364,
+    "multipath": true,
+    "path_traffic_ok": true,
+    "protocol": "http3",
+    "received_bytes": 67108864,
+    "requested_bytes": 67108864,
+    "same_connection_followup_ok": true,
+    "seconds": 2.814366457,
+    "sha256_ok": true
+  }
+]

@@ -54,6 +54,13 @@ they should not be interpreted as per-transfer loss counters without subtraction
 
 ## Interpretation
 
+Optional environment controls: `MPQUIC_PROTOCOLS` selects `quic`, `http3`, or
+both; `MPQUIC_SCENARIOS` selects a space-separated subset of the scenarios;
+`MPQUIC_TIMEOUT` sets the client deadline (default `150s`, below the runner's
+170-second process timeout). `MPQUIC_LOSS` adds independent random netem loss
+in each direction of each link (default `0%`). Loss runs are diagnostic and
+must not be compared as deterministic repetitions.
+
 These tests validate kernel interface enumeration, routing, actual UDP traffic,
 and failure handling. They do not establish behavior of Wi-Fi/Ethernet/cellular
 hardware, radio handovers, independent Internet access links, NAT traversal, or

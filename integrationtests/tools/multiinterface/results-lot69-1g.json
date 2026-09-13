@@ -1,0 +1,186 @@
+[
+  {
+    "cut_at_seconds": -1,
+    "cut_interface": "",
+    "interface_bytes_rx_tx": {
+      "mpq-ca": [
+        1100578014,
+        13192022
+      ],
+      "mpq-cb": [
+        546,
+        460
+      ]
+    },
+    "mbps": 190.74800685898853,
+    "multipath": false,
+    "path_traffic_ok": true,
+    "protocol": "quic",
+    "received_bytes": 1073741824,
+    "requested_bytes": 1073741824,
+    "same_connection_followup_ok": true,
+    "seconds": 45.032893048,
+    "sha256_ok": true
+  },
+  {
+    "cut_at_seconds": -1,
+    "cut_interface": "",
+    "interface_bytes_rx_tx": {
+      "mpq-ca": [
+        522599033,
+        4530032
+      ],
+      "mpq-cb": [
+        590406952,
+        5676268
+      ]
+    },
+    "mbps": 353.87496388036345,
+    "multipath": true,
+    "path_traffic_ok": true,
+    "protocol": "quic",
+    "received_bytes": 1073741824,
+    "requested_bytes": 1073741824,
+    "same_connection_followup_ok": true,
+    "seconds": 24.273925733,
+    "sha256_ok": true
+  },
+  {
+    "cut_at_seconds": 6.20924435,
+    "cut_interface": "mpq-cb",
+    "interface_bytes_rx_tx": {
+      "mpq-ca": [
+        954508790,
+        8565465
+      ],
+      "mpq-cb": [
+        150551122,
+        1425717
+      ]
+    },
+    "mbps": 206.5770653620633,
+    "multipath": true,
+    "path_traffic_ok": true,
+    "protocol": "quic",
+    "received_bytes": 1073741824,
+    "requested_bytes": 1073741824,
+    "same_connection_followup_ok": true,
+    "seconds": 41.582227809,
+    "sha256_ok": true
+  },
+  {
+    "cut_at_seconds": 6.146272187,
+    "cut_interface": "mpq-ca",
+    "interface_bytes_rx_tx": {
+      "mpq-ca": [
+        128782156,
+        1120205
+      ],
+      "mpq-cb": [
+        972119058,
+        14095288
+      ]
+    },
+    "mbps": 215.00636720524125,
+    "multipath": true,
+    "path_traffic_ok": true,
+    "protocol": "quic",
+    "received_bytes": 1073741824,
+    "requested_bytes": 1073741824,
+    "same_connection_followup_ok": true,
+    "seconds": 39.952000974,
+    "sha256_ok": true
+  },
+  {
+    "cut_at_seconds": -1,
+    "cut_interface": "",
+    "interface_bytes_rx_tx": {
+      "mpq-ca": [
+        1105013788,
+        13949312
+      ],
+      "mpq-cb": [
+        0,
+        70
+      ]
+    },
+    "mbps": 190.06312853563776,
+    "multipath": false,
+    "path_traffic_ok": true,
+    "protocol": "http3",
+    "received_bytes": 1073741824,
+    "requested_bytes": 1073741824,
+    "same_connection_followup_ok": true,
+    "seconds": 45.195165723,
+    "sha256_ok": true
+  },
+  {
+    "cut_at_seconds": -1,
+    "cut_interface": "",
+    "interface_bytes_rx_tx": {
+      "mpq-ca": [
+        545368780,
+        4810512
+      ],
+      "mpq-cb": [
+        568743290,
+        5855977
+      ]
+    },
+    "mbps": 367.27694372281877,
+    "multipath": true,
+    "path_traffic_ok": true,
+    "protocol": "http3",
+    "received_bytes": 1073741824,
+    "requested_bytes": 1073741824,
+    "same_connection_followup_ok": true,
+    "seconds": 23.388167264,
+    "sha256_ok": true
+  },
+  {
+    "cut_at_seconds": 5.8021622189999995,
+    "cut_interface": "mpq-cb",
+    "interface_bytes_rx_tx": {
+      "mpq-ca": [
+        964329889,
+        8750910
+      ],
+      "mpq-cb": [
+        140626143,
+        1426913
+      ]
+    },
+    "mbps": 216.46000401250456,
+    "multipath": true,
+    "path_traffic_ok": true,
+    "protocol": "http3",
+    "received_bytes": 1073741824,
+    "requested_bytes": 1073741824,
+    "same_connection_followup_ok": true,
+    "seconds": 39.683703376,
+    "sha256_ok": true
+  },
+  {
+    "cut_at_seconds": 5.791347161,
+    "cut_interface": "mpq-ca",
+    "interface_bytes_rx_tx": {
+      "mpq-ca": [
+        137596256,
+        1172372
+      ],
+      "mpq-cb": [
+        964040506,
+        14428557
+      ]
+    },
+    "mbps": 216.80471397769182,
+    "multipath": true,
+    "path_traffic_ok": true,
+    "protocol": "http3",
+    "received_bytes": 1073741824,
+    "requested_bytes": 1073741824,
+    "same_connection_followup_ok": true,
+    "seconds": 39.620608032,
+    "sha256_ok": true
+  }
+]

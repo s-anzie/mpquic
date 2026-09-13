@@ -753,6 +753,10 @@ runLoop:
 				if lostPackets {
 					c.scheduleSending()
 				}
+				if err := c.sendMultipathRecoveryProbes(now); err != nil {
+					c.setCloseError(&closeError{err: err})
+					break runLoop
+				}
 			}
 		}
 

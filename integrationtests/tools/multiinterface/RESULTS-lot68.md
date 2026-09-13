@@ -1,5 +1,9 @@
 # Lot 68: path failure isolation
 
+See [lot 69](RESULTS-lot69.md) for the subsequent additional-path recovery fix
+and new throughput measurements. The measurements below remain the historical
+lot 68 baseline.
+
 Date: 2026-09-13. This report supplements, rather than replaces, the lot 67
 baseline in RESULTS.md. The topology and link shaping are unchanged: two
 independently routed veth links in isolated Linux network namespaces, each
