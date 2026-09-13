@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/quic-go/quic-go/internal/cloning"
 	"github.com/quic-go/quic-go/internal/monotime"
 	"github.com/quic-go/quic-go/internal/protocol"
 	"github.com/quic-go/quic-go/internal/qerr"
@@ -14,10 +15,12 @@ type connectionFlowController struct {
 	receiveFlowController
 
 	// Protects send-side state, which TryWriteAll can access from application goroutines.
-	sendMutex     sync.Mutex
-	bytesSent     protocol.ByteCount
-	sendWindow    protocol.ByteCount
-	lastBlockedAt protocol.ByteCount
+	sendMutex        sync.Mutex
+	bytesSent        protocol.ByteCount
+	sendWindow       protocol.ByteCount
+	lastBlockedAt    protocol.ByteCount
+	cloningAuthority *cloning.Authority
+	cloningFailure   func(error)
 }
 
 // newConnectionFlowController gets a new flow controller for the connection.
@@ -73,6 +76,10 @@ func (c *connectionFlowController) AddBytesRead(n protocol.ByteCount) (hasWindow
 func (c *connectionFlowController) TryAddBytesSent(n protocol.ByteCount) bool {
 	c.sendMutex.Lock()
 	defer c.sendMutex.Unlock()
+	if c.cloningAuthority != nil {
+		c.failCloningAccounting(cloning.ErrStream)
+		return false
+	}
 
 	if c.bytesSent > c.sendWindow || n > c.sendWindow-c.bytesSent {
 		return false
@@ -88,6 +95,10 @@ func (c *connectionFlowController) AddBytesSentWithLimiter(
 ) (protocol.ByteCount, bool) {
 	c.sendMutex.Lock()
 	defer c.sendMutex.Unlock()
+	if c.cloningAuthority != nil {
+		c.failCloningAccounting(cloning.ErrStream)
+		return 0, false
+	}
 
 	if c.bytesSent >= c.sendWindow {
 		return 0, false
@@ -171,6 +182,10 @@ func (c *connectionFlowController) EnsureMinimumWindowSize(inc protocol.ByteCoun
 func (c *connectionFlowController) Reset() {
 	c.sendMutex.Lock()
 	defer c.sendMutex.Unlock()
+	if c.cloningAuthority != nil {
+		c.failCloningAccounting(cloning.ErrStream)
+		return
+	}
 
 	c.bytesSent = 0
 	c.lastBlockedAt = 0

@@ -10,7 +10,7 @@ import (
 )
 
 func TestCloningAuthorityImportsAndOwnsPacketNumbers(t *testing.T) {
-	c := &Conn{multipath: newMultipathState(8), perspective: protocol.PerspectiveServer,
+	c := &Conn{connFlowController: &connectionFlowController{}, multipath: newMultipathState(8), perspective: protocol.PerspectiveServer,
 		multipathEnabled: true, handshakeConfirmed: true}
 	for _, id := range []uint64{3, 1} {
 		for range 5 {
@@ -53,7 +53,7 @@ func TestCloningAuthorityImportsAndOwnsPacketNumbers(t *testing.T) {
 }
 
 func TestCloningAuthorityActivationGuardsAndAtomicImport(t *testing.T) {
-	c := &Conn{multipath: newMultipathState(4), perspective: protocol.PerspectiveClient}
+	c := &Conn{connFlowController: &connectionFlowController{}, multipath: newMultipathState(4), perspective: protocol.PerspectiveClient}
 	require.ErrorIs(t, c.prepareCloningAuthorityOnLoop(), errCloningNotReady)
 	c.perspective = protocol.PerspectiveServer
 	require.ErrorIs(t, c.prepareCloningAuthorityOnLoop(), errCloningNotReady)

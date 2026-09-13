@@ -10,10 +10,11 @@ import (
 )
 
 var (
-	ErrClosed = errors.New("cloning authority closed")
-	ErrPath   = errors.New("invalid, retired, or foreign path grant")
-	ErrLimit  = errors.New("cloning reservation exceeds limit")
-	ErrStream = errors.New("invalid, unknown, or finalized stream")
+	ErrClosed             = errors.New("cloning authority closed")
+	ErrPath               = errors.New("invalid, retired, or foreign path grant")
+	ErrLimit              = errors.New("cloning reservation exceeds limit")
+	ErrStream             = errors.New("invalid, unknown, or finalized stream")
+	ErrDelegationNotReady = errors.New("remote stream reservations are not connected to live stream state")
 )
 
 // Authority serializes reservations for one server-side connection. Its zero
@@ -23,14 +24,17 @@ var (
 // Owner labels are not authentication; a future RPC adapter must authenticate
 // participants before handing out grants or accepting requests.
 type Authority struct {
-	mu              sync.Mutex
-	closed          bool
-	lastPath        uint64
-	connectionLimit uint64
-	reserved        uint64
-	streams         map[protocol.StreamID]*stream
-	paths           map[*Path]struct{}
-	pathIDs         map[uint64]struct{}
+	mu                 sync.Mutex
+	closed             bool
+	lastPath           uint64
+	connectionLimit    uint64
+	reserved           uint64
+	streams            map[protocol.StreamID]*stream
+	paths              map[*Path]struct{}
+	pathIDs            map[uint64]struct{}
+	primaryBound       bool
+	primaryInitialUsed uint64
+	primaryImported    uint64
 }
 
 // Path is an opaque, process-local grant. Copying it is unsupported. Retiring a
@@ -180,6 +184,11 @@ func (a *Authority) Reserve(p *Path, id protocol.StreamID, length uint64) (Range
 	defer a.mu.Unlock()
 	if err := a.checkPath(p); err != nil {
 		return Range{}, err
+	}
+	// Remote range allocation cannot be enabled until worker ranges also
+	// advance the live SendStream's offset and have a retransmission owner.
+	if a.primaryBound {
+		return Range{}, ErrDelegationNotReady
 	}
 	s := a.streams[id]
 	if s == nil || s.final {

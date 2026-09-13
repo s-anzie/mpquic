@@ -11,8 +11,9 @@ import (
 var errCloningNotReady = errors.New("cloning requires a confirmed multipath server connection")
 
 // prepareCloningAuthority is an internal staging hook, not a public cloning API.
-// It enables packet-number authority only. Stream reservations remain blocked
-// with zero credit until the shared stream/flow-control adapter is implemented.
+// It enables packet-number authority and primary stream credit accounting.
+// Remote stream reservations stay blocked until worker ranges can also advance
+// live stream offsets and acquire a retransmission owner.
 // The switch and every later import run on the same loop as packet packing.
 func (c *Conn) prepareCloningAuthority() error {
 	result := make(chan error, 1)
@@ -57,6 +58,14 @@ func (c *Conn) prepareCloningAuthorityOnLoop() error {
 			_ = a.RetirePath(grant)
 		}
 		grants[id] = grant
+	}
+	if c.connFlowController == nil {
+		a.Close()
+		return errCloningNotReady
+	}
+	if err := c.connFlowController.bindCloningAuthority(a, c.destroyImpl); err != nil {
+		a.Close()
+		return err
 	}
 	for id, grant := range grants {
 		p := c.multipath.paths[id]

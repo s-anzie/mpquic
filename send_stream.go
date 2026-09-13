@@ -391,6 +391,9 @@ func (s *SendStream) popNewStreamFrameForPacket(maxBytes protocol.ByteCount, v p
 
 	if len(s.dataForWriting) == 0 && s.nextFrame == nil {
 		if s.finishedWriting && !s.finSent {
+			if !s.flowController.connection.finalizeCloningStream(s.flowController, s.writeOffset) {
+				return nil, nil, false
+			}
 			s.finSent = true
 			return &wire.StreamFrame{
 				StreamID:       s.streamID,
@@ -460,6 +463,10 @@ func (s *SendStream) popNewStreamFrameForPacket(maxBytes protocol.ByteCount, v p
 	}
 	f.Fin = s.finishedWriting && s.dataForWriting == nil && s.nextFrame == nil && !s.finSent
 	if f.Fin {
+		if !s.flowController.connection.finalizeCloningStream(s.flowController, s.writeOffset) {
+			f.PutBack()
+			return nil, nil, false
+		}
 		s.finSent = true
 	}
 	return f, blocked, hasMoreData

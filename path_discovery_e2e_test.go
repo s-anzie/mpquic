@@ -117,7 +117,39 @@ func TestQUICAutomaticPathDiscovery(t *testing.T) {
 					var before protocol.PacketNumber
 					onCloningConnectionLoop(t, server, func() { before = server.multipath.paths[1].packetNumberSpace.nextPacketNumber })
 					require.Positive(t, before, "validation and data must have consumed numbers before activation")
+					active, err := server.OpenUniStream()
+					require.NoError(t, err)
+					resume := make(chan struct{})
+					written := make(chan error, 1)
+					go func() {
+						if _, err := active.Write(payload); err != nil {
+							written <- err
+							return
+						}
+						select {
+						case <-resume:
+						case <-ctx.Done():
+							written <- ctx.Err()
+							return
+						}
+						_, err := active.Write(payload)
+						if err == nil {
+							err = active.Close()
+						}
+						written <- err
+					}()
+					incoming, err := client.AcceptUniStream(ctx)
+					require.NoError(t, err)
+					prefix := make([]byte, len(payload))
+					_, err = io.ReadFull(incoming, prefix)
+					require.NoError(t, err)
+					require.Equal(t, payload, prefix)
 					require.NoError(t, server.prepareCloningAuthority())
+					close(resume)
+					suffix, err := io.ReadAll(incoming)
+					require.NoError(t, err)
+					require.Equal(t, payload, suffix)
+					require.NoError(t, <-written)
 					wireBefore := socket.secondaryBytes.Load()
 					transfer()
 					require.Greater(t, socket.secondaryBytes.Load(), wireBefore)
@@ -130,8 +162,13 @@ func TestQUICAutomaticPathDiscovery(t *testing.T) {
 					})
 					require.Greater(t, after, before)
 					require.NotNil(t, grant)
+					offset, total, final, err := authority.PrimaryState(active.StreamID())
+					require.NoError(t, err)
+					require.Equal(t, uint64(2*len(payload)), offset)
+					require.Greater(t, total, offset, "other streams also consume connection credit")
+					require.True(t, final)
 					require.NoError(t, server.CloseWithError(0, ""))
-					_, err := authority.NextPacketNumber(grant)
+					_, err = authority.NextPacketNumber(grant)
 					require.ErrorIs(t, err, cloning.ErrClosed)
 				}
 			}
