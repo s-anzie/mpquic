@@ -145,6 +145,9 @@ func (m *connIDGenerator) queueConnIDForRetiring(connID protocol.ConnectionID, e
 }
 
 func (m *connIDGenerator) issueNewConnID() error {
+	if m.abandonedPaths[0] {
+		return nil
+	}
 	connID, err := m.generator.GenerateConnectionID()
 	if err != nil {
 		return err
@@ -211,9 +214,6 @@ func (m *connIDGenerator) ensurePathConnectionID(id pathID) error {
 // AbandonPath prevents future Connection ID replenishment for a path while
 // retaining already issued IDs for packets that may still be reordered.
 func (m *connIDGenerator) AbandonPath(id pathID) {
-	if id == 0 {
-		return
-	}
 	m.abandonedPaths[id] = true
 }
 
@@ -243,6 +243,11 @@ func (m *connIDGenerator) retirePathConnectionID(id pathID, sequenceNumber uint6
 	connections := m.pathConnectionIDs[id]
 	connID, ok := connections[sequenceNumber]
 	if !ok {
+		// A retransmitted retirement of an already retired ID is idempotent.
+		// Keep rejecting IDs that were never issued for this path.
+		if next, issued := m.nextPathConnectionIDSeq[id]; issued && sequenceNumber < next {
+			return nil
+		}
 		return &qerr.TransportError{
 			ErrorCode:    qerr.ProtocolViolation,
 			ErrorMessage: fmt.Sprintf("retired path Connection ID %d for unknown path %d", sequenceNumber, id),

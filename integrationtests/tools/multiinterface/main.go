@@ -79,6 +79,7 @@ func run() error {
 	multipath := flag.Bool("multipath", true, "negotiate multipath")
 	size := flag.Int64("bytes", 64<<20, "application bytes per transfer")
 	cut := flag.String("cut", "", "test interface to disable at one quarter of the transfer")
+	deadline := flag.Duration("timeout", 150*time.Second, "client deadline")
 	flag.Parse()
 	for i := range block {
 		block[i] = byte(i*31 + 7)
@@ -160,7 +161,7 @@ func run() error {
 			return fmt.Errorf("interface failure injection requires an isolated network namespace")
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), *deadline)
 	defer cancel()
 	clientTLS := &tls.Config{RootCAs: testdata.GetRootCA(), ServerName: "localhost", NextProtos: tlsConfig.NextProtos}
 	var fetch func(bool) (io.ReadCloser, string, error)
@@ -198,6 +199,7 @@ func run() error {
 			if err != nil {
 				return nil, "", err
 			}
+			_ = stream.SetReadDeadline(time.Now().Add(*deadline))
 			request := byte(1)
 			if check {
 				request = 0

@@ -110,6 +110,9 @@ func TestHTTP3AutomaticPathDiscovery(t *testing.T) {
 				require.Equal(t, payload, body)
 			}
 			request()
+			transport.mutex.Lock()
+			originalConn := transport.clients[udp.LocalAddr().String()].conn
+			transport.mutex.Unlock()
 			if enabled {
 				// Discover an address that appears after the first request.
 				require.Zero(t, socket.secondaryBytes.Load())
@@ -144,6 +147,11 @@ func TestHTTP3AutomaticPathDiscovery(t *testing.T) {
 				require.Zero(t, scans.Load(), "do not discover paths for a peer without multipath")
 				require.Zero(t, socket.secondaryBytes.Load())
 			}
+			require.NoError(t, originalConn.Context().Err(), "removing a path must not close the connection")
+			transport.mutex.Lock()
+			currentConn := transport.clients[udp.LocalAddr().String()].conn
+			transport.mutex.Unlock()
+			require.Same(t, originalConn, currentConn, "HTTP/3 must not silently redial")
 			if name == "quic-config" {
 				// A connection evicted from the request pool can remain alive.
 				// Closing the transport must still stop its discovery watcher.

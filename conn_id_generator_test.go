@@ -56,6 +56,9 @@ func TestConnIDGeneratorIssuePathConnectionID(t *testing.T) {
 	require.NoError(t, g.retirePathConnectionID(2, 0, protocol.ParseConnectionID([]byte{9, 9, 9, 9})))
 	require.Equal(t, []protocol.ConnectionID{frame.ConnectionID}, removed)
 	require.Len(t, queuedFrames, 2)
+	// A retransmitted retirement must neither fail nor issue another ID.
+	require.NoError(t, g.retirePathConnectionID(2, 0, protocol.ParseConnectionID([]byte{9, 9, 9, 9})))
+	require.Len(t, queuedFrames, 2)
 	replacement, ok := queuedFrames[1].(*wire.PathNewConnectionIDFrame)
 	require.True(t, ok)
 	require.Equal(t, uint64(2), replacement.PathID)
@@ -94,6 +97,9 @@ func TestConnIDGeneratorDoesNotReplenishAbandonedPath(t *testing.T) {
 	g.AbandonPath(3)
 	require.NoError(t, g.retirePathConnectionID(3, frame.SequenceNumber, protocol.ParseConnectionID([]byte{9, 9, 9, 9})))
 	require.Len(t, queuedFrames, 1)
+	g.AbandonPath(0)
+	require.NoError(t, g.issueNewConnID())
+	require.Len(t, queuedFrames, 1, "do not replenish the abandoned initial path")
 }
 
 func TestConnIDGeneratorReplenishesPathConnectionIDs(t *testing.T) {

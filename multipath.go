@@ -529,7 +529,7 @@ func (m *multipathState) handlePathAbandon(f *wire.PathAbandonFrame) (bool, erro
 	if p.abandoned {
 		return false, nil
 	}
-	p.abandoned = true
+	p.abandon()
 	return true, nil
 }
 
@@ -541,8 +541,26 @@ func (m *multipathState) markPathAbandoned(pathID uint64) error {
 	if p.abandoned {
 		return nil
 	}
-	p.abandoned = true
+	p.abandon()
 	return nil
+}
+
+func (p *multipathPathState) abandon() {
+	p.abandoned = true
+	for pn, packet := range p.sentPackets {
+		for _, frame := range packet.frames {
+			if frame.Handler != nil && frame.Frame != nil {
+				frame.Handler.OnLost(frame.Frame)
+			}
+		}
+		for _, frame := range packet.streamFrames {
+			if frame.Handler != nil && frame.Frame != nil {
+				frame.Handler.OnLost(frame.Frame)
+			}
+		}
+		delete(p.sentPackets, pn)
+	}
+	p.bytesInFlight = 0
 }
 
 // hasUsablePathExcept reports whether any other path can still carry traffic.

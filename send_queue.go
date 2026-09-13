@@ -27,6 +27,9 @@ type sendQueue struct {
 	runStopped  chan struct{} // runStopped when the run loop returns
 	available   chan struct{}
 	conn        sendConn
+	// onWriteError may isolate a failed path while keeping the queue drainable.
+	// It must not block or access connection-loop-owned state.
+	onWriteError func(error) bool
 }
 
 var _ sender = &sendQueue{}
@@ -77,6 +80,7 @@ func (h *sendQueue) Available() <-chan struct{} {
 func (h *sendQueue) Run() error {
 	defer close(h.runStopped)
 	var shouldClose bool
+	var failed bool
 	for {
 		if shouldClose && len(h.queue) == 0 {
 			return nil
@@ -87,13 +91,19 @@ func (h *sendQueue) Run() error {
 			// make sure that all queued packets are actually sent out
 			shouldClose = true
 		case e := <-h.queue:
-			if err := h.conn.Write(e.buf.Data, e.gsoSize, e.ecn); err != nil {
-				// This additional check enables:
-				// 1. Checking for "datagram too large" message from the kernel, as such,
-				// 2. Path MTU discovery,and
-				// 3. Eventual detection of loss PingFrame.
-				if !isSendMsgSizeErr(err) {
-					return err
+			if !failed {
+				if err := h.conn.Write(e.buf.Data, e.gsoSize, e.ecn); err != nil {
+					// This additional check enables:
+					// 1. Checking for "datagram too large" message from the kernel, as such,
+					// 2. Path MTU discovery,and
+					// 3. Eventual detection of loss PingFrame.
+					if !isSendMsgSizeErr(err) {
+						if h.onWriteError == nil || !h.onWriteError(err) {
+							e.buf.Release()
+							return err
+						}
+						failed = true
+					}
 				}
 			}
 			e.buf.Release()
