@@ -72,10 +72,17 @@ func (s *multipathPacketNumberSpace) observeAcknowledged(pn protocol.PacketNumbe
 type multipathPathState struct {
 	abandoned bool
 
-	// The most recent received packet identifies where a server can send a
-	// final ACK when the initial path has been abandoned.
-	remoteAddr net.Addr
-	packetInfo packetInfo
+	// The peer address and local packet information identify the destination
+	// for server-side application sending and path validation.
+	remoteAddr              net.Addr
+	packetInfo              packetInfo
+	serverValidated         bool
+	serverChallenge         [8]byte
+	serverChallengePending  bool
+	serverChallengeDeadline monotime.Time
+	serverChallengeAttempts int
+	serverBytesReceived     protocol.ByteCount
+	serverProbeBytesSent    protocol.ByteCount
 
 	packetNumberSpace multipathPacketNumberSpace
 	largestSent       protocol.PacketNumber
@@ -106,8 +113,9 @@ type multipathState struct {
 	maxAckDelay     time.Duration
 	maxDatagramSize protocol.ByteCount
 
-	peerInitialMaxPathID uint64
-	peerMaxPathID        uint64
+	peerInitialMaxPathID      uint64
+	peerMaxPathID             uint64
+	nextServerApplicationPath uint64
 
 	paths                map[uint64]*multipathPathState
 	connectionIDToPathID map[protocol.ConnectionID]uint64
@@ -416,6 +424,9 @@ func (m *multipathState) nextPathProbeLossTime(lossDelay time.Duration) monotime
 	for _, p := range m.paths {
 		if p.abandoned {
 			continue
+		}
+		if deadline := p.serverChallengeDeadline; p.serverChallengePending && !deadline.IsZero() && (earliest.IsZero() || deadline.Before(earliest)) {
+			earliest = deadline
 		}
 		pathLossDelay := p.lossDelay
 		if pathLossDelay <= 0 {
