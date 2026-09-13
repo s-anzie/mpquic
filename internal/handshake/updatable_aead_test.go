@@ -27,6 +27,29 @@ const (
 
 func randomCipherSuite() cipherSuite { return cipherSuites[mrand.IntN(len(cipherSuites))] }
 
+func TestMultipathKeyUpdateAckUsesPathZeroPacketNumbers(t *testing.T) {
+	_, server, _ := setupEndpoints(t, utils.NewRTTStats())
+	server.SetMultipath(true)
+	server.SetHandshakeConfirmed()
+	server.rollKeys()
+	require.NoError(t, server.SetPathID(1))
+	server.Seal(nil, []byte(msg), 2, []byte(ad))
+	// An old-phase path-0 ACK may have a much larger packet number than
+	// the first new-phase packet on path 1. It cannot confirm the update.
+	require.NoError(t, server.SetLargestAcked(100))
+	require.False(t, server.updateAllowed())
+	require.NoError(t, server.SetPathID(0))
+	server.Seal(nil, []byte(msg), 101, []byte(ad))
+	require.NoError(t, server.SetLargestAcked(100))
+	require.False(t, server.updateAllowed())
+	require.Error(t, server.SetLargestAcked(101), "new-phase ACK without peer key update remains invalid")
+	server.numRcvdWithCurrentKey = 1
+	require.NoError(t, server.SetLargestAcked(101))
+	require.True(t, server.updateAllowed())
+	server.rollKeys()
+	require.Equal(t, protocol.InvalidPacketNumber, server.firstSentWithCurrentKeyOnPath0)
+}
+
 func setupEndpoints(t *testing.T, serverRTTStats *utils.RTTStats) (client, server *updatableAEAD, serverEventRecorder *events.Recorder) {
 	cs := randomCipherSuite()
 	var eventRecorder events.Recorder

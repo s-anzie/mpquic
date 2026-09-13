@@ -197,6 +197,7 @@ type Conn struct {
 	ctx                   context.Context
 	ctxCancel             context.CancelCauseFunc
 	handshakeCompleteChan chan struct{}
+	pathDiscoveryDone     <-chan struct{}
 
 	undecryptablePackets          []receivedPacketWithChecksum // undecryptable packets, waiting for a change in encryption level
 	undecryptablePacketsToProcess []receivedPacketWithChecksum
@@ -592,7 +593,15 @@ func (c *Conn) preSetup() {
 
 // run the connection main loop
 func (c *Conn) run() (err error) {
-	defer func() { c.ctxCancel(err) }()
+	if c.perspective == protocol.PerspectiveClient && c.config.EnableMultipath && !c.config.DisableAutomaticPathDiscovery {
+		c.pathDiscoveryDone = c.startPathDiscovery()
+	}
+	defer func() {
+		c.ctxCancel(err)
+		if c.pathDiscoveryDone != nil {
+			<-c.pathDiscoveryDone
+		}
+	}()
 
 	defer func() {
 		// drain queued packets that will never be processed
@@ -2452,6 +2461,9 @@ func (c *Conn) CloseWithError(code ApplicationErrorCode, desc string) error {
 		ErrorMessage: desc,
 	})
 	<-c.ctx.Done()
+	if c.pathDiscoveryDone != nil {
+		<-c.pathDiscoveryDone
+	}
 	return nil
 }
 

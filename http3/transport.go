@@ -73,10 +73,11 @@ type Transport struct {
 	QUICConfig *quic.Config
 
 	// EnableMultipath negotiates Multipath QUIC and automatically discovers
-	// additional local addresses when using the built-in dialer. The server
+	// additional local addresses through the QUIC connection. The server
 	// must also enable multipath. It defaults MaxPathID to 4 when unset.
 	// Discovery is also enabled when QUICConfig.EnableMultipath is true.
-	// Custom Dial functions and NewClientConn retain control of their paths.
+	// QUICConfig.DisableAutomaticPathDiscovery opts out of discovery.
+	// Custom dialers must pass the QUIC configuration to their QUIC connection.
 	EnableMultipath bool
 
 	// Dial specifies an optional dial function for creating QUIC
@@ -114,13 +115,9 @@ type Transport struct {
 
 	newClientConn func(*quic.Conn) clientConn
 
-	clients           map[string]*roundTripperWithCount
-	transport         *quic.Transport
-	closed            bool
-	pathDiscoveryWG   sync.WaitGroup
-	pathDiscoveryCtx  context.Context
-	stopPathDiscovery context.CancelFunc
-	pathAddresses     func() ([]net.IP, error)
+	clients   map[string]*roundTripperWithCount
+	transport *quic.Transport
+	closed    bool
 }
 
 var (
@@ -181,7 +178,6 @@ func (t *Transport) init() error {
 		}
 		t.transport = &quic.Transport{Conn: udpConn}
 	}
-	t.pathDiscoveryCtx, t.stopPathDiscovery = context.WithCancel(context.Background())
 	return nil
 }
 
@@ -405,9 +401,6 @@ func (t *Transport) dial(ctx context.Context, hostname string) (*quic.Conn, clie
 		return nil, nil, err
 	}
 	clientConn := t.newClientConn(conn)
-	if t.Dial == nil && t.QUICConfig.EnableMultipath {
-		t.startPathDiscovery(conn)
-	}
 	go func() {
 		for {
 			str, err := conn.AcceptUniStream(context.Background())
@@ -497,16 +490,12 @@ func (t *Transport) NewRawClientConn(conn *quic.Conn) *RawClientConn {
 func (t *Transport) Close() error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
-	if t.stopPathDiscovery != nil {
-		t.stopPathDiscovery()
-	}
 	for _, cl := range t.clients {
 		if err := cl.Close(); err != nil {
 			return err
 		}
 	}
 	t.clients = nil
-	t.pathDiscoveryWG.Wait()
 	if t.transport != nil {
 		if err := t.transport.Close(); err != nil {
 			return err

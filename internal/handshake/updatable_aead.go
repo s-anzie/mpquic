@@ -46,13 +46,14 @@ type updatableAEAD struct {
 	prevRcvAEADExpiry monotime.Time
 	prevRcvAEAD       cipher.AEAD
 
-	firstRcvdWithCurrentKey protocol.PacketNumber
-	firstSentWithCurrentKey protocol.PacketNumber
-	highestRcvdPN           protocol.PacketNumber // highest packet number received (which could be successfully unprotected)
-	numRcvdWithCurrentKey   uint64
-	numSentWithCurrentKey   uint64
-	rcvAEAD                 cipher.AEAD
-	sendAEAD                cipher.AEAD
+	firstRcvdWithCurrentKey        protocol.PacketNumber
+	firstSentWithCurrentKey        protocol.PacketNumber
+	firstSentWithCurrentKeyOnPath0 protocol.PacketNumber
+	highestRcvdPN                  protocol.PacketNumber // highest packet number received (which could be successfully unprotected)
+	numRcvdWithCurrentKey          uint64
+	numSentWithCurrentKey          uint64
+	rcvAEAD                        cipher.AEAD
+	sendAEAD                       cipher.AEAD
 	// caches cipher.AEAD.Overhead(). This speeds up calls to Overhead().
 	aeadOverhead int
 
@@ -87,14 +88,15 @@ var (
 
 func newUpdatableAEAD(rttStats *utils.RTTStats, qlogger qlogwriter.Recorder, logger utils.Logger, version protocol.Version) *updatableAEAD {
 	return &updatableAEAD{
-		firstPacketNumber:       protocol.InvalidPacketNumber,
-		largestAcked:            protocol.InvalidPacketNumber,
-		firstRcvdWithCurrentKey: protocol.InvalidPacketNumber,
-		firstSentWithCurrentKey: protocol.InvalidPacketNumber,
-		rttStats:                rttStats,
-		qlogger:                 qlogger,
-		logger:                  logger,
-		version:                 version,
+		firstPacketNumber:              protocol.InvalidPacketNumber,
+		largestAcked:                   protocol.InvalidPacketNumber,
+		firstRcvdWithCurrentKey:        protocol.InvalidPacketNumber,
+		firstSentWithCurrentKey:        protocol.InvalidPacketNumber,
+		firstSentWithCurrentKeyOnPath0: protocol.InvalidPacketNumber,
+		rttStats:                       rttStats,
+		qlogger:                        qlogger,
+		logger:                         logger,
+		version:                        version,
 	}
 }
 
@@ -117,6 +119,7 @@ func (a *updatableAEAD) rollKeys() {
 	a.keyPhase++
 	a.firstRcvdWithCurrentKey = protocol.InvalidPacketNumber
 	a.firstSentWithCurrentKey = protocol.InvalidPacketNumber
+	a.firstSentWithCurrentKeyOnPath0 = protocol.InvalidPacketNumber
 	a.numRcvdWithCurrentKey = 0
 	a.numSentWithCurrentKey = 0
 	a.prevRcvAEAD = a.rcvAEAD
@@ -321,6 +324,9 @@ func (a *updatableAEAD) open(dst, src []byte, rcvTime monotime.Time, pn protocol
 }
 
 func (a *updatableAEAD) Seal(dst, src []byte, pn protocol.PacketNumber, ad []byte) []byte {
+	if a.pathID == 0 && a.firstSentWithCurrentKeyOnPath0 == protocol.InvalidPacketNumber {
+		a.firstSentWithCurrentKeyOnPath0 = pn
+	}
 	if a.firstSentWithCurrentKey == protocol.InvalidPacketNumber {
 		a.firstSentWithCurrentKey = pn
 	}
@@ -335,8 +341,9 @@ func (a *updatableAEAD) Seal(dst, src []byte, pn protocol.PacketNumber, ad []byt
 }
 
 func (a *updatableAEAD) SetLargestAcked(pn protocol.PacketNumber) error {
-	if a.firstSentWithCurrentKey != protocol.InvalidPacketNumber &&
-		pn >= a.firstSentWithCurrentKey && a.numRcvdWithCurrentKey == 0 {
+	firstSent := a.firstSentInAckSpace()
+	if firstSent != protocol.InvalidPacketNumber &&
+		pn >= firstSent && a.numRcvdWithCurrentKey == 0 {
 		return &qerr.TransportError{
 			ErrorCode:    qerr.KeyUpdateError,
 			ErrorMessage: fmt.Sprintf("received ACK for key phase %d, but peer didn't update keys", a.keyPhase),
@@ -355,11 +362,23 @@ func (a *updatableAEAD) updateAllowed() bool {
 		return false
 	}
 	// the first key update is allowed as soon as the handshake is confirmed
+	firstSent := a.firstSentInAckSpace()
 	return a.keyPhase == 0 ||
 		// subsequent key updates as soon as a packet sent with that key phase has been acknowledged
-		(a.firstSentWithCurrentKey != protocol.InvalidPacketNumber &&
+		(firstSent != protocol.InvalidPacketNumber &&
 			a.largestAcked != protocol.InvalidPacketNumber &&
-			a.largestAcked >= a.firstSentWithCurrentKey)
+			a.largestAcked >= firstSent)
+}
+
+// SetLargestAcked currently receives only acknowledgments for path 0.
+// Packet numbers on other paths cannot establish a key-update boundary in
+// that packet number space. A subsequent local update conservatively waits
+// for a new-phase acknowledgment on path 0.
+func (a *updatableAEAD) firstSentInAckSpace() protocol.PacketNumber {
+	if a.multipath {
+		return a.firstSentWithCurrentKeyOnPath0
+	}
+	return a.firstSentWithCurrentKey
 }
 
 func (a *updatableAEAD) shouldInitiateKeyUpdate() bool {

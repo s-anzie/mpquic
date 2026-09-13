@@ -1,12 +1,10 @@
-package http3
+package quic
 
 import (
 	"context"
 	"net"
 	"sort"
 	"time"
-
-	"github.com/quic-go/quic-go"
 )
 
 // localPathAddresses reports addresses on interfaces that are currently up.
@@ -58,8 +56,8 @@ func eligiblePathAddresses(addresses []net.IP, primary, remote net.IP) []net.IP 
 }
 
 type discoveredPath struct {
-	path      *quic.Path
-	transport *quic.Transport
+	path      *Path
+	transport *Transport
 	socket    *net.UDPConn
 }
 
@@ -69,18 +67,15 @@ func (p *discoveredPath) close() {
 	_ = p.socket.Close()
 }
 
-func (t *Transport) startPathDiscovery(conn *quic.Conn) {
-	addresses := t.pathAddresses
+func (conn *Conn) startPathDiscovery() <-chan struct{} {
+	done := make(chan struct{})
+	addresses := conn.config.PathDiscoveryAddresses
 	if addresses == nil {
 		addresses = localPathAddresses
 	}
-	t.pathDiscoveryWG.Add(1)
 	go func() {
-		defer t.pathDiscoveryWG.Done()
-		ctx, cancel := context.WithCancel(t.pathDiscoveryCtx)
-		stop := context.AfterFunc(conn.Context(), cancel)
-		defer stop()
-		defer cancel()
+		defer close(done)
+		ctx := conn.Context()
 		select {
 		case <-conn.HandshakeComplete():
 		case <-ctx.Done():
@@ -100,6 +95,9 @@ func (t *Transport) startPathDiscovery(conn *quic.Conn) {
 			return
 		}
 		primary := route.LocalAddr().(*net.UDPAddr).IP
+		if local, ok := conn.LocalAddr().(*net.UDPAddr); ok && !local.IP.IsUnspecified() {
+			primary = local.IP
+		}
 		_ = route.Close()
 		paths := make(map[string]*discoveredPath)
 		attempted := make(map[string]bool)
@@ -141,7 +139,7 @@ func (t *Transport) startPathDiscovery(conn *quic.Conn) {
 					if err != nil {
 						continue
 					}
-					tr := &quic.Transport{Conn: socket}
+					tr := &Transport{Conn: socket}
 					path, err := conn.AddPath(tr)
 					if err != nil {
 						_ = tr.Close()
@@ -167,4 +165,5 @@ func (t *Transport) startPathDiscovery(conn *quic.Conn) {
 			}
 		}
 	}()
+	return done
 }

@@ -247,13 +247,17 @@ func (t *Transport) DialEarly(ctx context.Context, addr net.Addr, tlsConf *tls.C
 }
 
 func (t *Transport) dial(ctx context.Context, addr net.Addr, host string, tlsConf *tls.Config, conf *Config, use0RTT bool) (*Conn, error) {
-	if err := t.init(t.isSingleUse); err != nil {
+	// Multipath needs non-empty connection IDs even for single-use dialers.
+	if err := t.init(t.isSingleUse && (conf == nil || !conf.EnableMultipath)); err != nil {
 		return nil, err
 	}
 	if err := validateConfig(conf); err != nil {
 		return nil, err
 	}
 	conf = populateConfig(conf)
+	if conf.EnableMultipath && t.connIDLen == 0 {
+		return nil, errors.New("multipath requires non-zero connection IDs")
+	}
 	tlsConf = tlsConf.Clone()
 	setTLSConfigServerName(tlsConf, addr, host)
 	return t.doDial(ctx,
