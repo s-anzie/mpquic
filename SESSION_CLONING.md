@@ -82,7 +82,7 @@ Never reconstruct an authority with counters reset for an existing connection.
 | C02a | Bind a confirmed multipath server's additional-path packet allocation to the authority, preserving existing high-water marks | Implemented behind an internal staging hook |
 | C02b | Import primary stream/credit state and account ordinary writes, pre-reserved buffers, and FIN through the authority | Implemented; remote reservations remain disabled |
 | C03a | Bounded content/range ledger connected to live SendStream offsets and completion, partial delivery, retries and cancellation | Implemented as internal local primitives |
-| C03b | Authenticated worker coordination contract, packet-to-byte ACK evidence, control routing and bounded communication queues | Pending |
+| C03b | Authenticated worker coordination contract, packet-to-byte ACK evidence, control routing and bounded communication queues | In progress: internal fragment/ACK adapter implemented; worker transport pending |
 | C04 | Secure worker bootstrap and packet protection state, coordinated key updates and global AEAD accounting | Pending |
 | C05 | Negotiated source endpoint advertisement and client validation for different server IPs | Pending |
 | C06 | Direct multi-server transmission and cross-path retransmission of distinct ranges | Pending |
@@ -255,3 +255,33 @@ and SendStream integration tests, not a multi-source client/server transfer.
 C03a validation passed the full Go suite, race-enabled QUIC/HTTP/3/cloning tests,
 and ten race-enabled repetitions of the delegation tests. No remote-worker
 benchmark or multi-source wire interoperability claim is made by this lot.
+
+## C03b, first increment: packet-to-byte evidence
+
+The internal `clonedRange.frame` adapter creates a STREAM fragment from retained
+content and attaches an ACK/loss handler capturing its absolute byte interval.
+It rejects another path, invalid intervals, retired or obsolete attempts and
+canceled ranges. Fragments contain no FIN: final size remains primary-owned.
+Callback arguments cannot enlarge the captured interval or change its stream.
+Splitting must precede handler creation; copying a handler onto a smaller
+fragment would incorrectly acknowledge the original interval and is prohibited.
+
+Tests register these fragments in the existing multipath sent-packet history and
+drive its PATH_ACK and loss handling. They cover reordered and duplicate ACKs,
+unsent packet rejection, path-specific packet numbers, FIN waiting for data,
+retry on another path without charging credit again, absolute offsets, payload
+copy isolation, concurrent callbacks and cancellation.
+
+This adapter is not yet called by the live packet scheduler or a remote worker.
+It does not bypass path validation, congestion control, pacing or packet-number
+allocation, and does not accept worker receipts as proof of delivery. The tests
+exercise real transport bookkeeping locally, not UDP multi-source transmission.
+The existing multipath history discards lost packets, so a late wire ACK for a
+discarded packet does not reach this adapter; retained callbacks can safely handle
+late evidence, but late-ACK history retention is not implemented by this increment.
+Loss enables explicit range retry; automatic worker dispatch is still pending.
+Authenticated coordination, bounded message queues and control routing remain
+the unfinished parts of C03b; secure packet protection bootstrap remains C04.
+
+Validation: the full Go suite, race-enabled QUIC/HTTP/3/cloning suites and ten
+race-enabled repetitions of `TestCloningFrame` passed for this increment.
