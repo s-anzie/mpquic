@@ -25,6 +25,9 @@ Other QUIC specifications:
 
 quic-go also supports HTTP/3 ([RFC 9114](https://datatracker.ietf.org/doc/html/rfc9114)).
 
+This fork adds Multipath QUIC, including opt-in
+[automatic local path discovery for QUIC and HTTP/3](http3/MULTIPATH.md).
+
 Other HTTP/3 specifications:
 
 * QPACK: Field Compression for HTTP/3 ([RFC 9204](https://datatracker.ietf.org/doc/html/rfc9204))

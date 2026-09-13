@@ -3,6 +3,7 @@ package quic
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -29,6 +30,18 @@ import (
 type unpacker interface {
 	UnpackLongHeader(hdr *wire.Header, data []byte) (*unpackedPacket, error)
 	UnpackShortHeader(rcvTime monotime.Time, data []byte) (protocol.PacketNumber, protocol.PacketNumberLen, protocol.KeyPhaseBit, []byte, error)
+}
+
+type pathAwareUnpacker interface {
+	UnpackShortHeaderForPath(pathID uint64, rcvTime monotime.Time, data []byte) (protocol.PacketNumber, protocol.PacketNumberLen, protocol.KeyPhaseBit, []byte, error)
+}
+
+type pathAwarePacker interface {
+	PackPathProbePacketForPath(pathID uint64, connID protocol.ConnectionID, frames []ackhandler.Frame, v protocol.Version) (shortHeaderPacket, *packetBuffer, error)
+}
+
+type pathAwareApplicationPacker interface {
+	PackApplicationPacketForPath(pathID uint64, connID protocol.ConnectionID, pathAck *wire.AckFrame, maxPacketSize protocol.ByteCount, now monotime.Time, v protocol.Version) (shortHeaderPacket, *packetBuffer, error)
 }
 
 type cryptoStreamHandler interface {
@@ -173,6 +186,8 @@ type Conn struct {
 
 	notifyReceivedPacket chan struct{}
 	sendingScheduled     chan struct{}
+	multipathActions     chan func()
+	pathSendErrors       chan error
 	receivedPacketMx     sync.Mutex
 	receivedPackets      ringbuffer.RingBuffer[receivedPacket]
 
@@ -183,6 +198,7 @@ type Conn struct {
 	ctx                   context.Context
 	ctxCancel             context.CancelCauseFunc
 	handshakeCompleteChan chan struct{}
+	pathDiscoveryDone     <-chan struct{}
 
 	undecryptablePackets          []receivedPacketWithChecksum // undecryptable packets, waiting for a change in encryption level
 	undecryptablePacketsToProcess []receivedPacketWithChecksum
@@ -210,6 +226,10 @@ type Conn struct {
 	pacingDeadline monotime.Time
 
 	peerParams *wire.TransportParameters
+
+	// multipathEnabled is true after both endpoints have advertised support.
+	multipathEnabled bool
+	multipath        *multipathState
 
 	timer *time.Timer
 	// keepAlivePingSent stores whether a keep alive PING is in flight.
@@ -346,6 +366,10 @@ var newConnection = func(
 		RetrySourceConnectionID:   retrySrcConnID,
 		EnableResetStreamAt:       conf.EnableStreamResetPartialDelivery,
 	}
+	if s.config.EnableMultipath {
+		maxPathID := s.config.MaxPathID
+		params.InitialMaxPathID = &maxPathID
+	}
 	if s.config.EnableDatagrams {
 		params.MaxDatagramFrameSize = wire.MaxDatagramSize
 	} else {
@@ -367,7 +391,8 @@ var newConnection = func(
 		s.version,
 	)
 	s.cryptoStreamHandler = cs
-	s.packer = newPacketPacker(srcConnID, s.connIDManager.Get, s.initialStream, s.handshakeStream, s.sentPacketHandler, s.retransmissionQueue, cs, s.framer, &s.receivedPacketHandler, s.datagramQueue, s.perspective)
+	p := newPacketPacker(srcConnID, s.connIDManager.Get, s.initialStream, s.handshakeStream, s.sentPacketHandler, s.retransmissionQueue, cs, s.framer, &s.receivedPacketHandler, s.datagramQueue, s.perspective)
+	s.packer = p
 	s.unpacker = newPacketUnpacker(cs, s.srcConnIDLen)
 	s.cryptoStreamManager = newCryptoStreamManager(s.initialStream, s.handshakeStream, s.oneRTTStream)
 	return &wrappedConn{Conn: s}
@@ -472,6 +497,10 @@ var newClientConnection = func(
 		InitialSourceConnectionID: srcConnID,
 		EnableResetStreamAt:       conf.EnableStreamResetPartialDelivery,
 	}
+	if s.config.EnableMultipath {
+		maxPathID := s.config.MaxPathID
+		params.InitialMaxPathID = &maxPathID
+	}
 	if s.config.EnableDatagrams {
 		params.MaxDatagramFrameSize = wire.MaxDatagramSize
 	} else {
@@ -493,7 +522,8 @@ var newClientConnection = func(
 	s.cryptoStreamHandler = cs
 	s.cryptoStreamManager = newCryptoStreamManager(s.initialStream, s.handshakeStream, oneRTTStream)
 	s.unpacker = newPacketUnpacker(cs, s.srcConnIDLen)
-	s.packer = newPacketPacker(srcConnID, s.connIDManager.Get, s.initialStream, s.handshakeStream, s.sentPacketHandler, s.retransmissionQueue, cs, s.framer, &s.receivedPacketHandler, s.datagramQueue, s.perspective)
+	p := newPacketPacker(srcConnID, s.connIDManager.Get, s.initialStream, s.handshakeStream, s.sentPacketHandler, s.retransmissionQueue, cs, s.framer, &s.receivedPacketHandler, s.datagramQueue, s.perspective)
+	s.packer = p
 	if len(tlsConf.ServerName) > 0 {
 		s.tokenStoreKey = tlsConf.ServerName
 	} else {
@@ -512,7 +542,7 @@ func (c *Conn) preSetup() {
 	c.largestRcvdAppData = protocol.InvalidPacketNumber
 	c.initialStream = newInitialCryptoStream(c.perspective == protocol.PerspectiveClient)
 	c.handshakeStream = newCryptoStream()
-	c.sendQueue = newSendQueue(c.conn)
+	c.sendQueue = c.newConnectionSendQueue()
 	c.retransmissionQueue = newRetransmissionQueue()
 	c.frameParser = *wire.NewFrameParser(
 		c.config.EnableDatagrams,
@@ -547,6 +577,7 @@ func (c *Conn) preSetup() {
 	c.notifyReceivedPacket = make(chan struct{}, 1)
 	c.closeChan = make(chan struct{}, 1)
 	c.sendingScheduled = make(chan struct{}, 1)
+	c.multipathActions = make(chan func(), 8)
 	c.handshakeCompleteChan = make(chan struct{})
 
 	now := monotime.Now()
@@ -556,12 +587,22 @@ func (c *Conn) preSetup() {
 	c.receivedPacketHandler = *ackhandler.NewReceivedPacketHandler(c.logger)
 
 	c.datagramQueue = newDatagramQueue(c.scheduleSending, c.logger)
+	c.multipath = newMultipathState(c.config.MaxPathID)
+	c.multipath.configurePathCongestion(protocol.ByteCount(c.config.InitialPacketSize), &c.connStats)
 	c.connState.Version = c.version
 }
 
 // run the connection main loop
 func (c *Conn) run() (err error) {
-	defer func() { c.ctxCancel(err) }()
+	if c.perspective == protocol.PerspectiveClient && c.config.EnableMultipath && !c.config.DisableAutomaticPathDiscovery {
+		c.pathDiscoveryDone = c.startPathDiscovery()
+	}
+	defer func() {
+		c.ctxCancel(err)
+		if c.pathDiscoveryDone != nil {
+			<-c.pathDiscoveryDone
+		}
+	}()
 
 	defer func() {
 		// drain queued packets that will never be processed
@@ -605,6 +646,22 @@ runLoop:
 		select {
 		case <-c.closeChan:
 			break runLoop
+		default:
+		}
+		for {
+			select {
+			case action := <-c.multipathActions:
+				action()
+			default:
+				goto multipathActionsDrained
+			}
+		}
+	multipathActionsDrained:
+		select {
+		case err := <-c.pathSendErrors:
+			if err = c.handlePathSendError(0, err); err != nil {
+				c.setCloseError(&closeError{err: err})
+			}
 		default:
 		}
 
@@ -675,10 +732,31 @@ runLoop:
 		// Check for loss detection timeout.
 		// This could cause packets to be declared lost, and retransmissions to be enqueued.
 		now := monotime.Now()
-		if timeout := c.sentPacketHandler.GetLossDetectionTimeout(); !timeout.IsZero() && !timeout.After(now) {
+		if timeout := c.sentPacketHandler.GetLossDetectionTimeout(); !c.multipath.isPathAbandoned(0) && !timeout.IsZero() && !timeout.After(now) {
 			if err := c.sentPacketHandler.OnLossDetectionTimeout(now); err != nil {
 				c.setCloseError(&closeError{err: err})
 				break runLoop
+			}
+		}
+		if c.multipathEnabled {
+			if err := c.retryServerPathValidation(now); err != nil {
+				c.setCloseError(&closeError{err: err})
+				break runLoop
+			}
+			if timeout := c.multipath.nextPathProbeLossTime(time.Second); !timeout.IsZero() && !timeout.After(now) {
+				lostPaths, lostPackets := c.multipath.detectLostPathPackets(now, time.Second)
+				if pm := c.pathManagerOutgoing.Load(); pm != nil {
+					for _, id := range lostPaths {
+						pm.requeueProbe(pathID(id))
+					}
+				}
+				if lostPackets {
+					c.scheduleSending()
+				}
+				if err := c.sendMultipathRecoveryProbes(now); err != nil {
+					c.setCloseError(&closeError{err: err})
+					break runLoop
+				}
 			}
 		}
 
@@ -780,9 +858,11 @@ func (c *Conn) ConnectionState() ConnectionState {
 	if c.peerParams != nil {
 		c.connState.SupportsDatagrams.Remote = c.supportsDatagrams()
 		c.connState.SupportsStreamResetPartialDelivery.Remote = c.peerParams.EnableResetStreamAt
+		c.connState.SupportsMultipath.Remote = c.peerParams.InitialMaxPathID != nil
 	}
 	c.connState.SupportsDatagrams.Local = c.config.EnableDatagrams
 	c.connState.SupportsStreamResetPartialDelivery.Local = c.config.EnableStreamResetPartialDelivery
+	c.connState.SupportsMultipath.Local = c.config.EnableMultipath
 	c.connState.GSO = c.conn.capabilities().GSO
 	return c.connState
 }
@@ -888,8 +968,20 @@ func (c *Conn) maybeResetTimer() {
 	if t := c.receivedPacketHandler.GetAlarmTimeout(); !t.IsZero() && t.Before(deadline) {
 		deadline = t
 	}
-	if t := c.sentPacketHandler.GetLossDetectionTimeout(); !t.IsZero() && t.Before(deadline) {
+	if t := c.sentPacketHandler.GetLossDetectionTimeout(); !c.multipath.isPathAbandoned(0) && !t.IsZero() && t.Before(deadline) {
 		deadline = t
+	}
+	if c.multipathEnabled {
+		if t := c.multipath.nextPathProbeLossTime(time.Second); !t.IsZero() && t.Before(deadline) {
+			deadline = t
+		}
+		if t, ok := c.multipath.nextPathPacingTime(); ok {
+			if t.IsZero() {
+				deadline = deadlineSendImmediately
+			} else if t.Before(deadline) {
+				deadline = t
+			}
+		}
 	}
 	if c.blocked == blockModeCongestionLimited {
 		c.timer.Reset(monotime.Until(deadline))
@@ -920,7 +1012,7 @@ func (c *Conn) switchToNewPath(tr *Transport, now monotime.Time) {
 	c.mtuDiscoverer.Reset(now, initialPacketSize, maxPacketSize)
 	c.conn = newSendConn(tr.conn, c.conn.RemoteAddr(), packetInfo{}, utils.DefaultLogger) // TODO: find a better way
 	c.sendQueue.Close()
-	c.sendQueue = newSendQueue(c.conn)
+	c.sendQueue = c.newConnectionSendQueue()
 	go func() {
 		if err := c.sendQueue.Run(); err != nil {
 			c.destroyImpl(err)
@@ -1191,7 +1283,25 @@ func (c *Conn) handleShortHeaderPacket(
 		}
 		return false, nil
 	}
-	pn, pnLen, keyPhase, data, err := c.unpacker.UnpackShortHeader(p.rcvTime, p.data)
+	packetPathID := uint64(0)
+	if c.multipathEnabled {
+		localPathID, known := c.connIDGenerator.PathIDForConnectionID(destConnID)
+		if known {
+			packetPathID = localPathID
+			c.connIDGenerator.observePathDestination(pathID(localPathID), destConnID)
+		} else {
+			packetPathID, _ = c.multipath.pathIDForConnectionID(destConnID)
+		}
+	}
+	var pn protocol.PacketNumber
+	var pnLen protocol.PacketNumberLen
+	var keyPhase protocol.KeyPhaseBit
+	var data []byte
+	if pathUnpacker, ok := c.unpacker.(pathAwareUnpacker); ok {
+		pn, pnLen, keyPhase, data, err = pathUnpacker.UnpackShortHeaderForPath(packetPathID, p.rcvTime, p.data)
+	} else {
+		pn, pnLen, keyPhase, data, err = c.unpacker.UnpackShortHeader(p.rcvTime, p.data)
+	}
 	if err != nil {
 		// Stateless reset packets (see RFC 9000, section 10.3):
 		// * fill the entire UDP datagram (i.e. they cannot be part of a coalesced packet)
@@ -1214,7 +1324,11 @@ func (c *Conn) handleShortHeaderPacket(
 		wire.LogShortHeader(c.logger, destConnID, pn, pnLen, keyPhase)
 	}
 
-	if c.receivedPacketHandler.IsPotentiallyDuplicate(pn, protocol.Encryption1RTT) {
+	isDuplicate := c.receivedPacketHandler.IsPotentiallyDuplicate(pn, protocol.Encryption1RTT)
+	if packetPathID != 0 {
+		isDuplicate = c.receivedPacketHandler.IsPotentiallyDuplicateForPath(packetPathID, pn)
+	}
+	if isDuplicate {
 		c.logger.Debugf("Dropping (potentially) duplicate packet.")
 		if c.qlogger != nil {
 			c.qlogger.RecordEvent(qlog.PacketDropped{
@@ -1250,9 +1364,30 @@ func (c *Conn) handleShortHeaderPacket(
 			})
 		}
 	}
-	isNonProbing, pathChallenge, err := c.handleUnpackedShortHeaderPacket(destConnID, pn, data, p.ecn, p.rcvTime, log)
+	isNonProbing, pathChallenge, err := c.handleUnpackedShortHeaderPacket(packetPathID, destConnID, pn, data, p.ecn, p.rcvTime, log)
 	if err != nil {
 		return false, err
+	}
+	if c.multipathEnabled && packetPathID != 0 {
+		if path, err := c.multipath.path(packetPathID); err == nil {
+			if path.remoteAddr != nil && !addrsEqual(path.remoteAddr, p.remoteAddr) {
+				path.serverValidated = false
+				path.serverChallengePending = false
+				path.serverChallengeDeadline = 0
+				path.serverChallengeAttempts = 0
+				path.serverBytesReceived = 0
+				path.serverProbeBytesSent = 0
+			}
+			path.serverBytesReceived += protocol.ByteCount(len(p.data))
+			path.remoteAddr = p.remoteAddr
+			path.packetInfo = p.info
+		}
+		if pathChallenge != nil {
+			if err := c.sendMultipathPathResponse(packetPathID, pathChallenge, p.rcvTime, p.remoteAddr, p.info); err != nil {
+				return false, err
+			}
+		}
+		return true, nil
 	}
 
 	// In RFC 9000, only the client can migrate between paths.
@@ -1738,6 +1873,7 @@ func (c *Conn) handleUnpackedLongHeaderPacket(
 }
 
 func (c *Conn) handleUnpackedShortHeaderPacket(
+	pathID uint64,
 	destConnID protocol.ConnectionID,
 	pn protocol.PacketNumber,
 	data []byte,
@@ -1749,12 +1885,22 @@ func (c *Conn) handleUnpackedShortHeaderPacket(
 	c.firstAckElicitingPacketAfterIdleSentTime = 0
 	c.keepAlivePingSent = false
 
-	isAckEliciting, isNonProbing, pathChallenge, err := c.handleFrames(data, destConnID, protocol.Encryption1RTT, log, rcvTime)
+	isAckEliciting, isNonProbing, pathChallenge, err := c.handleFramesForPath(data, destConnID, pathID, protocol.Encryption1RTT, log, rcvTime)
 	if err != nil {
 		return false, nil, err
 	}
+	if c.multipathEnabled && pathID != 0 {
+		if _, err := c.multipath.path(pathID); err != nil {
+			return false, nil, err
+		}
+	}
 	c.sentPacketHandler.ReceivedPacket(protocol.Encryption1RTT, rcvTime)
-	if err := c.receivedPacketHandler.ReceivedPacket(pn, ecn, protocol.Encryption1RTT, rcvTime, isAckEliciting); err != nil {
+	if pathID != 0 {
+		err = c.receivedPacketHandler.ReceivedPacketForPath(pathID, pn, ecn, rcvTime, isAckEliciting)
+	} else {
+		err = c.receivedPacketHandler.ReceivedPacket(pn, ecn, protocol.Encryption1RTT, rcvTime, isAckEliciting)
+	}
+	if err != nil {
 		return false, nil, err
 	}
 	return isNonProbing, pathChallenge, nil
@@ -1762,9 +1908,14 @@ func (c *Conn) handleUnpackedShortHeaderPacket(
 
 // handleFrames parses the frames, one after the other, and handles them.
 // It returns the last PATH_CHALLENGE frame contained in the packet, if any.
-func (c *Conn) handleFrames(
+func (c *Conn) handleFrames(data []byte, destConnID protocol.ConnectionID, encLevel protocol.EncryptionLevel, log func([]qlog.Frame), rcvTime monotime.Time) (bool, bool, *wire.PathChallengeFrame, error) {
+	return c.handleFramesForPath(data, destConnID, 0, encLevel, log, rcvTime)
+}
+
+func (c *Conn) handleFramesForPath(
 	data []byte,
 	destConnID protocol.ConnectionID,
+	pathID uint64,
 	encLevel protocol.EncryptionLevel,
 	log func([]qlog.Frame),
 	rcvTime monotime.Time,
@@ -1861,7 +2012,7 @@ func (c *Conn) handleFrames(
 			if skipHandling {
 				continue
 			}
-			pc, err := c.handleFrame(frame, encLevel, destConnID, rcvTime)
+			pc, err := c.handleFrameForPath(frame, pathID, encLevel, destConnID, rcvTime)
 			if pc != nil {
 				pathChallenge = pc
 			}
@@ -1883,7 +2034,6 @@ func (c *Conn) handleFrames(
 			return false, false, nil, handleErr
 		}
 	}
-
 	// Handle completion of the handshake after processing all the frames.
 	// This ensures that we correctly handle the following case on the server side:
 	// We receive a Handshake packet that contains the CRYPTO frame that allows us to complete the handshake,
@@ -1896,8 +2046,13 @@ func (c *Conn) handleFrames(
 	return
 }
 
-func (c *Conn) handleFrame(
+func (c *Conn) handleFrame(f wire.Frame, encLevel protocol.EncryptionLevel, destConnID protocol.ConnectionID, rcvTime monotime.Time) (*wire.PathChallengeFrame, error) {
+	return c.handleFrameForPath(f, 0, encLevel, destConnID, rcvTime)
+}
+
+func (c *Conn) handleFrameForPath(
 	f wire.Frame,
+	packetPathID uint64,
 	encLevel protocol.EncryptionLevel,
 	destConnID protocol.ConnectionID,
 	rcvTime monotime.Time,
@@ -1925,10 +2080,18 @@ func (c *Conn) handleFrame(
 		err = c.streamsMap.HandleStopSendingFrame(frame)
 	case *wire.PingFrame:
 	case *wire.PathChallengeFrame:
-		c.handlePathChallengeFrame(frame)
+		c.handlePathChallengeFrame(frame, packetPathID)
 		pathChallenge = frame
 	case *wire.PathResponseFrame:
-		err = c.handlePathResponseFrame(frame)
+		if c.multipathEnabled && c.perspective == protocol.PerspectiveServer && packetPathID != 0 {
+			path, pathErr := c.multipath.path(packetPathID)
+			err = pathErr
+			if err == nil {
+				path.validateServerResponse(frame.Data)
+			}
+		} else {
+			err = c.handlePathResponseFrame(frame)
+		}
 	case *wire.NewTokenFrame:
 		err = c.handleNewTokenFrame(frame)
 	case *wire.NewConnectionIDFrame:
@@ -1937,6 +2100,63 @@ func (c *Conn) handleFrame(
 		err = c.connIDGenerator.Retire(frame.SequenceNumber, destConnID, rcvTime.Add(3*c.rttStats.PTO(false)))
 	case *wire.HandshakeDoneFrame:
 		err = c.handleHandshakeDoneFrame(rcvTime)
+	case *wire.PathAbandonFrame:
+		var echo bool
+		echo, err = c.multipath.handlePathAbandon(frame)
+		if err == nil {
+			if echo && frame.PathID == 0 {
+				c.requeueInitialPathPackets()
+			}
+			c.receivedPacketHandler.AbandonPath(frame.PathID)
+			c.connIDGenerator.AbandonPath(pathID(frame.PathID))
+			c.connIDManager.AbandonPath(pathID(frame.PathID))
+			if echo {
+				c.queueControlFrame(&wire.PathAbandonFrame{PathID: frame.PathID, ErrorCode: frame.ErrorCode})
+			}
+			if !c.multipath.hasUsablePathExcept(frame.PathID) {
+				c.closeLocal(&qerr.TransportError{
+					ErrorCode:    qerr.NoViablePathError,
+					ErrorMessage: fmt.Sprintf("path %d was abandoned and no usable path remains", frame.PathID),
+				})
+			}
+		}
+	case *wire.PathStatusAvailableFrame:
+		err = c.multipath.handlePathStatus(frame.PathID, frame.SequenceNumber, false)
+	case *wire.PathStatusBackupFrame:
+		err = c.multipath.handlePathStatus(frame.PathID, frame.SequenceNumber, true)
+	case *wire.PathNewConnectionIDFrame:
+		err = c.multipath.handlePathNewConnectionID(frame)
+		if err == nil {
+			err = c.connIDManager.AddPath(frame)
+		}
+	case *wire.PathRetireConnectionIDFrame:
+		if frame.PathID == 0 {
+			err = c.connIDGenerator.Retire(frame.SequenceNumber, destConnID, rcvTime.Add(3*c.rttStats.PTO(false)))
+		} else {
+			err = c.connIDGenerator.retirePathConnectionID(pathID(frame.PathID), frame.SequenceNumber, destConnID, packetPathID)
+		}
+	case *wire.MaxPathIDFrame:
+		err = c.multipath.handleMaxPathID(frame)
+		if err == nil {
+			if pm := c.pathManagerOutgoing.Load(); pm != nil {
+				pm.SetMaxPathID(c.multipath.peerMaxPathID)
+			}
+			if c.multipathEnabled {
+				c.provisionMultipathPathConnectionIDs()
+			}
+		}
+	case *wire.PathsBlockedFrame:
+		if frame.MaximumPathID > c.config.MaxPathID {
+			err = &qerr.TransportError{
+				ErrorCode:    qerr.ProtocolViolation,
+				ErrorMessage: fmt.Sprintf("PATHS_BLOCKED references maximum path ID %d above local maximum %d", frame.MaximumPathID, c.config.MaxPathID),
+			}
+		}
+	case *wire.PathCIDsBlockedFrame:
+		err = c.multipath.handlePathCIDsBlocked(frame)
+		if err == nil && c.multipathEnabled {
+			err = c.connIDGenerator.replenishPathConnectionIDs(pathID(frame.PathID), frame.NextSequenceNumber)
+		}
 	default:
 		err = fmt.Errorf("unexpected frame type: %s", reflect.ValueOf(&frame).Elem().Type().Name())
 	}
@@ -2046,10 +2266,79 @@ func (c *Conn) handleHandshakeEvents(now monotime.Time) error {
 	}
 }
 
-func (c *Conn) handlePathChallengeFrame(f *wire.PathChallengeFrame) {
-	if c.perspective == protocol.PerspectiveClient {
+func (c *Conn) handlePathChallengeFrame(f *wire.PathChallengeFrame, pathID uint64) {
+	if c.perspective == protocol.PerspectiveClient && (!c.multipathEnabled || pathID == 0) {
 		c.queueControlFrame(&wire.PathResponseFrame{Data: f.Data})
 	}
+}
+
+// sendMultipathPathResponse sends a PATH_RESPONSE on the path that carried the
+// corresponding PATH_CHALLENGE. A response on the initial path would not
+// validate a secondary path and can cause the peer to probe indefinitely.
+func (c *Conn) sendMultipathPathResponse(
+	id uint64,
+	challenge *wire.PathChallengeFrame,
+	now monotime.Time,
+	remoteAddr net.Addr,
+	info packetInfo,
+) error {
+	if c.multipath.isPathAbandoned(id) {
+		return nil
+	}
+	connID, ok := c.connIDManager.GetConnIDForPath(pathID(id))
+	if !ok {
+		c.queueControlFrame(&wire.PathCIDsBlockedFrame{
+			PathID:             id,
+			NextSequenceNumber: c.connIDManager.NextPathConnectionIDSequence(pathID(id)),
+		})
+		return nil
+	}
+	frames := []ackhandler.Frame{{Frame: &wire.PathResponseFrame{Data: challenge.Data}}}
+	if c.perspective == protocol.PerspectiveServer {
+		path, err := c.multipath.path(id)
+		if err != nil {
+			return err
+		}
+		if !path.serverValidated {
+			if path.serverProbeBytesSent+protocol.MinInitialPacketSize > 3*path.serverBytesReceived {
+				return nil
+			}
+			if !path.serverChallengePending {
+				if _, err := rand.Read(path.serverChallenge[:]); err != nil {
+					return err
+				}
+				path.serverChallengePending = true
+			}
+			path.serverChallengeAttempts++
+			path.serverChallengeDeadline = now.Add(200 * time.Millisecond)
+			path.serverProbeBytesSent += protocol.MinInitialPacketSize
+			frames = append(frames, ackhandler.Frame{Frame: &wire.PathChallengeFrame{Data: path.serverChallenge}})
+		}
+	}
+	if pathAck := c.receivedPacketHandler.GetAckFrameForPath(id, now, true); pathAck != nil {
+		frames = append(frames, ackhandler.Frame{Frame: pathAck})
+	}
+	probe, buf, err := c.packPathProbePacket(id, connID, frames, c.version)
+	if err != nil {
+		return err
+	}
+	defer buf.Release()
+	c.logShortHeaderPacketWithDatagramPayloadChecksum(probe, protocol.ECNNon, buf.Len(), false, qlog.DatagramPayloadChecksum(0))
+	c.registerPackedShortHeaderPacket(probe, protocol.ECNNon, now)
+	if c.perspective == protocol.PerspectiveServer {
+		c.sendQueue.SendProbe(buf, remoteAddr, info)
+		return nil
+	}
+	pm := c.pathManagerOutgoing.Load()
+	if pm == nil {
+		return fmt.Errorf("cannot send a multipath PATH_RESPONSE without a path manager")
+	}
+	tr, ok := pm.transportForPath(pathID(id))
+	if !ok {
+		return fmt.Errorf("cannot send a multipath PATH_RESPONSE for unknown path %d", id)
+	}
+	_, err = tr.WriteTo(buf.Data, c.conn.RemoteAddr())
+	return err
 }
 
 func (c *Conn) handlePathResponseFrame(f *wire.PathResponseFrame) error {
@@ -2114,6 +2403,9 @@ func (c *Conn) handleHandshakeDoneFrame(rcvTime monotime.Time) error {
 }
 
 func (c *Conn) handleAckFrame(frame *wire.AckFrame, encLevel protocol.EncryptionLevel, rcvTime monotime.Time) error {
+	if frame.PathID != nil && *frame.PathID != 0 {
+		return c.multipath.handlePathAck(frame, rcvTime)
+	}
 	acked1RTTPacket, err := c.sentPacketHandler.ReceivedAck(frame, encLevel, c.lastPacketReceivedTime)
 	if err != nil {
 		return err
@@ -2136,6 +2428,7 @@ func (c *Conn) handleAckFrame(frame *wire.AckFrame, encLevel protocol.Encryption
 		if maxPayloadSize > protocol.ByteCount(c.maxPayloadSizeEstimate.Load()) {
 			c.maxPayloadSizeEstimate.Store(uint32(maxPayloadSize))
 			c.sentPacketHandler.SetMaxDatagramSize(mtu)
+			c.multipath.setMaxDatagramSize(mtu)
 		}
 	}
 	return c.cryptoStreamHandler.SetLargest1RTTAcked(frame.LargestAcked())
@@ -2183,6 +2476,9 @@ func (c *Conn) CloseWithError(code ApplicationErrorCode, desc string) error {
 		ErrorMessage: desc,
 	})
 	<-c.ctx.Done()
+	if c.pathDiscoveryDone != nil {
+		<-c.pathDiscoveryDone
+	}
 	return nil
 }
 
@@ -2393,6 +2689,9 @@ func (c *Conn) checkTransportParameters(params *wire.TransportParameters) error 
 	if params.InitialSourceConnectionID != c.handshakeDestConnID {
 		return fmt.Errorf("expected initial_source_connection_id to equal %s, is %s", c.handshakeDestConnID, params.InitialSourceConnectionID)
 	}
+	if params.InitialMaxPathID != nil && (c.handshakeDestConnID.Len() == 0 || c.srcConnIDLen == 0) {
+		return errors.New("initial_max_path_id requires non-zero source and destination connection IDs")
+	}
 
 	if c.perspective == protocol.PerspectiveServer {
 		return nil
@@ -2425,8 +2724,31 @@ func (c *Conn) applyTransportParameters() {
 	c.keepAliveInterval = min(c.config.KeepAlivePeriod, c.idleTimeout/2)
 	c.streamsMap.HandleTransportParameters(params)
 	c.frameParser.SetAckDelayExponent(params.AckDelayExponent)
+	c.multipathEnabled = c.config.EnableMultipath && params.InitialMaxPathID != nil
+	c.frameParser.SetMultipath(c.multipathEnabled)
+	c.connIDManager.SetMultipath(c.multipathEnabled)
+	if p, ok := c.packer.(*packetPacker); ok {
+		if c.multipathEnabled {
+			p.setPathPacketNumberSource(c.multipath.allocatePacketNumber)
+		} else {
+			p.setPathPacketNumberSource(nil)
+		}
+	}
+	if cs, ok := c.cryptoStreamHandler.(handshake.MultipathCryptoSetup); ok {
+		cs.SetMultipath(c.multipathEnabled)
+	}
+	if params.InitialMaxPathID != nil {
+		c.multipath.setPeerInitialMaxPathID(*params.InitialMaxPathID)
+		if pm := c.pathManagerOutgoing.Load(); pm != nil {
+			pm.SetMaxPathID(c.multipath.peerMaxPathID)
+		}
+		if c.multipathEnabled {
+			c.provisionMultipathPathConnectionIDs()
+		}
+	}
 	c.connFlowController.UpdateSendWindow(params.InitialMaxData)
 	c.rttStats.SetMaxAckDelay(params.MaxAckDelay)
+	c.multipath.setMaxAckDelay(params.MaxAckDelay)
 	c.connIDGenerator.SetMaxActiveConnIDs(params.ActiveConnectionIDLimit)
 	if params.StatelessResetToken != nil {
 		c.connIDManager.SetStatelessResetToken(*params.StatelessResetToken)
@@ -2448,10 +2770,64 @@ func (c *Conn) applyTransportParameters() {
 	)
 }
 
+func (c *Conn) provisionMultipathPathConnectionIDs() {
+	maxPathID := min(c.config.MaxPathID, c.multipath.peerMaxPathID)
+	// Keep initial provisioning bounded. Applications can raise MAX_PATH_ID
+	// later when they need more paths.
+	maxPathID = min(maxPathID, uint64(protocol.MaxIssuedConnectionIDs))
+	for id := uint64(1); id <= maxPathID; id++ {
+		if err := c.connIDGenerator.ensurePathConnectionID(pathID(id)); err != nil {
+			c.setCloseError(&closeError{err: err})
+			return
+		}
+	}
+}
+
 func (c *Conn) triggerSending(now monotime.Time) error {
 	c.pacingDeadline = 0
+	// Connection-wide control data must be generated even when path 0 is
+	// unavailable and all packets are sent by the multipath scheduler.
+	if c.handshakeConfirmed {
+		if offset := c.connFlowController.GetWindowUpdate(now); offset > 0 {
+			c.framer.QueueControlFrame(&wire.MaxDataFrame{MaximumData: offset})
+		}
+		if cf := c.cryptoStreamManager.GetPostHandshakeData(protocol.MaxPostHandshakeCryptoFrameSize); cf != nil {
+			c.queueControlFrame(cf)
+		}
+	}
+	if c.multipathEnabled && c.multipath.isPathAbandoned(0) {
+		sent, err := c.sendMultipathApplicationPacket(now)
+		if err != nil || sent {
+			return err
+		}
+		_, err = c.sendMultipathAckOnlyPacket(now)
+		return err
+	}
 
 	sendMode := c.sentPacketHandler.SendMode(now)
+	if c.multipathEnabled && c.handshakeConfirmed &&
+		(sendMode == ackhandler.SendAck || sendMode == ackhandler.SendPacingLimited) {
+		sent, err := c.sendMultipathApplicationPacket(now)
+		if err != nil {
+			return err
+		}
+		if sent {
+			c.blocked = blockModeNone
+			return nil
+		}
+		sent, err = c.sendMultipathAckOnlyPacket(now)
+		if err != nil {
+			return err
+		}
+		if sent {
+			c.blocked = blockModeNone
+			return nil
+		}
+		if c.multipath.isPathAbandoned(0) {
+			c.blocked = blockModeCongestionLimited
+			return nil
+		}
+	}
 	switch sendMode {
 	case ackhandler.SendAny:
 		return c.sendPackets(now)
@@ -2491,9 +2867,13 @@ func (c *Conn) triggerSending(now monotime.Time) error {
 func (c *Conn) sendPackets(now monotime.Time) error {
 	if c.perspective == protocol.PerspectiveClient && c.handshakeConfirmed {
 		if pm := c.pathManagerOutgoing.Load(); pm != nil {
-			connID, frame, tr, ok := pm.NextPathToProbe()
+			pathID, connID, frame, tr, ok := pm.NextPathToProbe()
 			if ok {
-				probe, buf, err := c.packer.PackPathProbePacket(connID, []ackhandler.Frame{frame}, c.version)
+				frames := []ackhandler.Frame{frame}
+				if pathAck := c.receivedPacketHandler.GetAckFrameForPath(uint64(pathID), now, true); pathAck != nil {
+					frames = append(frames, ackhandler.Frame{Frame: pathAck})
+				}
+				probe, buf, err := c.packPathProbePacket(uint64(pathID), connID, frames, c.version)
 				if err != nil {
 					return err
 				}
@@ -2505,6 +2885,26 @@ func (c *Conn) sendPackets(now monotime.Time) error {
 				c.scheduleSending()
 				return nil
 			}
+		}
+	}
+
+	if c.multipathEnabled && c.handshakeConfirmed {
+		sent, err := c.sendMultipathApplicationPacket(now)
+		if err != nil {
+			return err
+		}
+		if sent {
+			return nil
+		}
+		sent, err = c.sendMultipathAckOnlyPacket(now)
+		if err != nil {
+			return err
+		}
+		if sent {
+			return nil
+		}
+		if c.multipath.isPathAbandoned(0) {
+			return nil
 		}
 	}
 
@@ -2557,6 +2957,213 @@ func (c *Conn) sendPackets(now monotime.Time) error {
 		return c.sendPacketsWithGSO(now)
 	}
 	return c.sendPacketsWithoutGSO(now)
+}
+
+func (c *Conn) sendMultipathApplicationPacket(now monotime.Time) (bool, error) {
+	pm := c.pathManagerOutgoing.Load()
+	if pm == nil && c.perspective != protocol.PerspectiveServer {
+		return false, nil
+	}
+	pathPacker, ok := c.packer.(pathAwareApplicationPacker)
+	if !ok {
+		return false, nil
+	}
+	var id pathID
+	var connID protocol.ConnectionID
+	var tr *Transport
+	if c.perspective == protocol.PerspectiveServer {
+		id, connID, ok = c.nextServerApplicationPath(now)
+	} else {
+		id, connID, tr, ok = pm.NextPathForApplication()
+	}
+	pathID := id
+	if !ok {
+		return false, nil
+	}
+	if pathID == 0 && c.sendQueue.WouldBlock() {
+		return false, nil
+	}
+	pathAck := c.receivedPacketHandler.GetAckFrameForPath(uint64(pathID), now, true)
+	packet, buf, err := pathPacker.PackApplicationPacketForPath(
+		uint64(pathID), connID, pathAck, c.maxPacketSize(), now, c.version,
+	)
+	if err == errNothingToPack {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	c.logger.Debugf("sending multipath application packet on path %d", pathID)
+	c.logShortHeaderPacket(packet, protocol.ECNNon, buf.Len())
+	c.registerPackedShortHeaderPacket(packet, protocol.ECNNon, now)
+
+	maxSize := c.maxPacketSize()
+	useGSO := packet.Length == maxSize
+	if useGSO {
+		if pathID == 0 {
+			useGSO = c.conn.capabilities().GSO
+		} else if c.perspective == protocol.PerspectiveServer {
+			useGSO = c.conn.capabilities().GSO
+		} else {
+			useGSO = tr != nil && tr.supportsGSO()
+		}
+	}
+	if !useGSO {
+		if pathID == 0 {
+			c.sendQueue.Send(buf, 0, protocol.ECNNon)
+		} else {
+			err = c.writeMultipathApplication(uint64(pathID), tr, buf.Data, 0)
+			buf.Release()
+			if err != nil {
+				return false, err
+			}
+		}
+		c.scheduleSending()
+		return true, nil
+	}
+
+	batch := getLargePacketBuffer()
+	batch.Data = append(batch.Data, buf.Data...)
+	buf.Release()
+	for batch.Len()+maxSize <= batch.Cap() {
+		if pathID == 0 {
+			if c.sentPacketHandler.SendMode(now) != ackhandler.SendAny {
+				break
+			}
+		} else if !c.multipath.canSendOnPath(uint64(pathID), now) {
+			break
+		}
+		pathAck = c.receivedPacketHandler.GetAckFrameForPath(uint64(pathID), now, true)
+		nextPacket, nextBuf, nextErr := pathPacker.PackApplicationPacketForPath(
+			uint64(pathID), connID, pathAck, maxSize, now, c.version,
+		)
+		if nextErr == errNothingToPack {
+			break
+		}
+		if nextErr != nil {
+			batch.Release()
+			return false, nextErr
+		}
+		c.logShortHeaderPacket(nextPacket, protocol.ECNNon, nextBuf.Len())
+		c.registerPackedShortHeaderPacket(nextPacket, protocol.ECNNon, now)
+		batch.Data = append(batch.Data, nextBuf.Data...)
+		nextBuf.Release()
+		// GSO permits a shorter final segment. Keep it in the same queue
+		// entry so sending one batch never requires two available slots.
+		if nextPacket.Length != maxSize {
+			break
+		}
+	}
+
+	if pathID == 0 {
+		c.sendQueue.Send(batch, uint16(maxSize), protocol.ECNNon)
+	} else {
+		err = c.writeMultipathApplication(uint64(pathID), tr, batch.Data, uint16(maxSize))
+		batch.Release()
+		if err != nil {
+			return false, err
+		}
+	}
+	c.scheduleSending()
+	return true, nil
+}
+
+// sendMultipathAckOnlyPacket sends a pending PATH_ACK for a secondary path
+// over the initial path. PATH_ACK is allowed on any open path, which also
+// lets a server acknowledge a path before it has a local path scheduler.
+func (c *Conn) sendMultipathAckOnlyPacket(now monotime.Time) (bool, error) {
+	pathPacker, ok := c.packer.(pathAwareApplicationPacker)
+	if !ok {
+		return false, nil
+	}
+	if c.multipath.isPathAbandoned(0) {
+		pm := c.pathManagerOutgoing.Load()
+		if pm == nil {
+			for id, path := range c.multipath.paths {
+				if id == 0 || path.abandoned || path.remoteAddr == nil {
+					continue
+				}
+				connID, ok := c.connIDManager.GetConnIDForPath(pathID(id))
+				if !ok {
+					continue
+				}
+				pathAck := c.receivedPacketHandler.GetAckFrameForPath(id, now, true)
+				packet, buf, err := pathPacker.PackApplicationPacketForPath(
+					id, connID, pathAck, c.maxPacketSize(), now, c.version,
+				)
+				if err == errNothingToPack {
+					continue
+				}
+				if err != nil {
+					return false, err
+				}
+				c.logger.Debugf("sending final ACKs on server path %d", id)
+				c.logShortHeaderPacket(packet, protocol.ECNNon, buf.Len())
+				c.registerPackedShortHeaderPacket(packet, protocol.ECNNon, now)
+				c.sendQueue.SendProbe(buf, path.remoteAddr, path.packetInfo)
+				buf.Release()
+				c.scheduleSending()
+				return true, nil
+			}
+			return false, nil
+		}
+		pathID, connID, tr, ok := pm.NextPathForApplication()
+		if !ok || pathID == 0 {
+			return false, nil
+		}
+		pathAck := c.receivedPacketHandler.GetAckFrameForPath(uint64(pathID), now, true)
+		packet, buf, err := pathPacker.PackApplicationPacketForPath(
+			uint64(pathID), connID, pathAck, c.maxPacketSize(), now, c.version,
+		)
+		if err == errNothingToPack {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		c.logger.Debugf("sending final ACKs on multipath path %d", pathID)
+		c.logShortHeaderPacket(packet, protocol.ECNNon, buf.Len())
+		c.registerPackedShortHeaderPacket(packet, protocol.ECNNon, now)
+		_, err = tr.WriteTo(buf.Data, c.conn.RemoteAddr())
+		buf.Release()
+		if err != nil {
+			return false, c.handlePathSendError(uint64(pathID), err)
+		}
+		c.scheduleSending()
+		return true, nil
+	}
+	for id := range c.multipath.paths {
+		if id == 0 {
+			continue
+		}
+		pathAck := c.receivedPacketHandler.GetAckFrameForPath(id, now, true)
+		if pathAck == nil {
+			continue
+		}
+		packet, buf, err := pathPacker.PackApplicationPacketForPath(
+			0, c.connIDManager.Get(), pathAck, c.maxPacketSize(), now, c.version,
+		)
+		if err == errNothingToPack {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		c.logger.Debugf("sending PATH_ACK for path %d on the initial path", id)
+		c.logShortHeaderPacket(packet, protocol.ECNNon, buf.Len())
+		c.registerPackedShortHeaderPacket(packet, protocol.ECNNon, now)
+		c.sendQueue.Send(buf, 0, protocol.ECNNon)
+		c.scheduleSending()
+		return true, nil
+	}
+	return false, nil
+}
+
+func (c *Conn) packPathProbePacket(pathID uint64, connID protocol.ConnectionID, frames []ackhandler.Frame, v protocol.Version) (shortHeaderPacket, *packetBuffer, error) {
+	if pathPacker, ok := c.packer.(pathAwarePacker); ok {
+		return pathPacker.PackPathProbePacketForPath(pathID, connID, frames, v)
+	}
+	return c.packer.PackPathProbePacket(connID, frames, v)
 }
 
 func (c *Conn) sendPacketsWithoutGSO(now monotime.Time) error {
@@ -2749,6 +3356,13 @@ func (c *Conn) appendOneShortHeaderPacket(buf *packetBuffer, maxSize protocol.By
 
 func (c *Conn) registerPackedShortHeaderPacket(p shortHeaderPacket, ecn protocol.ECN, now monotime.Time) {
 	if p.IsPathProbePacket {
+		if c.multipathEnabled && p.PathID != 0 {
+			if err := c.multipath.recordSentPacketWithSize(p.PathID, p.PacketNumber, now, p.Length, p.IsAckEliciting()); err != nil {
+				c.setCloseError(&closeError{err: err})
+				return
+			}
+			return
+		}
 		c.sentPacketHandler.SentPacket(
 			now,
 			p.PacketNumber,
@@ -2763,12 +3377,19 @@ func (c *Conn) registerPackedShortHeaderPacket(p shortHeaderPacket, ecn protocol
 		)
 		return
 	}
+	if c.multipathEnabled && p.PathID != 0 {
+		if err := c.multipath.recordSentApplicationPacketWithSize(p.PathID, p.PacketNumber, now, p.Length, p.IsAckEliciting(), p.Frames, p.StreamFrames); err != nil {
+			c.setCloseError(&closeError{err: err})
+			return
+		}
+		return
+	}
 	if c.firstAckElicitingPacketAfterIdleSentTime.IsZero() && (len(p.StreamFrames) > 0 || ackhandler.HasAckElicitingFrames(p.Frames)) {
 		c.firstAckElicitingPacketAfterIdleSentTime = now
 	}
 
 	largestAcked := protocol.InvalidPacketNumber
-	if p.Ack != nil {
+	if p.Ack != nil && (p.Ack.PathID == nil || *p.Ack.PathID == 0) {
 		largestAcked = p.Ack.LargestAcked()
 	}
 	c.sentPacketHandler.SentPacket(
@@ -2992,6 +3613,9 @@ func (c *Conn) tryQueueingUndecryptablePacket(p receivedPacket, pt qlog.PacketTy
 }
 
 func (c *Conn) queueControlFrame(f wire.Frame) {
+	if c.retransmissionQueue != nil {
+		c.retransmissionQueue.TrackPathStatus(f)
+	}
 	c.framer.QueueControlFrame(f)
 	c.scheduleSending()
 }
@@ -3086,10 +3710,72 @@ func (c *Conn) getPathManager() *pathManagerOutgoing {
 
 	// Initialize the path manager
 	new := newPathManagerOutgoing(
-		c.connIDManager.GetConnIDForPath,
-		c.connIDManager.RetireConnIDForPath,
+		func(id pathID) (protocol.ConnectionID, bool) {
+			if id == 0 {
+				return c.connIDManager.Get(), true
+			}
+			return c.connIDManager.GetConnIDForPath(id)
+		},
+		func(id pathID) {
+			// Multipath retirement is part of the serialized abandon action.
+			// Queuing it from Path.Close could put RETIRE in a packet that
+			// was already selected for the very path being retired.
+			if !c.multipathEnabled {
+				c.connIDManager.RetireConnIDForPath(id)
+			}
+		},
 		c.scheduleSending,
 	)
+	new.SetAbandonPath(func(id pathID) {
+		if !c.multipathEnabled {
+			return
+		}
+		action := func() {
+			c.multipath.markPathAbandoned(uint64(id))
+			c.receivedPacketHandler.AbandonPath(uint64(id))
+			c.connIDGenerator.AbandonPath(id)
+			c.connIDManager.AbandonPath(id)
+			c.queueControlFrame(&wire.PathAbandonFrame{PathID: uint64(id)})
+		}
+		select {
+		case c.multipathActions <- action:
+			c.scheduleSending()
+		case <-c.ctx.Done():
+		}
+	})
+	new.SetPathStatus(func(id pathID, backup bool) {
+		if !c.multipathEnabled {
+			return
+		}
+		frame, err := c.multipath.nextPathStatusFrame(uint64(id), backup)
+		if err != nil {
+			c.logger.Debugf("cannot create path status for path %d: %s", id, err)
+			return
+		}
+		c.queueControlFrame(frame)
+	})
+	new.SetPathCIDsBlocked(func(id pathID) {
+		if !c.multipathEnabled {
+			return
+		}
+		c.queueControlFrame(&wire.PathCIDsBlockedFrame{
+			PathID:             uint64(id),
+			NextSequenceNumber: c.connIDManager.NextPathConnectionIDSequence(id),
+		})
+	})
+	new.SetPathApplicationAvailability(func(id pathID) bool {
+		if c.multipath.isPathAbandoned(uint64(id)) {
+			return false
+		}
+		if id == 0 {
+			return c.sentPacketHandler.SendMode(monotime.Now()) == ackhandler.SendAny
+		}
+		return c.multipath.canSendOnPath(uint64(id), monotime.Now())
+	})
+	if c.multipathEnabled {
+		new.EnableInitialPathScheduling()
+		new.SetMaxPathID(c.multipath.peerMaxPathID)
+	}
 	if c.pathManagerOutgoing.CompareAndSwap(old, new) {
 		return new
 	}
@@ -3105,10 +3791,15 @@ func (c *Conn) AddPath(t *Transport) (*Path, error) {
 	if c.peerParams.DisableActiveMigration {
 		return nil, errors.New("server disabled connection migration")
 	}
+	pm := c.getPathManager()
+	if c.multipathEnabled && !pm.canCreatePath() {
+		c.queueControlFrame(&wire.PathsBlockedFrame{MaximumPathID: uint64(c.multipath.peerMaxPathID)})
+		return nil, errPeerPathLimitReached
+	}
 	if err := t.init(false); err != nil {
 		return nil, err
 	}
-	return c.getPathManager().NewPath(
+	path := pm.NewPath(
 		t,
 		200*time.Millisecond, // initial RTT estimate
 		func() {
@@ -3122,7 +3813,14 @@ func (c *Conn) AddPath(t *Transport) (*Path, error) {
 				},
 			)
 		},
-	), nil
+	)
+	if path == nil {
+		if c.multipathEnabled {
+			c.queueControlFrame(&wire.PathsBlockedFrame{MaximumPathID: uint64(c.multipath.peerMaxPathID)})
+		}
+		return nil, errPeerPathLimitReached
+	}
+	return path, nil
 }
 
 // HandshakeComplete blocks until the handshake completes (or fails).

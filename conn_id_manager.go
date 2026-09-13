@@ -20,9 +20,14 @@ type newConnID struct {
 type connIDManager struct {
 	queue []newConnID
 
-	highestProbingID uint64
-	pathMx           sync.Mutex
-	pathProbing      map[pathID]newConnID // initialized lazily
+	highestProbingID   uint64
+	pathMx             sync.Mutex
+	pathProbing        map[pathID]newConnID // initialized lazily
+	pathQueues         map[pathID][]newConnID
+	pathHighestRetired map[pathID]uint64
+	abandonedPaths     map[pathID]bool
+	abandonedRetired   map[pathID]map[uint64]bool
+	multipath          bool
 
 	handshakeComplete         bool
 	activeSequenceNumber      uint64
@@ -56,6 +61,10 @@ func newConnIDManager(
 		removeStatelessResetToken: removeStatelessResetToken,
 		queueControlFrame:         queueControlFrame,
 		queue:                     make([]newConnID, 0, protocol.MaxActiveConnectionIDs),
+		pathQueues:                make(map[pathID][]newConnID),
+		pathHighestRetired:        make(map[pathID]uint64),
+		abandonedPaths:            make(map[pathID]bool),
+		abandonedRetired:          make(map[pathID]map[uint64]bool),
 	}
 }
 
@@ -82,6 +91,16 @@ func (h *connIDManager) add(f *wire.NewConnectionIDFrame) error {
 			ErrorCode:    qerr.ProtocolViolation,
 			ErrorMessage: "received NEW_CONNECTION_ID frame but zero-length connection IDs are in use",
 		}
+	}
+	if h.abandonedPaths[0] {
+		if h.abandonedRetired[0] == nil {
+			h.abandonedRetired[0] = make(map[uint64]bool)
+		}
+		if !h.abandonedRetired[0][f.SequenceNumber] {
+			h.queueControlFrame(&wire.RetireConnectionIDFrame{SequenceNumber: f.SequenceNumber})
+			h.abandonedRetired[0][f.SequenceNumber] = true
+		}
+		return nil
 	}
 	// If the NEW_CONNECTION_ID frame is reordered, such that its sequence number is smaller than the currently active
 	// connection ID or if it was already retired, send the RETIRE_CONNECTION_ID frame immediately.
@@ -254,6 +273,126 @@ func (h *connIDManager) SetHandshakeComplete() {
 	h.handshakeComplete = true
 }
 
+func (h *connIDManager) SetMultipath(enabled bool) {
+	h.pathMx.Lock()
+	h.multipath = enabled
+	h.pathMx.Unlock()
+}
+
+// AddPath adds a Connection ID advertised for a specific Multipath path.
+func (h *connIDManager) AddPath(f *wire.PathNewConnectionIDFrame) error {
+	h.pathMx.Lock()
+	defer h.pathMx.Unlock()
+	id := pathID(f.PathID)
+	if id == 0 {
+		if err := h.add(&wire.NewConnectionIDFrame{
+			SequenceNumber:      f.SequenceNumber,
+			RetirePriorTo:       f.RetirePriorTo,
+			ConnectionID:        f.ConnectionID,
+			StatelessResetToken: f.StatelessResetToken,
+		}); err != nil {
+			return err
+		}
+		if len(h.queue) >= protocol.MaxActiveConnectionIDs {
+			return &qerr.TransportError{ErrorCode: qerr.ConnectionIDLimitError}
+		}
+		return nil
+	}
+
+	if h.activeConnectionID.Len() == 0 {
+		return &qerr.TransportError{
+			ErrorCode:    qerr.ProtocolViolation,
+			ErrorMessage: "received PATH_NEW_CONNECTION_ID frame but zero-length connection IDs are in use",
+		}
+	}
+	if h.pathProbing != nil {
+		if entry, ok := h.pathProbing[id]; ok && entry.SequenceNumber == f.SequenceNumber {
+			if entry.ConnectionID != f.ConnectionID || entry.StatelessResetToken != f.StatelessResetToken {
+				return fmt.Errorf("received conflicting path connection IDs for path %d and sequence number %d", f.PathID, f.SequenceNumber)
+			}
+			return nil
+		}
+	}
+	if h.abandonedPaths[id] {
+		if h.abandonedRetired[id] == nil {
+			h.abandonedRetired[id] = make(map[uint64]bool)
+		}
+		if !h.abandonedRetired[id][f.SequenceNumber] {
+			h.queueControlFrame(&wire.PathRetireConnectionIDFrame{
+				PathID:         f.PathID,
+				SequenceNumber: f.SequenceNumber,
+			})
+			h.abandonedRetired[id][f.SequenceNumber] = true
+		}
+		return nil
+	}
+	queue := h.pathQueues[id]
+	for _, entry := range queue {
+		if entry.SequenceNumber == f.SequenceNumber {
+			if entry.ConnectionID != f.ConnectionID || entry.StatelessResetToken != f.StatelessResetToken {
+				return fmt.Errorf("received conflicting path connection IDs for path %d and sequence number %d", f.PathID, f.SequenceNumber)
+			}
+			return nil
+		}
+	}
+
+	if f.SequenceNumber < h.pathHighestRetired[id] {
+		h.queueControlFrame(&wire.PathRetireConnectionIDFrame{
+			PathID:         f.PathID,
+			SequenceNumber: f.SequenceNumber,
+		})
+		return nil
+	}
+
+	if f.RetirePriorTo > h.pathHighestRetired[id] {
+		for _, entry := range queue {
+			if entry.SequenceNumber < f.RetirePriorTo {
+				h.queueControlFrame(&wire.PathRetireConnectionIDFrame{
+					PathID:         f.PathID,
+					SequenceNumber: entry.SequenceNumber,
+				})
+			}
+		}
+		queue = slices.DeleteFunc(queue, func(entry newConnID) bool {
+			return entry.SequenceNumber < f.RetirePriorTo
+		})
+		if h.pathProbing != nil {
+			if entry, ok := h.pathProbing[id]; ok && entry.SequenceNumber < f.RetirePriorTo {
+				h.queueControlFrame(&wire.PathRetireConnectionIDFrame{
+					PathID:         f.PathID,
+					SequenceNumber: entry.SequenceNumber,
+				})
+				h.removeStatelessResetToken(entry.StatelessResetToken)
+				delete(h.pathProbing, id)
+			}
+		}
+		h.pathHighestRetired[id] = f.RetirePriorTo
+	}
+	if f.SequenceNumber < h.pathHighestRetired[id] {
+		h.queueControlFrame(&wire.PathRetireConnectionIDFrame{
+			PathID:         f.PathID,
+			SequenceNumber: f.SequenceNumber,
+		})
+		return nil
+	}
+
+	entry := newConnID{
+		SequenceNumber:      f.SequenceNumber,
+		ConnectionID:        f.ConnectionID,
+		StatelessResetToken: f.StatelessResetToken,
+	}
+	position := len(queue)
+	for i, queued := range queue {
+		if queued.SequenceNumber > entry.SequenceNumber {
+			position = i
+			break
+		}
+	}
+	queue = slices.Insert(queue, position, entry)
+	h.pathQueues[id] = queue
+	return nil
+}
+
 // GetConnIDForPath retrieves a connection ID for a new path (i.e. not the active one).
 // Once a connection ID is allocated for a path, it cannot be used for a different path.
 // When called with the same pathID, it will return the same connection ID,
@@ -267,12 +406,26 @@ func (h *connIDManager) GetConnIDForPath(id pathID) (protocol.ConnectionID, bool
 	if h.activeConnectionID.Len() == 0 {
 		return protocol.ConnectionID{}, true
 	}
+	if h.abandonedPaths[id] {
+		return protocol.ConnectionID{}, false
+	}
 
 	if h.pathProbing == nil {
 		h.pathProbing = make(map[pathID]newConnID)
 	}
 	entry, ok := h.pathProbing[id]
 	if ok {
+		return entry.ConnectionID, true
+	}
+	if h.multipath {
+		queue := h.pathQueues[id]
+		if len(queue) == 0 {
+			return protocol.ConnectionID{}, false
+		}
+		entry := queue[0]
+		h.pathQueues[id] = queue[1:]
+		h.pathProbing[id] = entry
+		h.addStatelessResetToken(entry.StatelessResetToken)
 		return entry.ConnectionID, true
 	}
 	if len(h.queue) == 0 {
@@ -286,6 +439,24 @@ func (h *connIDManager) GetConnIDForPath(id pathID) (protocol.ConnectionID, bool
 	return front.ConnectionID, true
 }
 
+// NextPathConnectionIDSequence returns the next sequence number that the peer
+// is expected to issue for a path.
+func (h *connIDManager) NextPathConnectionIDSequence(id pathID) uint64 {
+	h.pathMx.Lock()
+	defer h.pathMx.Unlock()
+
+	next := h.pathHighestRetired[id]
+	if h.pathProbing != nil {
+		if entry, ok := h.pathProbing[id]; ok {
+			next = max(next, entry.SequenceNumber+1)
+		}
+	}
+	for _, entry := range h.pathQueues[id] {
+		next = max(next, entry.SequenceNumber+1)
+	}
+	return next
+}
+
 func (h *connIDManager) RetireConnIDForPath(pathID pathID) {
 	h.pathMx.Lock()
 	defer h.pathMx.Unlock()
@@ -294,11 +465,74 @@ func (h *connIDManager) RetireConnIDForPath(pathID pathID) {
 	if !ok {
 		return
 	}
-	h.queueControlFrame(&wire.RetireConnectionIDFrame{
-		SequenceNumber: entry.SequenceNumber,
-	})
+	if h.multipath {
+		h.queueControlFrame(&wire.PathRetireConnectionIDFrame{
+			PathID:         uint64(pathID),
+			SequenceNumber: entry.SequenceNumber,
+		})
+	} else {
+		h.queueControlFrame(&wire.RetireConnectionIDFrame{
+			SequenceNumber: entry.SequenceNumber,
+		})
+	}
 	h.removeStatelessResetToken(entry.StatelessResetToken)
 	delete(h.pathProbing, pathID)
+}
+
+// AbandonPath immediately retires all peer-issued Connection IDs for a path.
+// The path number space itself is kept by the Multipath state for delayed
+// packets that may still arrive after PATH_ABANDON.
+func (h *connIDManager) AbandonPath(id pathID) {
+	h.pathMx.Lock()
+	defer h.pathMx.Unlock()
+
+	if h.abandonedPaths[id] {
+		return
+	}
+	h.abandonedPaths[id] = true
+	if h.abandonedRetired[id] == nil {
+		h.abandonedRetired[id] = make(map[uint64]bool)
+	}
+	if id == 0 {
+		if !h.abandonedRetired[0][h.activeSequenceNumber] {
+			h.queueControlFrame(&wire.RetireConnectionIDFrame{SequenceNumber: h.activeSequenceNumber})
+			h.abandonedRetired[0][h.activeSequenceNumber] = true
+		}
+		for _, entry := range h.queue {
+			h.queueControlFrame(&wire.RetireConnectionIDFrame{SequenceNumber: entry.SequenceNumber})
+			h.abandonedRetired[0][entry.SequenceNumber] = true
+		}
+		clear(h.queue)
+		h.queue = nil
+		if h.pathProbing != nil {
+			if entry, ok := h.pathProbing[0]; ok {
+				if !h.abandonedRetired[0][entry.SequenceNumber] {
+					h.queueControlFrame(&wire.RetireConnectionIDFrame{SequenceNumber: entry.SequenceNumber})
+					h.abandonedRetired[0][entry.SequenceNumber] = true
+				}
+				h.removeStatelessResetToken(entry.StatelessResetToken)
+				delete(h.pathProbing, 0)
+			}
+		}
+		return
+	}
+	for _, entry := range h.pathQueues[id] {
+		h.queueControlFrame(&wire.PathRetireConnectionIDFrame{
+			PathID:         uint64(id),
+			SequenceNumber: entry.SequenceNumber,
+		})
+		h.abandonedRetired[id][entry.SequenceNumber] = true
+	}
+	delete(h.pathQueues, id)
+	if entry, ok := h.pathProbing[id]; ok {
+		h.queueControlFrame(&wire.PathRetireConnectionIDFrame{
+			PathID:         uint64(id),
+			SequenceNumber: entry.SequenceNumber,
+		})
+		h.abandonedRetired[id][entry.SequenceNumber] = true
+		h.removeStatelessResetToken(entry.StatelessResetToken)
+		delete(h.pathProbing, id)
+	}
 }
 
 func (h *connIDManager) IsActiveStatelessResetToken(token protocol.StatelessResetToken) bool {

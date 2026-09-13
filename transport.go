@@ -247,13 +247,17 @@ func (t *Transport) DialEarly(ctx context.Context, addr net.Addr, tlsConf *tls.C
 }
 
 func (t *Transport) dial(ctx context.Context, addr net.Addr, host string, tlsConf *tls.Config, conf *Config, use0RTT bool) (*Conn, error) {
-	if err := t.init(t.isSingleUse); err != nil {
+	// Multipath needs non-empty connection IDs even for single-use dialers.
+	if err := t.init(t.isSingleUse && (conf == nil || !conf.EnableMultipath)); err != nil {
 		return nil, err
 	}
 	if err := validateConfig(conf); err != nil {
 		return nil, err
 	}
 	conf = populateConfig(conf)
+	if conf.EnableMultipath && t.connIDLen == 0 {
+		return nil, errors.New("multipath requires non-zero connection IDs")
+	}
 	tlsConf = tlsConf.Clone()
 	setTLSConfigServerName(tlsConf, addr, host)
 	return t.doDial(ctx,
@@ -437,6 +441,23 @@ func (t *Transport) WriteTo(b []byte, addr net.Addr) (int, error) {
 		return 0, err
 	}
 	return t.conn.WritePacket(b, addr, nil, 0, protocol.ECNUnsupported)
+}
+
+// writePacket sends a packet or a GSO batch on the transport's UDP socket.
+// It is used internally for efficient Multipath QUIC application sending.
+func (t *Transport) writePacket(b []byte, addr net.Addr, gsoSize uint16) error {
+	if err := t.init(false); err != nil {
+		return err
+	}
+	_, err := t.conn.WritePacket(b, addr, nil, gsoSize, protocol.ECNUnsupported)
+	return err
+}
+
+func (t *Transport) supportsGSO() bool {
+	if err := t.init(false); err != nil {
+		return false
+	}
+	return t.conn.capabilities().GSO
 }
 
 func (t *Transport) runSendQueue() {

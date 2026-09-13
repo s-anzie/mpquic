@@ -72,6 +72,14 @@ type Transport struct {
 	// If nil, reasonable default values will be used.
 	QUICConfig *quic.Config
 
+	// EnableMultipath negotiates Multipath QUIC and automatically discovers
+	// additional local addresses through the QUIC connection. The server
+	// must also enable multipath. It defaults MaxPathID to 4 when unset.
+	// Discovery is also enabled when QUICConfig.EnableMultipath is true.
+	// QUICConfig.DisableAutomaticPathDiscovery opts out of discovery.
+	// Custom dialers must pass the QUIC configuration to their QUIC connection.
+	EnableMultipath bool
+
 	// Dial specifies an optional dial function for creating QUIC
 	// connections for requests.
 	// If [Transport.Dial] is nil, a [net.UDPConn] will be created at the first request
@@ -142,6 +150,13 @@ func (t *Transport) init() error {
 	if t.QUICConfig == nil {
 		t.QUICConfig = defaultQuicConfig.Clone()
 		t.QUICConfig.EnableDatagrams = t.EnableDatagrams
+	}
+	if t.EnableMultipath {
+		t.QUICConfig = t.QUICConfig.Clone()
+		t.QUICConfig.EnableMultipath = true
+		if t.QUICConfig.MaxPathID == 0 {
+			t.QUICConfig.MaxPathID = 4
+		}
 	}
 	if t.EnableDatagrams && !t.QUICConfig.EnableDatagrams {
 		return errors.New("HTTP Datagrams enabled, but QUIC Datagrams disabled")

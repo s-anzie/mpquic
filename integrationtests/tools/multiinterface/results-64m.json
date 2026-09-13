@@ -1,0 +1,190 @@
+[
+  {
+    "cut_at_seconds": 0.748257074,
+    "cut_interface": "mpq-ca",
+    "error": "write udp [::]:48841->10.66.0.1:4433: sendmsg: network is unreachable",
+    "interface_bytes_rx_tx": {
+      "mpq-ca": [
+        15119633,
+        130580
+      ],
+      "mpq-cb": [
+        17665618,
+        157374
+      ]
+    },
+    "mbps": 180.08196028899798,
+    "multipath": true,
+    "path_traffic_ok": true,
+    "protocol": "quic",
+    "received_bytes": 16862520,
+    "requested_bytes": 67108864,
+    "same_connection_followup_ok": false,
+    "seconds": 0.74910424,
+    "sha256_ok": false
+  },
+  {
+    "cut_at_seconds": 0.547426828,
+    "cut_interface": "mpq-cb",
+    "error": "quic: transport closed",
+    "interface_bytes_rx_tx": {
+      "mpq-ca": [
+        16770887,
+        115685
+      ],
+      "mpq-cb": [
+        10474858,
+        80419
+      ]
+    },
+    "mbps": 117.18121477067982,
+    "multipath": true,
+    "path_traffic_ok": true,
+    "protocol": "quic",
+    "received_bytes": 21489576,
+    "requested_bytes": 67108864,
+    "same_connection_followup_ok": false,
+    "seconds": 1.467100408,
+    "sha256_ok": false
+  },
+  {
+    "cut_at_seconds": -1,
+    "cut_interface": "",
+    "interface_bytes_rx_tx": {
+      "mpq-ca": [
+        66893118,
+        669162
+      ],
+      "mpq-cb": [
+        100475744,
+        742007
+      ]
+    },
+    "mbps": 129.28989563474232,
+    "multipath": true,
+    "path_traffic_ok": true,
+    "protocol": "quic",
+    "received_bytes": 67108864,
+    "requested_bytes": 67108864,
+    "same_connection_followup_ok": true,
+    "seconds": 4.152458391,
+    "sha256_ok": true
+  },
+  {
+    "cut_at_seconds": -1,
+    "cut_interface": "",
+    "interface_bytes_rx_tx": {
+      "mpq-ca": [
+        68792253,
+        821935
+      ],
+      "mpq-cb": [
+        340,
+        426
+      ]
+    },
+    "mbps": 189.81055939220403,
+    "multipath": false,
+    "path_traffic_ok": true,
+    "protocol": "quic",
+    "received_bytes": 67108864,
+    "requested_bytes": 67108864,
+    "same_connection_followup_ok": true,
+    "seconds": 2.828456508,
+    "sha256_ok": true
+  },
+  {
+    "cut_at_seconds": 0.982188594,
+    "cut_interface": "mpq-ca",
+    "error": "write udp [::]:42861->10.66.0.1:4433: sendmsg: network is unreachable",
+    "interface_bytes_rx_tx": {
+      "mpq-ca": [
+        17760567,
+        174915
+      ],
+      "mpq-cb": [
+        23454800,
+        195772
+      ]
+    },
+    "mbps": 137.1380158498824,
+    "multipath": true,
+    "path_traffic_ok": true,
+    "protocol": "http3",
+    "received_bytes": 16842752,
+    "requested_bytes": 67108864,
+    "same_connection_followup_ok": false,
+    "seconds": 0.982528551,
+    "sha256_ok": false
+  },
+  {
+    "cut_at_seconds": 0.83172146,
+    "cut_interface": "mpq-cb",
+    "error": "quic: transport closed",
+    "interface_bytes_rx_tx": {
+      "mpq-ca": [
+        31262293,
+        224787
+      ],
+      "mpq-cb": [
+        19794712,
+        183600
+      ]
+    },
+    "mbps": 159.7904444515733,
+    "multipath": true,
+    "path_traffic_ok": true,
+    "protocol": "http3",
+    "received_bytes": 29812638,
+    "requested_bytes": 67108864,
+    "same_connection_followup_ok": false,
+    "seconds": 1.492586774,
+    "sha256_ok": false
+  },
+  {
+    "cut_at_seconds": -1,
+    "cut_interface": "",
+    "interface_bytes_rx_tx": {
+      "mpq-ca": [
+        66505954,
+        568533
+      ],
+      "mpq-cb": [
+        84625310,
+        664595
+      ]
+    },
+    "mbps": 153.42528901813733,
+    "multipath": true,
+    "path_traffic_ok": true,
+    "protocol": "http3",
+    "received_bytes": 67108864,
+    "requested_bytes": 67108864,
+    "same_connection_followup_ok": true,
+    "seconds": 3.499233506,
+    "sha256_ok": true
+  },
+  {
+    "cut_at_seconds": -1,
+    "cut_interface": "",
+    "interface_bytes_rx_tx": {
+      "mpq-ca": [
+        69122274,
+        980968
+      ],
+      "mpq-cb": [
+        70,
+        90
+      ]
+    },
+    "mbps": 189.4817648546749,
+    "multipath": false,
+    "path_traffic_ok": true,
+    "protocol": "http3",
+    "received_bytes": 67108864,
+    "requested_bytes": 67108864,
+    "same_connection_followup_ok": true,
+    "seconds": 2.833364532,
+    "sha256_ok": true
+  }
+]

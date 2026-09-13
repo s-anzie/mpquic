@@ -39,6 +39,9 @@ func validateConfig(config *Config) error {
 	if config.MaxConnectionReceiveWindow > quicvarint.Max {
 		config.MaxConnectionReceiveWindow = quicvarint.Max
 	}
+	if config.MaxPathID > protocol.MaxPathID {
+		return fmt.Errorf("invalid MaxPathID: %d (maximum %d)", config.MaxPathID, protocol.MaxPathID)
+	}
 	if config.InitialPacketSize > 0 && config.InitialPacketSize < protocol.MinInitialPacketSize {
 		config.InitialPacketSize = protocol.MinInitialPacketSize
 	}
@@ -123,6 +126,10 @@ func populateConfig(config *Config) *Config {
 		InitialPacketSize:                initialPacketSize,
 		DisablePathMTUDiscovery:          config.DisablePathMTUDiscovery,
 		EnableStreamResetPartialDelivery: config.EnableStreamResetPartialDelivery,
+		EnableMultipath:                  config.EnableMultipath,
+		DisableAutomaticPathDiscovery:    config.DisableAutomaticPathDiscovery,
+		PathDiscoveryAddresses:           config.PathDiscoveryAddresses,
+		MaxPathID:                        config.MaxPathID,
 		Allow0RTT:                        config.Allow0RTT,
 		Tracer:                           config.Tracer,
 	}

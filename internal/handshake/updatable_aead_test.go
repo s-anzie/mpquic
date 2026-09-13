@@ -27,6 +27,29 @@ const (
 
 func randomCipherSuite() cipherSuite { return cipherSuites[mrand.IntN(len(cipherSuites))] }
 
+func TestMultipathKeyUpdateAckUsesPathZeroPacketNumbers(t *testing.T) {
+	_, server, _ := setupEndpoints(t, utils.NewRTTStats())
+	server.SetMultipath(true)
+	server.SetHandshakeConfirmed()
+	server.rollKeys()
+	require.NoError(t, server.SetPathID(1))
+	server.Seal(nil, []byte(msg), 2, []byte(ad))
+	// An old-phase path-0 ACK may have a much larger packet number than
+	// the first new-phase packet on path 1. It cannot confirm the update.
+	require.NoError(t, server.SetLargestAcked(100))
+	require.False(t, server.updateAllowed())
+	require.NoError(t, server.SetPathID(0))
+	server.Seal(nil, []byte(msg), 101, []byte(ad))
+	require.NoError(t, server.SetLargestAcked(100))
+	require.False(t, server.updateAllowed())
+	require.Error(t, server.SetLargestAcked(101), "new-phase ACK without peer key update remains invalid")
+	server.numRcvdWithCurrentKey = 1
+	require.NoError(t, server.SetLargestAcked(101))
+	require.True(t, server.updateAllowed())
+	server.rollKeys()
+	require.Equal(t, protocol.InvalidPacketNumber, server.firstSentWithCurrentKeyOnPath0)
+}
+
 func setupEndpoints(t *testing.T, serverRTTStats *utils.RTTStats) (client, server *updatableAEAD, serverEventRecorder *events.Recorder) {
 	cs := randomCipherSuite()
 	var eventRecorder events.Recorder
@@ -190,6 +213,53 @@ func TestUpdatableAEADEncryptDecryptMessage(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestUpdatableAEADMultipathNonce(t *testing.T) {
+	client, server, _ := setupEndpoints(t, utils.NewRTTStats())
+	client.SetMultipath(true)
+	server.SetMultipath(true)
+	require.NoError(t, client.SetPathID(7))
+	require.NoError(t, server.SetPathID(7))
+
+	plaintext := []byte("multipath packet")
+	associatedData := []byte("path-aware header")
+	ciphertext := server.Seal(nil, plaintext, 41, associatedData)
+	opened, err := client.Open(nil, ciphertext, monotime.Now(), 41, protocol.KeyPhaseZero, associatedData)
+	require.NoError(t, err)
+	require.Equal(t, plaintext, opened)
+
+	// The path ID is part of the nonce, so the same packet number cannot be
+	// opened with a different path's packet number space.
+	require.NoError(t, client.SetPathID(8))
+	_, err = client.Open(nil, ciphertext, monotime.Now(), 41, protocol.KeyPhaseZero, associatedData)
+	require.Equal(t, ErrDecryptionFailed, err)
+
+	require.NoError(t, server.SetPathID(8))
+	ciphertext = server.Seal(nil, plaintext, 0, associatedData)
+	opened, err = client.Open(nil, ciphertext, monotime.Now(), 0, protocol.KeyPhaseZero, associatedData)
+	require.NoError(t, err)
+	require.Equal(t, plaintext, opened)
+
+	require.Error(t, client.SetPathID(protocol.MaxPathID+1))
+}
+
+func TestUpdatableAEADDecodesPacketNumbersPerPath(t *testing.T) {
+	client, server, _ := setupEndpoints(t, utils.NewRTTStats())
+	client.SetMultipath(true)
+	server.SetMultipath(true)
+	require.NoError(t, client.SetPathID(1))
+	require.NoError(t, server.SetPathID(1))
+
+	ciphertext := server.Seal(nil, []byte("path one"), 100, []byte("header"))
+	_, err := client.Open(nil, ciphertext, monotime.Now(), 100, protocol.KeyPhaseZero, []byte("header"))
+	require.NoError(t, err)
+	require.Equal(t, protocol.PacketNumber(100), client.DecodePacketNumber(100, protocol.PacketNumberLen1))
+
+	require.NoError(t, client.SetPathID(2))
+	// A new path starts with its own packet number space instead of using the
+	// largest packet number received on path 1.
+	require.Equal(t, protocol.PacketNumber(0), client.DecodePacketNumber(0, protocol.PacketNumberLen1))
 }
 
 func TestUpdatableAEADPacketNumbers(t *testing.T) {

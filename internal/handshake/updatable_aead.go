@@ -46,13 +46,14 @@ type updatableAEAD struct {
 	prevRcvAEADExpiry monotime.Time
 	prevRcvAEAD       cipher.AEAD
 
-	firstRcvdWithCurrentKey protocol.PacketNumber
-	firstSentWithCurrentKey protocol.PacketNumber
-	highestRcvdPN           protocol.PacketNumber // highest packet number received (which could be successfully unprotected)
-	numRcvdWithCurrentKey   uint64
-	numSentWithCurrentKey   uint64
-	rcvAEAD                 cipher.AEAD
-	sendAEAD                cipher.AEAD
+	firstRcvdWithCurrentKey        protocol.PacketNumber
+	firstSentWithCurrentKey        protocol.PacketNumber
+	firstSentWithCurrentKeyOnPath0 protocol.PacketNumber
+	highestRcvdPN                  protocol.PacketNumber // highest packet number received (which could be successfully unprotected)
+	numRcvdWithCurrentKey          uint64
+	numSentWithCurrentKey          uint64
+	rcvAEAD                        cipher.AEAD
+	sendAEAD                       cipher.AEAD
 	// caches cipher.AEAD.Overhead(). This speeds up calls to Overhead().
 	aeadOverhead int
 
@@ -72,6 +73,12 @@ type updatableAEAD struct {
 
 	// use a single slice to avoid allocations
 	nonceBuf []byte
+
+	// multipath selects the Multipath QUIC path-and-packet-number nonce
+	// construction. pathID is the path used by subsequent 1-RTT packets.
+	multipath           bool
+	pathID              uint64
+	highestRcvdPNByPath map[uint64]protocol.PacketNumber
 }
 
 var (
@@ -81,14 +88,15 @@ var (
 
 func newUpdatableAEAD(rttStats *utils.RTTStats, qlogger qlogwriter.Recorder, logger utils.Logger, version protocol.Version) *updatableAEAD {
 	return &updatableAEAD{
-		firstPacketNumber:       protocol.InvalidPacketNumber,
-		largestAcked:            protocol.InvalidPacketNumber,
-		firstRcvdWithCurrentKey: protocol.InvalidPacketNumber,
-		firstSentWithCurrentKey: protocol.InvalidPacketNumber,
-		rttStats:                rttStats,
-		qlogger:                 qlogger,
-		logger:                  logger,
-		version:                 version,
+		firstPacketNumber:              protocol.InvalidPacketNumber,
+		largestAcked:                   protocol.InvalidPacketNumber,
+		firstRcvdWithCurrentKey:        protocol.InvalidPacketNumber,
+		firstSentWithCurrentKey:        protocol.InvalidPacketNumber,
+		firstSentWithCurrentKeyOnPath0: protocol.InvalidPacketNumber,
+		rttStats:                       rttStats,
+		qlogger:                        qlogger,
+		logger:                         logger,
+		version:                        version,
 	}
 }
 
@@ -111,6 +119,7 @@ func (a *updatableAEAD) rollKeys() {
 	a.keyPhase++
 	a.firstRcvdWithCurrentKey = protocol.InvalidPacketNumber
 	a.firstSentWithCurrentKey = protocol.InvalidPacketNumber
+	a.firstSentWithCurrentKeyOnPath0 = protocol.InvalidPacketNumber
 	a.numRcvdWithCurrentKey = 0
 	a.numSentWithCurrentKey = 0
 	a.prevRcvAEAD = a.rcvAEAD
@@ -176,7 +185,45 @@ func (a *updatableAEAD) setAEADParameters(aead cipher.AEAD, suite cipherSuite) {
 }
 
 func (a *updatableAEAD) DecodePacketNumber(wirePN protocol.PacketNumber, wirePNLen protocol.PacketNumberLen) protocol.PacketNumber {
-	return protocol.DecodePacketNumber(wirePNLen, a.highestRcvdPN, wirePN)
+	largest := a.highestRcvdPN
+	if a.multipath {
+		largest = a.highestRcvdPNByPath[a.pathID]
+	}
+	return protocol.DecodePacketNumber(wirePNLen, largest, wirePN)
+}
+
+// SetMultipath enables or disables the Multipath QUIC nonce construction.
+// This only affects 1-RTT packets; long-header packet protection is handled by
+// separate AEAD instances and keeps the regular QUIC nonce format.
+func (a *updatableAEAD) SetMultipath(enabled bool) {
+	a.multipath = enabled
+	if enabled && a.highestRcvdPNByPath == nil {
+		a.highestRcvdPNByPath = make(map[uint64]protocol.PacketNumber)
+	}
+}
+
+// SetPathID selects the path ID used for subsequent 1-RTT packets.
+func (a *updatableAEAD) SetPathID(pathID uint64) error {
+	if pathID > protocol.MaxPathID {
+		return fmt.Errorf("path ID %d exceeds the maximum %d", pathID, protocol.MaxPathID)
+	}
+	a.pathID = pathID
+	return nil
+}
+
+func (a *updatableAEAD) setNonce(pn protocol.PacketNumber) {
+	if !a.multipath {
+		// Keep the prefix zeroed when switching back to regular QUIC packet
+		// protection after using a path-aware nonce.
+		clear(a.nonceBuf[:len(a.nonceBuf)-8])
+		binary.BigEndian.PutUint64(a.nonceBuf[len(a.nonceBuf)-8:], uint64(pn))
+		return
+	}
+	nonce, err := protocol.PathAndPacketNumber(a.pathID, pn)
+	if err != nil {
+		panic(err)
+	}
+	copy(a.nonceBuf, nonce[:])
 }
 
 func (a *updatableAEAD) Open(dst, src []byte, rcvTime monotime.Time, pn protocol.PacketNumber, kp protocol.KeyPhaseBit, ad []byte) ([]byte, error) {
@@ -189,6 +236,9 @@ func (a *updatableAEAD) Open(dst, src []byte, rcvTime monotime.Time, pn protocol
 	}
 	if err == nil {
 		a.highestRcvdPN = max(a.highestRcvdPN, pn)
+		if a.multipath {
+			a.highestRcvdPNByPath[a.pathID] = max(a.highestRcvdPNByPath[a.pathID], pn)
+		}
 	}
 	return dec, err
 }
@@ -209,7 +259,7 @@ func (a *updatableAEAD) open(dst, src []byte, rcvTime monotime.Time, pn protocol
 			})
 		}
 	}
-	binary.BigEndian.PutUint64(a.nonceBuf[len(a.nonceBuf)-8:], uint64(pn))
+	a.setNonce(pn)
 	if kp != a.keyPhase.Bit() {
 		if a.keyPhase > 0 && a.firstRcvdWithCurrentKey == protocol.InvalidPacketNumber || pn < a.firstRcvdWithCurrentKey {
 			if a.prevRcvAEAD == nil {
@@ -274,6 +324,9 @@ func (a *updatableAEAD) open(dst, src []byte, rcvTime monotime.Time, pn protocol
 }
 
 func (a *updatableAEAD) Seal(dst, src []byte, pn protocol.PacketNumber, ad []byte) []byte {
+	if a.pathID == 0 && a.firstSentWithCurrentKeyOnPath0 == protocol.InvalidPacketNumber {
+		a.firstSentWithCurrentKeyOnPath0 = pn
+	}
 	if a.firstSentWithCurrentKey == protocol.InvalidPacketNumber {
 		a.firstSentWithCurrentKey = pn
 	}
@@ -281,15 +334,16 @@ func (a *updatableAEAD) Seal(dst, src []byte, pn protocol.PacketNumber, ad []byt
 		a.firstPacketNumber = pn
 	}
 	a.numSentWithCurrentKey++
-	binary.BigEndian.PutUint64(a.nonceBuf[len(a.nonceBuf)-8:], uint64(pn))
+	a.setNonce(pn)
 	// The AEAD we're using here will be the qtls.aeadAESGCM13.
 	// It uses the nonce provided here and XOR it with the IV.
 	return a.sendAEAD.Seal(dst, a.nonceBuf, src, ad)
 }
 
 func (a *updatableAEAD) SetLargestAcked(pn protocol.PacketNumber) error {
-	if a.firstSentWithCurrentKey != protocol.InvalidPacketNumber &&
-		pn >= a.firstSentWithCurrentKey && a.numRcvdWithCurrentKey == 0 {
+	firstSent := a.firstSentInAckSpace()
+	if firstSent != protocol.InvalidPacketNumber &&
+		pn >= firstSent && a.numRcvdWithCurrentKey == 0 {
 		return &qerr.TransportError{
 			ErrorCode:    qerr.KeyUpdateError,
 			ErrorMessage: fmt.Sprintf("received ACK for key phase %d, but peer didn't update keys", a.keyPhase),
@@ -308,11 +362,23 @@ func (a *updatableAEAD) updateAllowed() bool {
 		return false
 	}
 	// the first key update is allowed as soon as the handshake is confirmed
+	firstSent := a.firstSentInAckSpace()
 	return a.keyPhase == 0 ||
 		// subsequent key updates as soon as a packet sent with that key phase has been acknowledged
-		(a.firstSentWithCurrentKey != protocol.InvalidPacketNumber &&
+		(firstSent != protocol.InvalidPacketNumber &&
 			a.largestAcked != protocol.InvalidPacketNumber &&
-			a.largestAcked >= a.firstSentWithCurrentKey)
+			a.largestAcked >= firstSent)
+}
+
+// SetLargestAcked currently receives only acknowledgments for path 0.
+// Packet numbers on other paths cannot establish a key-update boundary in
+// that packet number space. A subsequent local update conservatively waits
+// for a new-phase acknowledgment on path 0.
+func (a *updatableAEAD) firstSentInAckSpace() protocol.PacketNumber {
+	if a.multipath {
+		return a.firstSentWithCurrentKeyOnPath0
+	}
+	return a.firstSentWithCurrentKey
 }
 
 func (a *updatableAEAD) shouldInitiateKeyUpdate() bool {

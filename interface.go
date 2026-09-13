@@ -181,6 +181,22 @@ type Config struct {
 	// Enable QUIC Stream Resets with Partial Delivery.
 	// See https://datatracker.ietf.org/doc/html/draft-ietf-quic-reliable-stream-reset-09.
 	EnableStreamResetPartialDelivery bool
+	// Enable Multipath QUIC support.
+	// See https://datatracker.ietf.org/doc/draft-ietf-quic-multipath/.
+	EnableMultipath bool
+	// DisableAutomaticPathDiscovery leaves path creation to the application.
+	// Otherwise, multipath clients discover and validate additional local addresses
+	// after the handshake. Servers never initiate discovery.
+	DisableAutomaticPathDiscovery bool
+	// PathDiscoveryAddresses optionally supplies local address candidates instead
+	// of enumerating active OS interfaces. It is ignored when discovery is disabled.
+	// It must return promptly and be safe for concurrent calls across connections.
+	// Errors preserve existing paths; an empty successful result removes them.
+	PathDiscoveryAddresses func() ([]net.IP, error)
+	// MaxPathID is the largest path ID this endpoint is willing to accept.
+	// It is only used when EnableMultipath is true. A value of zero negotiates
+	// Multipath QUIC without permitting additional paths at connection start.
+	MaxPathID uint64
 
 	Tracer func(ctx context.Context, isClient bool, connID ConnectionID) qlogwriter.Trace
 }
@@ -211,6 +227,12 @@ type ConnectionState struct {
 	SupportsStreamResetPartialDelivery struct {
 		// Remote is true if the peer advertised support.
 		// Local is true if support was enabled via Config.EnableStreamResetPartialDelivery.
+		Remote, Local bool
+	}
+	// SupportsMultipath indicates whether Multipath QUIC was negotiated.
+	SupportsMultipath struct {
+		// Remote is true if the peer advertised the initial_max_path_id parameter.
+		// Local is true if Multipath QUIC was enabled via Config.EnableMultipath.
 		Remote, Local bool
 	}
 	// Used0RTT says if 0-RTT resumption was used.

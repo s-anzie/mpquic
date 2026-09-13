@@ -22,6 +22,7 @@ var (
 )
 
 var errPathDoesNotExist = errors.New("path does not exist")
+var errPeerPathLimitReached = errors.New("peer path limit reached")
 
 // Path is a network path.
 type Path struct {
@@ -86,6 +87,19 @@ func (p *Path) Switch() error {
 	return nil
 }
 
+// SetBackup tells the peer to use this path only as a backup when another
+// usable path is available. The preference is advisory and does not change
+// the local path scheduler.
+func (p *Path) SetBackup(backup bool) error {
+	select {
+	case <-p.abandon:
+		return ErrPathClosed
+	default:
+	}
+	p.pathManager.setPathStatus(p.id, backup)
+	return nil
+}
+
 // Close abandons a path.
 // It is not possible to close the path that’s currently active.
 // After closing, the path cannot be successfully probed again with [Path.Probe].
@@ -104,6 +118,7 @@ func (p *Path) Close() error {
 }
 
 type pathOutgoing struct {
+	id             pathID
 	pathChallenges [][8]byte // length is implicitly limited by exponential backoff
 	tr             *Transport
 	isValidated    bool
@@ -118,14 +133,30 @@ func (p *pathOutgoing) Validated() <-chan struct{} { return p.validated }
 type pathManagerOutgoing struct {
 	getConnID       func(pathID) (_ protocol.ConnectionID, ok bool)
 	retireConnID    func(pathID)
+	abandonPath     func(pathID)
+	statusPath      func(pathID pathID, backup bool)
+	cidsBlocked     func(pathID)
+	canSendPath     func(pathID) bool
 	scheduleSending func()
 
-	mx             sync.Mutex
-	activePath     pathID
-	pathsToProbe   []pathID
-	paths          map[pathID]*pathOutgoing
-	nextPathID     pathID
-	pathToSwitchTo *pathOutgoing
+	mx                  sync.Mutex
+	activePath          pathID
+	pathsToProbe        []pathID
+	paths               map[pathID]*pathOutgoing
+	nextPathID          pathID
+	nextApplicationPath pathID
+	includeInitialPath  bool
+	maxPathID           pathID
+	pathToSwitchTo      *pathOutgoing
+	pathToSwitchFrom    pathID
+}
+
+// EnableInitialPathScheduling includes the handshake path in application
+// scheduling. It is enabled only for Multipath QUIC connections.
+func (pm *pathManagerOutgoing) EnableInitialPathScheduling() {
+	pm.mx.Lock()
+	pm.includeInitialPath = true
+	pm.mx.Unlock()
 }
 
 // newPathManagerOutgoing creates a new pathManagerOutgoing object. This
@@ -137,13 +168,73 @@ func newPathManagerOutgoing(
 	scheduleSending func(),
 ) *pathManagerOutgoing {
 	return &pathManagerOutgoing{
-		activePath:      0, // at initialization time, we're guaranteed to be using the handshake path
-		nextPathID:      1,
-		getConnID:       getConnID,
-		retireConnID:    retireConnID,
-		scheduleSending: scheduleSending,
-		paths:           make(map[pathID]*pathOutgoing, 4),
+		activePath:          0, // at initialization time, we're guaranteed to be using the handshake path
+		nextPathID:          1,
+		nextApplicationPath: 1,
+		getConnID:           getConnID,
+		retireConnID:        retireConnID,
+		abandonPath:         func(pathID) {},
+		statusPath:          func(pathID pathID, backup bool) {},
+		cidsBlocked:         func(pathID) {},
+		canSendPath:         func(pathID) bool { return true },
+		scheduleSending:     scheduleSending,
+		paths:               make(map[pathID]*pathOutgoing, 4),
+		maxPathID:           pathID(protocol.MaxPathID),
 	}
+}
+
+func (pm *pathManagerOutgoing) SetAbandonPath(abandonPath func(pathID)) {
+	pm.mx.Lock()
+	pm.abandonPath = abandonPath
+	pm.mx.Unlock()
+}
+
+func (pm *pathManagerOutgoing) SetPathStatus(statusPath func(pathID pathID, backup bool)) {
+	pm.mx.Lock()
+	pm.statusPath = statusPath
+	pm.mx.Unlock()
+}
+
+func (pm *pathManagerOutgoing) SetPathCIDsBlocked(cidsBlocked func(pathID)) {
+	pm.mx.Lock()
+	pm.cidsBlocked = cidsBlocked
+	pm.mx.Unlock()
+}
+
+func (pm *pathManagerOutgoing) SetPathApplicationAvailability(canSendPath func(pathID) bool) {
+	pm.mx.Lock()
+	pm.canSendPath = canSendPath
+	pm.mx.Unlock()
+}
+
+func (pm *pathManagerOutgoing) transportForPath(id pathID) (*Transport, bool) {
+	pm.mx.Lock()
+	defer pm.mx.Unlock()
+	p, ok := pm.paths[id]
+	if !ok || p.tr == nil {
+		return nil, false
+	}
+	return p.tr, true
+}
+
+func (pm *pathManagerOutgoing) setPathStatus(id pathID, backup bool) {
+	pm.mx.Lock()
+	defer pm.mx.Unlock()
+	pm.statusPath(id, backup)
+}
+
+// SetMaxPathID updates the maximum path ID that can be allocated to a new
+// path. Existing paths are not affected by a lower limit.
+func (pm *pathManagerOutgoing) SetMaxPathID(maxPathID uint64) {
+	pm.mx.Lock()
+	pm.maxPathID = pathID(min(maxPathID, protocol.MaxPathID))
+	pm.mx.Unlock()
+}
+
+func (pm *pathManagerOutgoing) canCreatePath() bool {
+	pm.mx.Lock()
+	defer pm.mx.Unlock()
+	return pm.nextPathID <= pm.maxPathID
 }
 
 func (pm *pathManagerOutgoing) addPath(p *Path, enablePath func()) *pathOutgoing {
@@ -157,6 +248,7 @@ func (pm *pathManagerOutgoing) addPath(p *Path, enablePath func()) *pathOutgoing
 	}
 
 	path := &pathOutgoing{
+		id:         p.id,
 		tr:         p.tr,
 		probeSent:  make(chan struct{}, 1),
 		validated:  make(chan struct{}),
@@ -169,6 +261,17 @@ func (pm *pathManagerOutgoing) addPath(p *Path, enablePath func()) *pathOutgoing
 func (pm *pathManagerOutgoing) enqueueProbe(p *Path) {
 	pm.mx.Lock()
 	pm.pathsToProbe = append(pm.pathsToProbe, p.id)
+	pm.mx.Unlock()
+	pm.scheduleSending()
+}
+
+func (pm *pathManagerOutgoing) requeueProbe(id pathID) {
+	pm.mx.Lock()
+	if _, ok := pm.paths[id]; !ok || slices.Contains(pm.pathsToProbe, id) {
+		pm.mx.Unlock()
+		return
+	}
+	pm.pathsToProbe = append(pm.pathsToProbe, id)
 	pm.mx.Unlock()
 	pm.scheduleSending()
 }
@@ -191,6 +294,7 @@ func (pm *pathManagerOutgoing) removePathImpl(id pathID) error {
 	if _, ok := pm.paths[id]; !ok {
 		return nil
 	}
+	pm.abandonPath(id)
 	pm.retireConnID(id)
 	delete(pm.paths, id)
 	return nil
@@ -207,6 +311,7 @@ func (pm *pathManagerOutgoing) switchToPath(id pathID) error {
 	if !p.isValidated {
 		return ErrPathNotValidated
 	}
+	pm.pathToSwitchFrom = pm.activePath
 	pm.pathToSwitchTo = p
 	pm.activePath = id
 	return nil
@@ -215,6 +320,9 @@ func (pm *pathManagerOutgoing) switchToPath(id pathID) error {
 func (pm *pathManagerOutgoing) NewPath(t *Transport, initialRTT time.Duration, enablePath func()) *Path {
 	pm.mx.Lock()
 	defer pm.mx.Unlock()
+	if pm.nextPathID > pm.maxPathID {
+		return nil
+	}
 
 	id := pm.nextPathID
 	pm.nextPathID++
@@ -228,7 +336,7 @@ func (pm *pathManagerOutgoing) NewPath(t *Transport, initialRTT time.Duration, e
 	}
 }
 
-func (pm *pathManagerOutgoing) NextPathToProbe() (_ protocol.ConnectionID, _ ackhandler.Frame, _ *Transport, hasPath bool) {
+func (pm *pathManagerOutgoing) NextPathToProbe() (_ pathID, _ protocol.ConnectionID, _ ackhandler.Frame, _ *Transport, hasPath bool) {
 	pm.mx.Lock()
 	defer pm.mx.Unlock()
 
@@ -245,12 +353,14 @@ func (pm *pathManagerOutgoing) NextPathToProbe() (_ protocol.ConnectionID, _ ack
 		pm.pathsToProbe = pm.pathsToProbe[1:]
 	}
 	if id == invalidPathID {
-		return protocol.ConnectionID{}, ackhandler.Frame{}, nil, false
+		return invalidPathID, protocol.ConnectionID{}, ackhandler.Frame{}, nil, false
 	}
 
 	connID, ok := pm.getConnID(id)
 	if !ok {
-		return protocol.ConnectionID{}, ackhandler.Frame{}, nil, false
+		pm.pathsToProbe = pm.pathsToProbe[1:]
+		pm.cidsBlocked(id)
+		return invalidPathID, protocol.ConnectionID{}, ackhandler.Frame{}, nil, false
 	}
 
 	var b [8]byte
@@ -265,16 +375,63 @@ func (pm *pathManagerOutgoing) NextPathToProbe() (_ protocol.ConnectionID, _ ack
 	}
 	frame := ackhandler.Frame{
 		Frame:   &wire.PathChallengeFrame{Data: b},
-		Handler: (*pathManagerOutgoingAckHandler)(pm),
+		Handler: &pathManagerOutgoingAckHandler{manager: pm, pathID: id},
 	}
-	return connID, frame, p.tr, true
+	return id, connID, frame, p.tr, true
+}
+
+// NextPathForApplication selects the next validated path for application data.
+// Paths are selected in ascending ID order and wrapped around to provide a
+// deterministic round-robin scheduler.
+func (pm *pathManagerOutgoing) NextPathForApplication() (_ pathID, _ protocol.ConnectionID, _ *Transport, ok bool) {
+	pm.mx.Lock()
+	defer pm.mx.Unlock()
+
+	validated := make([]pathID, 0, len(pm.paths))
+	if pm.includeInitialPath {
+		validated = append(validated, 0)
+	}
+	for id, p := range pm.paths {
+		if p.isValidated {
+			validated = append(validated, id)
+		}
+	}
+	if len(validated) == 0 {
+		return invalidPathID, protocol.ConnectionID{}, nil, false
+	}
+	slices.Sort(validated)
+
+	start := 0
+	for i, id := range validated {
+		if id >= pm.nextApplicationPath {
+			start = i
+			break
+		}
+	}
+	for i := range validated {
+		selected := validated[(start+i)%len(validated)]
+		connID, ok := pm.getConnID(selected)
+		if !ok {
+			pm.cidsBlocked(selected)
+			continue
+		}
+		if !pm.canSendPath(selected) {
+			continue
+		}
+		pm.nextApplicationPath = selected + 1
+		if selected == 0 {
+			return selected, connID, nil, true
+		}
+		return selected, connID, pm.paths[selected].tr, true
+	}
+	return invalidPathID, protocol.ConnectionID{}, nil, false
 }
 
 func (pm *pathManagerOutgoing) HandlePathResponseFrame(f *wire.PathResponseFrame) {
 	pm.mx.Lock()
 	defer pm.mx.Unlock()
 
-	for _, p := range pm.paths {
+	for id, p := range pm.paths {
 		if slices.Contains(p.pathChallenges, f.Data) {
 			// path validated
 			if !p.isValidated {
@@ -282,6 +439,7 @@ func (pm *pathManagerOutgoing) HandlePathResponseFrame(f *wire.PathResponseFrame
 				p.isValidated = true
 				p.pathChallenges = nil
 				close(p.validated)
+				pm.statusPath(id, false)
 			}
 			break
 		}
@@ -296,16 +454,26 @@ func (pm *pathManagerOutgoing) ShouldSwitchPath() (*Transport, bool) {
 		return nil, false
 	}
 	p := pm.pathToSwitchTo
+	from := pm.pathToSwitchFrom
 	pm.pathToSwitchTo = nil
+	if from != p.id {
+		pm.statusPath(from, true)
+		pm.statusPath(p.id, false)
+	}
 	return p.tr, true
 }
 
-type pathManagerOutgoingAckHandler pathManagerOutgoing
+type pathManagerOutgoingAckHandler struct {
+	manager *pathManagerOutgoing
+	pathID  pathID
+}
 
 var _ ackhandler.FrameHandler = &pathManagerOutgoingAckHandler{}
 
 // OnAcked is called when the PATH_CHALLENGE is acked.
 // This doesn't validate the path, only receiving the PATH_RESPONSE does.
-func (pm *pathManagerOutgoingAckHandler) OnAcked(wire.Frame) {}
+func (h *pathManagerOutgoingAckHandler) OnAcked(wire.Frame) {}
 
-func (pm *pathManagerOutgoingAckHandler) OnLost(wire.Frame) {}
+func (h *pathManagerOutgoingAckHandler) OnLost(wire.Frame) {
+	h.manager.requeueProbe(h.pathID)
+}

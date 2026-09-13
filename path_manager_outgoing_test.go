@@ -6,6 +6,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/quic-go/quic-go/internal/ackhandler"
 	"github.com/quic-go/quic-go/internal/protocol"
 	"github.com/quic-go/quic-go/internal/wire"
 
@@ -27,7 +28,7 @@ func TestPathManagerOutgoingPathProbing(t *testing.T) {
 			func() {},
 		)
 
-		_, _, _, ok := pm.NextPathToProbe()
+		_, _, _, _, ok := pm.NextPathToProbe()
 		require.False(t, ok)
 
 		tr1 := &Transport{}
@@ -42,7 +43,7 @@ func TestPathManagerOutgoingPathProbing(t *testing.T) {
 		synctest.Wait()
 
 		require.False(t, enabled)
-		connID, f, tr, ok := pm.NextPathToProbe()
+		_, connID, f, tr, ok := pm.NextPathToProbe()
 		require.True(t, ok)
 		require.Equal(t, tr1, tr)
 		require.Equal(t, protocol.ParseConnectionID([]byte{1, 2, 3, 4, 5, 6, 7, 8}), connID)
@@ -50,7 +51,7 @@ func TestPathManagerOutgoingPathProbing(t *testing.T) {
 		pc := f.Frame.(*wire.PathChallengeFrame)
 		require.True(t, enabled)
 
-		_, _, _, ok = pm.NextPathToProbe()
+		_, _, _, _, ok = pm.NextPathToProbe()
 		require.False(t, ok)
 
 		select {
@@ -74,7 +75,6 @@ func TestPathManagerOutgoingPathProbing(t *testing.T) {
 		// ... neither does receiving a random PATH_RESPONSE...
 		pm.HandlePathResponseFrame(&wire.PathResponseFrame{Data: [8]byte{'f', 'o', 'o', 'f', 'o', 'o'}})
 		f.Handler.OnAcked(f.Frame) // doesn't do anything
-		f.Handler.OnLost(f.Frame)  // doesn't do anything
 		select {
 		case <-errChan:
 			t.Fatal("should still be probing")
@@ -108,6 +108,279 @@ func TestPathManagerOutgoingPathProbing(t *testing.T) {
 	})
 }
 
+func TestPathManagerOutgoingSelectsValidatedApplicationPathsRoundRobin(t *testing.T) {
+	connIDs := map[pathID]protocol.ConnectionID{}
+	pm := newPathManagerOutgoing(
+		func(id pathID) (protocol.ConnectionID, bool) {
+			connID, ok := connIDs[id]
+			return connID, ok
+		},
+		func(pathID) {},
+		func() {},
+	)
+
+	tr1 := &Transport{}
+	tr2 := &Transport{}
+	p1 := pm.NewPath(tr1, time.Second, func() {})
+	p2 := pm.NewPath(tr2, time.Second, func() {})
+	pm.addPath(p1, p1.enablePath)
+	pm.addPath(p2, p2.enablePath)
+	pm.paths[p1.id].isValidated = true
+	pm.paths[p2.id].isValidated = true
+	connIDs[p1.id] = protocol.ParseConnectionID([]byte{1})
+	connIDs[p2.id] = protocol.ParseConnectionID([]byte{2})
+
+	id, connID, tr, ok := pm.NextPathForApplication()
+	require.True(t, ok)
+	require.Equal(t, p1.id, id)
+	require.Equal(t, connIDs[p1.id], connID)
+	require.Equal(t, tr1, tr)
+
+	id, connID, tr, ok = pm.NextPathForApplication()
+	require.True(t, ok)
+	require.Equal(t, p2.id, id)
+	require.Equal(t, connIDs[p2.id], connID)
+	require.Equal(t, tr2, tr)
+
+	id, _, _, ok = pm.NextPathForApplication()
+	require.True(t, ok)
+	require.Equal(t, p1.id, id)
+}
+
+func TestPathManagerOutgoingSchedulesInitialPathWithSecondaryPaths(t *testing.T) {
+	connIDs := map[pathID]protocol.ConnectionID{
+		0: protocol.ParseConnectionID([]byte{0}),
+	}
+	pm := newPathManagerOutgoing(
+		func(id pathID) (protocol.ConnectionID, bool) {
+			connID, ok := connIDs[id]
+			return connID, ok
+		},
+		func(pathID) {},
+		func() {},
+	)
+	pm.EnableInitialPathScheduling()
+
+	tr := &Transport{}
+	p := pm.NewPath(tr, time.Second, func() {})
+	pm.addPath(p, p.enablePath)
+	pm.paths[p.id].isValidated = true
+	connIDs[p.id] = protocol.ParseConnectionID([]byte{1})
+
+	id, connID, selectedTransport, ok := pm.NextPathForApplication()
+	require.True(t, ok)
+	require.Equal(t, p.id, id)
+	require.Equal(t, connIDs[p.id], connID)
+	require.Equal(t, tr, selectedTransport)
+
+	id, connID, selectedTransport, ok = pm.NextPathForApplication()
+	require.True(t, ok)
+	require.Zero(t, id)
+	require.Equal(t, connIDs[0], connID)
+	require.Nil(t, selectedTransport)
+}
+
+func TestPathManagerOutgoingSkipsApplicationPathWithoutConnectionID(t *testing.T) {
+	var blocked []pathID
+	connIDs := map[pathID]protocol.ConnectionID{}
+	pm := newPathManagerOutgoing(
+		func(id pathID) (protocol.ConnectionID, bool) {
+			connID, ok := connIDs[id]
+			return connID, ok
+		},
+		func(pathID) {},
+		func() {},
+	)
+	pm.SetPathCIDsBlocked(func(id pathID) { blocked = append(blocked, id) })
+
+	p1 := pm.NewPath(&Transport{}, time.Second, func() {})
+	p2 := pm.NewPath(&Transport{}, time.Second, func() {})
+	pm.addPath(p1, p1.enablePath)
+	pm.addPath(p2, p2.enablePath)
+	pm.paths[p1.id].isValidated = true
+	pm.paths[p2.id].isValidated = true
+	connIDs[p2.id] = protocol.ParseConnectionID([]byte{2})
+
+	id, connID, _, ok := pm.NextPathForApplication()
+	require.True(t, ok)
+	require.Equal(t, p2.id, id)
+	require.Equal(t, connIDs[p2.id], connID)
+	require.Equal(t, []pathID{p1.id}, blocked)
+}
+
+func TestPathManagerOutgoingSkipsUnavailableApplicationPath(t *testing.T) {
+	connIDs := map[pathID]protocol.ConnectionID{}
+	pm := newPathManagerOutgoing(
+		func(id pathID) (protocol.ConnectionID, bool) {
+			connID, ok := connIDs[id]
+			return connID, ok
+		},
+		func(pathID) {},
+		func() {},
+	)
+	pm.SetPathApplicationAvailability(func(id pathID) bool { return id != 1 })
+
+	p1 := pm.NewPath(&Transport{}, time.Second, func() {})
+	p2 := pm.NewPath(&Transport{}, time.Second, func() {})
+	pm.addPath(p1, p1.enablePath)
+	pm.addPath(p2, p2.enablePath)
+	pm.paths[p1.id].isValidated = true
+	pm.paths[p2.id].isValidated = true
+	connIDs[p1.id] = protocol.ParseConnectionID([]byte{1})
+	connIDs[p2.id] = protocol.ParseConnectionID([]byte{2})
+
+	id, connID, _, ok := pm.NextPathForApplication()
+	require.True(t, ok)
+	require.Equal(t, p2.id, id)
+	require.Equal(t, connIDs[p2.id], connID)
+}
+
+func TestPathManagerOutgoingAdvertisesValidatedPath(t *testing.T) {
+	connID := protocol.ParseConnectionID([]byte{1, 2, 3, 4})
+	var statuses []struct {
+		id     pathID
+		backup bool
+	}
+	pm := newPathManagerOutgoing(
+		func(pathID) (protocol.ConnectionID, bool) { return connID, true },
+		func(pathID) {},
+		func() {},
+	)
+	pm.SetPathStatus(func(id pathID, backup bool) {
+		statuses = append(statuses, struct {
+			id     pathID
+			backup bool
+		}{id: id, backup: backup})
+	})
+
+	p := pm.NewPath(&Transport{}, time.Second, func() {})
+	pm.addPath(p, p.enablePath)
+	pm.enqueueProbe(p)
+	_, _, frame, _, ok := pm.NextPathToProbe()
+	require.True(t, ok)
+	challenge := frame.Frame.(*wire.PathChallengeFrame)
+	pm.HandlePathResponseFrame(&wire.PathResponseFrame{Data: challenge.Data})
+	pm.HandlePathResponseFrame(&wire.PathResponseFrame{Data: challenge.Data})
+	require.Equal(t, []struct {
+		id     pathID
+		backup bool
+	}{{id: p.id, backup: false}}, statuses)
+}
+
+func TestPathManagerOutgoingSetsPathBackupPreference(t *testing.T) {
+	var statuses []struct {
+		id     pathID
+		backup bool
+	}
+	pm := newPathManagerOutgoing(
+		func(pathID) (protocol.ConnectionID, bool) { return protocol.ConnectionID{}, false },
+		func(pathID) {},
+		func() {},
+	)
+	pm.SetPathStatus(func(id pathID, backup bool) {
+		statuses = append(statuses, struct {
+			id     pathID
+			backup bool
+		}{id: id, backup: backup})
+	})
+	p := pm.NewPath(&Transport{}, time.Second, func() {})
+	require.NoError(t, p.SetBackup(true))
+	require.NoError(t, p.SetBackup(false))
+	require.Equal(t, []struct {
+		id     pathID
+		backup bool
+	}{{id: p.id, backup: true}, {id: p.id, backup: false}}, statuses)
+	require.NoError(t, p.Close())
+	require.ErrorIs(t, p.SetBackup(true), ErrPathClosed)
+}
+
+func TestPathManagerOutgoingSignalsStatusWhenSwitchingPaths(t *testing.T) {
+	var statuses []struct {
+		id     pathID
+		backup bool
+	}
+	pm := newPathManagerOutgoing(
+		func(pathID) (protocol.ConnectionID, bool) { return protocol.ConnectionID{}, false },
+		func(pathID) {},
+		func() {},
+	)
+	pm.SetPathStatus(func(id pathID, backup bool) {
+		statuses = append(statuses, struct {
+			id     pathID
+			backup bool
+		}{id: id, backup: backup})
+	})
+	p := pm.NewPath(&Transport{}, time.Second, func() {})
+	pm.addPath(p, p.enablePath)
+	pm.paths[p.id].isValidated = true
+	require.NoError(t, p.Switch())
+	_, ok := pm.ShouldSwitchPath()
+	require.True(t, ok)
+	require.Equal(t, []struct {
+		id     pathID
+		backup bool
+	}{{id: 0, backup: true}, {id: p.id, backup: false}}, statuses)
+}
+
+func TestPathManagerOutgoingRequeuesLostProbe(t *testing.T) {
+	connID := protocol.ParseConnectionID([]byte{1, 2, 3, 4})
+	pm := newPathManagerOutgoing(
+		func(pathID) (protocol.ConnectionID, bool) { return connID, true },
+		func(pathID) {},
+		func() {},
+	)
+	p := pm.NewPath(&Transport{}, time.Second, func() {})
+	pm.addPath(p, p.enablePath)
+
+	pm.requeueProbe(p.id)
+	_, _, _, _, ok := pm.NextPathToProbe()
+	require.True(t, ok)
+	_, _, _, _, ok = pm.NextPathToProbe()
+	require.False(t, ok)
+
+	frame := ackhandler.Frame{
+		Frame:   &wire.PathChallengeFrame{},
+		Handler: &pathManagerOutgoingAckHandler{manager: pm, pathID: p.id},
+	}
+	frame.Handler.OnLost(frame.Frame)
+	_, _, _, _, ok = pm.NextPathToProbe()
+	require.True(t, ok)
+}
+
+func TestPathManagerOutgoingReportsBlockedConnectionIDs(t *testing.T) {
+	var blocked []pathID
+	pm := newPathManagerOutgoing(
+		func(pathID) (protocol.ConnectionID, bool) { return protocol.ConnectionID{}, false },
+		func(pathID) {},
+		func() {},
+	)
+	pm.SetPathCIDsBlocked(func(id pathID) { blocked = append(blocked, id) })
+	p := pm.NewPath(&Transport{}, time.Second, func() {})
+	pm.addPath(p, p.enablePath)
+	pm.enqueueProbe(p)
+	_, _, _, _, ok := pm.NextPathToProbe()
+	require.False(t, ok)
+	_, _, _, _, ok = pm.NextPathToProbe()
+	require.False(t, ok)
+	require.Equal(t, []pathID{p.id}, blocked)
+}
+
+func TestPathManagerOutgoingAbandonsPathOnClose(t *testing.T) {
+	var abandoned []pathID
+	pm := newPathManagerOutgoing(
+		func(pathID) (protocol.ConnectionID, bool) {
+			return protocol.ParseConnectionID([]byte{1, 2, 3, 4}), true
+		},
+		func(pathID) {},
+		func() {},
+	)
+	pm.SetAbandonPath(func(id pathID) { abandoned = append(abandoned, id) })
+	p := pm.NewPath(&Transport{}, time.Second, func() {})
+	pm.addPath(p, p.enablePath)
+	require.NoError(t, p.Close())
+	require.Equal(t, []pathID{p.id}, abandoned)
+}
+
 func TestPathManagerOutgoingRetransmissions(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		connIDs := []protocol.ConnectionID{
@@ -122,7 +395,7 @@ func TestPathManagerOutgoingRetransmissions(t *testing.T) {
 			func() { scheduledSending <- struct{}{} },
 		)
 
-		_, _, _, ok := pm.NextPathToProbe()
+		_, _, _, _, ok := pm.NextPathToProbe()
 		require.False(t, ok)
 
 		tr1 := &Transport{}
@@ -139,7 +412,7 @@ func TestPathManagerOutgoingRetransmissions(t *testing.T) {
 				case <-done:
 					return
 				}
-				_, f, _, ok := pm.NextPathToProbe()
+				_, _, f, _, ok := pm.NextPathToProbe()
 				if !ok {
 					// should never happen
 					pathChallengeChan <- [8]byte{}
@@ -225,6 +498,25 @@ func TestPathManagerOutgoingRetransmissions(t *testing.T) {
 	})
 }
 
+func TestPathManagerOutgoingHonorsMaximumPathID(t *testing.T) {
+	pm := newPathManagerOutgoing(
+		func(pathID) (protocol.ConnectionID, bool) { return protocol.ParseConnectionID([]byte{1}), true },
+		func(pathID) {},
+		func() {},
+	)
+	pm.SetMaxPathID(1)
+
+	require.True(t, pm.canCreatePath())
+	require.NotNil(t, pm.NewPath(&Transport{}, time.Second, func() {}))
+	require.False(t, pm.canCreatePath())
+	require.Nil(t, pm.NewPath(&Transport{}, time.Second, func() {}))
+
+	pm.SetMaxPathID(2)
+	require.True(t, pm.canCreatePath())
+	require.NotNil(t, pm.NewPath(&Transport{}, time.Second, func() {}))
+	require.False(t, pm.canCreatePath())
+}
+
 func TestPathManagerOutgoingAbandonPath(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		connIDs := []protocol.ConnectionID{
@@ -253,7 +545,7 @@ func TestPathManagerOutgoingAbandonPath(t *testing.T) {
 		// closing the path multiple times is ok
 		require.NoError(t, p1.Close())
 		require.NoError(t, p1.Close())
-		_, _, _, ok := pm.NextPathToProbe()
+		_, _, _, _, ok := pm.NextPathToProbe()
 		require.False(t, ok)
 
 		synctest.Wait()
@@ -272,14 +564,14 @@ func TestPathManagerOutgoingAbandonPath(t *testing.T) {
 		// wait for the path to be queued for probing
 		synctest.Wait()
 
-		connID, f, _, ok := pm.NextPathToProbe()
+		_, connID, f, _, ok := pm.NextPathToProbe()
 		require.True(t, ok)
 		require.Equal(t, protocol.ParseConnectionID([]byte{1, 2, 3, 4, 5, 6, 7, 8}), connID)
 
 		require.NoError(t, p2.Close())
 		require.Equal(t, []pathID{p1.id, p2.id}, retiredPaths)
 		pm.HandlePathResponseFrame(&wire.PathResponseFrame{Data: f.Frame.(*wire.PathChallengeFrame).Data})
-		_, _, _, ok = pm.NextPathToProbe()
+		_, _, _, _, ok = pm.NextPathToProbe()
 		require.False(t, ok)
 		// it's not possible to switch to an abandoned path
 		require.ErrorIs(t, p2.Switch(), ErrPathClosed)
@@ -314,7 +606,7 @@ func TestPathManagerOutgoingAbandonValidatedPath(t *testing.T) {
 		go func() { errChan <- p.Probe(context.Background()) }()
 		synctest.Wait()
 
-		_, f, _, ok := pm.NextPathToProbe()
+		_, _, f, _, ok := pm.NextPathToProbe()
 		require.True(t, ok)
 
 		// Validate the path before abandoning it. This is the ordering an

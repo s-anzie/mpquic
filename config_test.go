@@ -65,6 +65,11 @@ func TestConfigValidation(t *testing.T) {
 		require.NoError(t, validateConfig(conf))
 		require.Equal(t, uint16(protocol.MaxPacketBufferSize), conf.InitialPacketSize)
 	})
+
+	t.Run("multipath path ID", func(t *testing.T) {
+		conf := &Config{MaxPathID: protocol.MaxPathID + 1}
+		require.EqualError(t, validateConfig(conf), "invalid MaxPathID: 4294967296 (maximum 4294967295)")
+	})
 }
 
 func TestConfigHandshakeIdleTimeout(t *testing.T) {
@@ -86,7 +91,7 @@ func configWithNonZeroNonFunctionFields(t *testing.T) *Config {
 		}
 
 		switch fn := typ.Field(i).Name; fn {
-		case "GetConfigForClient", "RequireAddressValidation", "GetLogWriter", "AllowConnectionWindowIncrease", "Tracer":
+		case "GetConfigForClient", "RequireAddressValidation", "GetLogWriter", "AllowConnectionWindowIncrease", "Tracer", "PathDiscoveryAddresses":
 			// Can't compare functions.
 		case "Versions":
 			f.Set(reflect.ValueOf([]Version{1, 2, 3}))
@@ -128,6 +133,10 @@ func configWithNonZeroNonFunctionFields(t *testing.T) *Config {
 			f.Set(reflect.ValueOf(true))
 		case "EnableStreamResetPartialDelivery":
 			f.Set(reflect.ValueOf(true))
+		case "EnableMultipath", "DisableAutomaticPathDiscovery":
+			f.Set(reflect.ValueOf(true))
+		case "MaxPathID":
+			f.Set(reflect.ValueOf(uint64(3)))
 		default:
 			t.Fatalf("all fields must be accounted for, but saw unknown field %q", fn)
 		}

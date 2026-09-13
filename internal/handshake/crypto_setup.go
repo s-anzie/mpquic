@@ -603,6 +603,16 @@ func (h *cryptoSetup) SetHandshakeConfirmed() {
 	}
 }
 
+// SetMultipath enables the path-aware nonce construction for 1-RTT packets.
+func (h *cryptoSetup) SetMultipath(enabled bool) {
+	h.aead.SetMultipath(enabled)
+}
+
+// SetPathID selects the path ID used for subsequent 1-RTT packets.
+func (h *cryptoSetup) SetPathID(pathID uint64) error {
+	return h.aead.SetPathID(pathID)
+}
+
 func (h *cryptoSetup) GetInitialSealer() (LongHeaderSealer, error) {
 	if h.initialSealer == nil {
 		return nil, ErrKeysDropped

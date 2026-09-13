@@ -107,6 +107,17 @@ func (u *packetUnpacker) UnpackLongHeader(hdr *wire.Header, data []byte) (*unpac
 }
 
 func (u *packetUnpacker) UnpackShortHeader(rcvTime monotime.Time, data []byte) (protocol.PacketNumber, protocol.PacketNumberLen, protocol.KeyPhaseBit, []byte, error) {
+	return u.UnpackShortHeaderForPath(0, rcvTime, data)
+}
+
+// UnpackShortHeaderForPath decrypts a 1-RTT packet using the packet number
+// space and AEAD nonce associated with pathID.
+func (u *packetUnpacker) UnpackShortHeaderForPath(pathID uint64, rcvTime monotime.Time, data []byte) (protocol.PacketNumber, protocol.PacketNumberLen, protocol.KeyPhaseBit, []byte, error) {
+	if multipath, ok := u.cs.(handshake.MultipathCryptoSetup); ok {
+		if err := multipath.SetPathID(pathID); err != nil {
+			return 0, 0, 0, nil, err
+		}
+	}
 	opener, err := u.cs.Get1RTTOpener()
 	if err != nil {
 		return 0, 0, 0, nil, err

@@ -83,6 +83,7 @@ func TestMarshalAndUnmarshalTransportParameters(t *testing.T) {
 	rand.Read(token[:])
 	rcid := protocol.ParseConnectionID([]byte{0xde, 0xad, 0xc0, 0xde})
 	minAckDelay := 42 * time.Millisecond
+	initialMaxPathID := uint64(3)
 	params := &TransportParameters{
 		InitialMaxStreamDataBidiLocal:   protocol.ByteCount(getRandomValue()),
 		InitialMaxStreamDataBidiRemote:  protocol.ByteCount(getRandomValue()),
@@ -103,6 +104,7 @@ func TestMarshalAndUnmarshalTransportParameters(t *testing.T) {
 		MaxDatagramFrameSize:            protocol.ByteCount(getRandomValue()),
 		EnableResetStreamAt:             getRandomValue()%2 == 0,
 		MinAckDelay:                     &minAckDelay,
+		InitialMaxPathID:                &initialMaxPathID,
 	}
 	data := params.Marshal(protocol.PerspectiveServer)
 
@@ -128,6 +130,32 @@ func TestMarshalAndUnmarshalTransportParameters(t *testing.T) {
 	require.Equal(t, params.EnableResetStreamAt, p.EnableResetStreamAt)
 	require.NotNil(t, p.MinAckDelay)
 	require.Equal(t, minAckDelay, *p.MinAckDelay)
+	require.NotNil(t, p.InitialMaxPathID)
+	require.Equal(t, initialMaxPathID, *p.InitialMaxPathID)
+}
+
+func TestInitialMaxPathIDTransportParameter(t *testing.T) {
+	for _, maxPathID := range []uint64{0, 1, protocol.MaxPathID} {
+		params := &TransportParameters{
+			ActiveConnectionIDLimit: protocol.DefaultActiveConnectionIDLimit,
+			InitialMaxPathID:        &maxPathID,
+		}
+		data := params.Marshal(protocol.PerspectiveClient)
+
+		parsed := &TransportParameters{}
+		require.NoError(t, parsed.Unmarshal(data, protocol.PerspectiveClient))
+		require.NotNil(t, parsed.InitialMaxPathID)
+		require.Equal(t, maxPathID, *parsed.InitialMaxPathID)
+	}
+}
+
+func TestInitialMaxPathIDTransportParameterRejectsTooLarge(t *testing.T) {
+	data := quicvarint.Append(nil, uint64(initialMaxPathIDParameterID))
+	data = quicvarint.Append(data, 8)
+	data = quicvarint.Append(data, protocol.MaxPathID+1)
+
+	var parsed TransportParameters
+	require.ErrorContains(t, parsed.Unmarshal(data, protocol.PerspectiveClient), "initial_max_path_id")
 }
 
 func TestResetStreamAtTransportParameterCodepoints(t *testing.T) {

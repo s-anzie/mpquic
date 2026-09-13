@@ -90,6 +90,7 @@ type appDataReceivedPacketTracker struct {
 
 	maxAckDelay time.Duration
 	ackQueued   bool // true if we need send a new ACK
+	ackDisabled bool // true after the path was abandoned
 
 	ackElicitingPacketsReceivedSinceLastAck int
 	ackAlarm                                monotime.Time
@@ -115,6 +116,9 @@ func (h *appDataReceivedPacketTracker) ReceivedPacket(pn protocol.PacketNumber, 
 		h.largestObservedRcvdTime = rcvTime
 	}
 	if !ackEliciting {
+		return nil
+	}
+	if h.ackDisabled {
 		return nil
 	}
 	h.ackElicitingPacketsReceivedSinceLastAck++
@@ -226,3 +230,13 @@ func (h *appDataReceivedPacketTracker) GetAckFrame(now monotime.Time, onlyIfQueu
 }
 
 func (h *appDataReceivedPacketTracker) GetAlarmTimeout() monotime.Time { return h.ackAlarm }
+
+// disableACK clears pending ACK state without discarding the packet number
+// ranges retained by the tracker.
+func (h *appDataReceivedPacketTracker) disableACK() {
+	h.ackDisabled = true
+	// Preserve an ACK for packets received before abandonment. It will be
+	// drained on another path by the connection scheduler.
+	h.ackQueued = h.receivedPacketTracker.hasNewAck
+	h.ackAlarm = 0
+}

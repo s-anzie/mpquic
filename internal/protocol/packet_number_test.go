@@ -1,10 +1,32 @@
 package protocol
 
 import (
+	"encoding/hex"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestPathAndPacketNumber(t *testing.T) {
+	nonce, err := PathAndPacketNumber(0x01020304, 0x123456789)
+	require.NoError(t, err)
+	require.Equal(t, "010203040000000123456789", hex.EncodeToString(nonce[:]))
+
+	nonce, err = PathAndPacketNumber(MaxPathID, MaxPathAndPacketNumber)
+	require.NoError(t, err)
+	require.Equal(t, "ffffffff3fffffffffffffff", hex.EncodeToString(nonce[:]))
+}
+
+func TestPathAndPacketNumberRejectsValuesOutsideTheWireFormat(t *testing.T) {
+	_, err := PathAndPacketNumber(MaxPathID+1, 0)
+	require.Error(t, err)
+
+	_, err = PathAndPacketNumber(0, -1)
+	require.Error(t, err)
+
+	_, err = PathAndPacketNumber(0, MaxPathAndPacketNumber+1)
+	require.Error(t, err)
+}
 
 func TestInvalidPacketNumberIsSmallerThanAllValidPacketNumbers(t *testing.T) {
 	require.Less(t, InvalidPacketNumber, PacketNumber(0))

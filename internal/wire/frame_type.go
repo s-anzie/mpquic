@@ -38,6 +38,18 @@ const (
 
 	FrameTypeDatagramNoLength   FrameType = 0x30
 	FrameTypeDatagramWithLength FrameType = 0x31
+
+	// Multipath QUIC (draft-ietf-quic-multipath-21)
+	FrameTypePathAck                FrameType = 0x3e
+	FrameTypePathAckECN             FrameType = 0x3f
+	FrameTypePathAbandon            FrameType = 0x3e75
+	FrameTypePathStatusBackup       FrameType = 0x3e76
+	FrameTypePathStatusAvailable    FrameType = 0x3e77
+	FrameTypePathNewConnectionID    FrameType = 0x3e78
+	FrameTypePathRetireConnectionID FrameType = 0x3e79
+	FrameTypeMaxPathID              FrameType = 0x3e7a
+	FrameTypePathsBlocked           FrameType = 0x3e7b
+	FrameTypePathCIDsBlocked        FrameType = 0x3e7c
 )
 
 func (t FrameType) IsStreamFrameType() bool {
@@ -49,7 +61,15 @@ func (t FrameType) isValidRFC9000() bool {
 }
 
 func (t FrameType) IsAckFrameType() bool {
-	return t == FrameTypeAck || t == FrameTypeAckECN
+	return t == FrameTypeAck || t == FrameTypeAckECN || t.IsPathAckFrameType()
+}
+
+func (t FrameType) IsPathAckFrameType() bool {
+	return t == FrameTypePathAck || t == FrameTypePathAckECN
+}
+
+func (t FrameType) isMultipathFrameType() bool {
+	return t.IsPathAckFrameType() || (t >= FrameTypePathAbandon && t <= FrameTypePathCIDsBlocked)
 }
 
 func (t FrameType) IsDatagramFrameType() bool {
@@ -67,6 +87,9 @@ func (t FrameType) isAllowedAtEncLevel(encLevel protocol.EncryptionLevel) bool {
 			return false
 		}
 	case protocol.Encryption0RTT:
+		if t.isMultipathFrameType() {
+			return false
+		}
 		switch t {
 		case FrameTypeCrypto, FrameTypeAck, FrameTypeAckECN, FrameTypeConnectionClose, FrameTypeNewToken, FrameTypePathResponse, FrameTypeRetireConnectionID:
 			return false

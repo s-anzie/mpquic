@@ -142,3 +142,63 @@ func TestPacketDuplicateDetection(t *testing.T) {
 	require.NoError(t, handler.ReceivedPacket(4, protocol.ECNNon, protocol.Encryption1RTT, sendTime, true))
 	require.True(t, handler.IsPotentiallyDuplicate(4, protocol.Encryption1RTT))
 }
+
+func TestMultipathPacketNumberSpaces(t *testing.T) {
+	handler := NewReceivedPacketHandler(utils.DefaultLogger)
+	now := monotime.Now()
+
+	require.False(t, handler.IsPotentiallyDuplicateForPath(1, 3))
+	require.NoError(t, handler.ReceivedPacketForPath(1, 3, protocol.ECNNon, now, true))
+	require.True(t, handler.IsPotentiallyDuplicateForPath(1, 3))
+	// The same packet number is independent on another Multipath path.
+	require.False(t, handler.IsPotentiallyDuplicateForPath(2, 3))
+	require.NoError(t, handler.ReceivedPacketForPath(2, 3, protocol.ECNNon, now, true))
+
+	ack := handler.GetAckFrameForPath(1, now.Add(time.Second), true)
+	require.NotNil(t, ack)
+	require.NotNil(t, ack.PathID)
+	require.Equal(t, uint64(1), *ack.PathID)
+	require.Equal(t, []wire.AckRange{{Smallest: 3, Largest: 3}}, ack.AckRanges)
+}
+
+func TestMultipathAckAlarmIsIncluded(t *testing.T) {
+	handler := NewReceivedPacketHandler(utils.DefaultLogger)
+	now := monotime.Now()
+	require.NoError(t, handler.ReceivedPacketForPath(1, 1, protocol.ECNNon, now, true))
+	require.Equal(t, now.Add(protocol.MaxAckDelay), handler.GetAlarmTimeout())
+}
+
+func TestAbandonPathStopsMultipathAckAlarm(t *testing.T) {
+	handler := NewReceivedPacketHandler(utils.DefaultLogger)
+	now := monotime.Now()
+
+	require.NoError(t, handler.ReceivedPacketForPath(1, 1, protocol.ECNNon, now, true))
+	require.False(t, handler.GetAlarmTimeout().IsZero())
+
+	handler.AbandonPath(1)
+	require.True(t, handler.GetAlarmTimeout().IsZero())
+	// The final ACK remains available for immediate delivery on another path.
+	require.NotNil(t, handler.GetAckFrameForPath(1, now.Add(time.Second), true))
+
+	// Delayed packets on an abandoned path remain tracked but must not re-arm
+	// the ACK alarm.
+	require.NoError(t, handler.ReceivedPacketForPath(1, 2, protocol.ECNNon, now, true))
+	require.True(t, handler.GetAlarmTimeout().IsZero())
+	require.True(t, handler.IsPotentiallyDuplicateForPath(1, 1))
+}
+
+func TestAbandonInitialPathStopsAckAlarm(t *testing.T) {
+	handler := NewReceivedPacketHandler(utils.DefaultLogger)
+	now := monotime.Now()
+
+	require.NoError(t, handler.ReceivedPacket(1, protocol.ECNNon, protocol.Encryption1RTT, now, true))
+	require.False(t, handler.GetAlarmTimeout().IsZero())
+
+	handler.AbandonPath(0)
+	require.True(t, handler.GetAlarmTimeout().IsZero())
+	// The final ACK remains available for immediate delivery on another path.
+	require.NotNil(t, handler.GetAckFrame(protocol.Encryption1RTT, now.Add(time.Second), true))
+
+	require.NoError(t, handler.ReceivedPacket(2, protocol.ECNNon, protocol.Encryption1RTT, now, true))
+	require.True(t, handler.GetAlarmTimeout().IsZero())
+}

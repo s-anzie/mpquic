@@ -3,6 +3,7 @@ package quic
 import (
 	"net"
 	"net/netip"
+	"syscall"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -13,6 +14,29 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 )
+
+func TestSendQueueIsolatesPathFailureAndDrains(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c := NewMockSendConn(gomock.NewController(t))
+		q := newSendQueue(c).(*sendQueue)
+		var failures int
+		q.onWriteError = func(err error) bool {
+			require.ErrorIs(t, err, syscall.ENETUNREACH)
+			failures++
+			return true
+		}
+		c.EXPECT().Write([]byte("first"), uint16(0), protocol.ECNNon).Return(syscall.ENETUNREACH)
+		done := make(chan error, 1)
+		go func() { done <- q.Run() }()
+		q.Send(getPacketWithContents([]byte("first")), 0, protocol.ECNNon)
+		q.Send(getPacketWithContents([]byte("queued")), 0, protocol.ECNNon)
+		synctest.Wait()
+		require.Equal(t, 1, failures)
+		require.False(t, q.WouldBlock())
+		q.Close()
+		require.NoError(t, <-done)
+	})
+}
 
 func getPacketWithContents(b []byte) *packetBuffer {
 	buf := getPacketBuffer()

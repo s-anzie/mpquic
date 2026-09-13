@@ -44,6 +44,8 @@ const (
 	activeConnectionIDLimitParameterID         transportParameterID = 0xe
 	initialSourceConnectionIDParameterID       transportParameterID = 0xf
 	retrySourceConnectionIDParameterID         transportParameterID = 0x10
+	// https://datatracker.ietf.org/doc/draft-ietf-quic-multipath/
+	initialMaxPathIDParameterID transportParameterID = 0x3e
 	// RFC 9221
 	maxDatagramFrameSizeParameterID transportParameterID = 0x20
 	// https://datatracker.ietf.org/doc/draft-ietf-quic-reliable-stream-reset/09/
@@ -90,6 +92,10 @@ type TransportParameters struct {
 
 	StatelessResetToken     *protocol.StatelessResetToken
 	ActiveConnectionIDLimit uint64
+	// InitialMaxPathID is nil if Multipath QUIC is not negotiated.
+	// A non-nil value of zero explicitly enables Multipath QUIC without
+	// permitting an additional path at connection establishment.
+	InitialMaxPathID *uint64
 
 	MaxDatagramFrameSize protocol.ByteCount // RFC 9221
 	EnableResetStreamAt  bool               // https://datatracker.ietf.org/doc/draft-ietf-quic-reliable-stream-reset/09/
@@ -150,6 +156,7 @@ func (p *TransportParameters) unmarshal(b []byte, sentBy protocol.Perspective, f
 			maxDatagramFrameSizeParameterID,
 			ackDelayExponentParameterID,
 			activeConnectionIDLimitParameterID,
+			initialMaxPathIDParameterID,
 			minAckDelayParameterID:
 			if err := p.readNumericTransportParameter(b, paramID, int(paramLen)); err != nil {
 				return err
@@ -340,6 +347,11 @@ func (p *TransportParameters) readNumericTransportParameter(b []byte, paramID tr
 			return fmt.Errorf("invalid value for active_connection_id_limit: %d (minimum 2)", val)
 		}
 		p.ActiveConnectionIDLimit = val
+	case initialMaxPathIDParameterID:
+		if val > protocol.MaxPathID {
+			return fmt.Errorf("invalid value for initial_max_path_id: %d (maximum %d)", val, protocol.MaxPathID)
+		}
+		p.InitialMaxPathID = &val
 	case maxDatagramFrameSizeParameterID:
 		p.MaxDatagramFrameSize = protocol.ByteCount(val)
 	case minAckDelayParameterID:
@@ -439,6 +451,10 @@ func (p *TransportParameters) Marshal(pers protocol.Perspective) []byte {
 	// active_connection_id_limit
 	if p.ActiveConnectionIDLimit != protocol.DefaultActiveConnectionIDLimit {
 		b = p.marshalVarintParam(b, activeConnectionIDLimitParameterID, p.ActiveConnectionIDLimit)
+	}
+	// Multipath QUIC
+	if p.InitialMaxPathID != nil {
+		b = p.marshalVarintParam(b, initialMaxPathIDParameterID, *p.InitialMaxPathID)
 	}
 	// initial_source_connection_id
 	b = quicvarint.Append(b, uint64(initialSourceConnectionIDParameterID))
@@ -576,6 +592,10 @@ func (p *TransportParameters) String() string {
 	}
 	logString += "InitialMaxStreamDataBidiLocal: %d, InitialMaxStreamDataBidiRemote: %d, InitialMaxStreamDataUni: %d, InitialMaxData: %d, MaxBidiStreamNum: %d, MaxUniStreamNum: %d, MaxIdleTimeout: %s, AckDelayExponent: %d, MaxAckDelay: %s, ActiveConnectionIDLimit: %d"
 	logParams = append(logParams, []any{p.InitialMaxStreamDataBidiLocal, p.InitialMaxStreamDataBidiRemote, p.InitialMaxStreamDataUni, p.InitialMaxData, p.MaxBidiStreamNum, p.MaxUniStreamNum, p.MaxIdleTimeout, p.AckDelayExponent, p.MaxAckDelay, p.ActiveConnectionIDLimit}...)
+	if p.InitialMaxPathID != nil {
+		logString += ", InitialMaxPathID: %d"
+		logParams = append(logParams, *p.InitialMaxPathID)
+	}
 	if p.StatelessResetToken != nil { // the client never sends a stateless reset token
 		logString += ", StatelessResetToken: %#x"
 		logParams = append(logParams, *p.StatelessResetToken)

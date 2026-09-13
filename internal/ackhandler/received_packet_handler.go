@@ -13,6 +13,8 @@ type ReceivedPacketHandler struct {
 	initialPackets   *receivedPacketTracker
 	handshakePackets *receivedPacketTracker
 	appDataPackets   appDataReceivedPacketTracker
+	multipathPackets map[uint64]*appDataReceivedPacketTracker
+	abandonedPaths   map[uint64]bool
 
 	lowest1RTTPacket protocol.PacketNumber
 }
@@ -22,8 +24,31 @@ func NewReceivedPacketHandler(logger utils.Logger) *ReceivedPacketHandler {
 		initialPackets:   newReceivedPacketTracker(),
 		handshakePackets: newReceivedPacketTracker(),
 		appDataPackets:   *newAppDataReceivedPacketTracker(logger),
+		multipathPackets: make(map[uint64]*appDataReceivedPacketTracker),
+		abandonedPaths:   make(map[uint64]bool),
 		lowest1RTTPacket: protocol.InvalidPacketNumber,
 	}
+}
+
+// ReceivedPacketForPath records a 1-RTT packet in the independent packet
+// number space of a Multipath path.
+func (h *ReceivedPacketHandler) ReceivedPacketForPath(
+	pathID uint64,
+	pn protocol.PacketNumber,
+	ecn protocol.ECN,
+	rcvTime monotime.Time,
+	ackEliciting bool,
+) error {
+	tracker, ok := h.multipathPackets[pathID]
+	if !ok {
+		tracker = newAppDataReceivedPacketTracker(h.appDataPackets.logger)
+		h.multipathPackets[pathID] = tracker
+	}
+	err := tracker.ReceivedPacket(pn, ecn, rcvTime, ackEliciting)
+	if err == nil && h.abandonedPaths[pathID] {
+		tracker.disableACK()
+	}
+	return err
 }
 
 func (h *ReceivedPacketHandler) ReceivedPacket(
@@ -52,7 +77,11 @@ func (h *ReceivedPacketHandler) ReceivedPacket(
 		if h.lowest1RTTPacket == protocol.InvalidPacketNumber || pn < h.lowest1RTTPacket {
 			h.lowest1RTTPacket = pn
 		}
-		return h.appDataPackets.ReceivedPacket(pn, ecn, rcvTime, ackEliciting)
+		err := h.appDataPackets.ReceivedPacket(pn, ecn, rcvTime, ackEliciting)
+		if err == nil && h.abandonedPaths[0] {
+			h.appDataPackets.disableACK()
+		}
+		return err
 	default:
 		panic(fmt.Sprintf("received packet with unknown encryption level: %s", encLevel))
 	}
@@ -60,6 +89,19 @@ func (h *ReceivedPacketHandler) ReceivedPacket(
 
 func (h *ReceivedPacketHandler) IgnorePacketsBelow(pn protocol.PacketNumber) {
 	h.appDataPackets.IgnoreBelow(pn)
+}
+
+// AbandonPath stops scheduling ACKs for a path while retaining its packet
+// number state for duplicate detection and delayed packet processing.
+func (h *ReceivedPacketHandler) AbandonPath(pathID uint64) {
+	h.abandonedPaths[pathID] = true
+	if pathID == 0 {
+		h.appDataPackets.disableACK()
+		return
+	}
+	if tracker, ok := h.multipathPackets[pathID]; ok {
+		tracker.disableACK()
+	}
 }
 
 func (h *ReceivedPacketHandler) DropPackets(encLevel protocol.EncryptionLevel) {
@@ -78,7 +120,14 @@ func (h *ReceivedPacketHandler) DropPackets(encLevel protocol.EncryptionLevel) {
 }
 
 func (h *ReceivedPacketHandler) GetAlarmTimeout() monotime.Time {
-	return h.appDataPackets.GetAlarmTimeout()
+	earliest := h.appDataPackets.GetAlarmTimeout()
+	for _, tracker := range h.multipathPackets {
+		alarm := tracker.GetAlarmTimeout()
+		if !alarm.IsZero() && (earliest.IsZero() || alarm.Before(earliest)) {
+			earliest = alarm
+		}
+	}
+	return earliest
 }
 
 func (h *ReceivedPacketHandler) GetAckFrame(encLevel protocol.EncryptionLevel, now monotime.Time, onlyIfQueued bool) *wire.AckFrame {
@@ -116,4 +165,27 @@ func (h *ReceivedPacketHandler) IsPotentiallyDuplicate(pn protocol.PacketNumber,
 		return h.appDataPackets.IsPotentiallyDuplicate(pn)
 	}
 	panic("unexpected encryption level")
+}
+
+// IsPotentiallyDuplicateForPath checks the packet number space of a
+// Multipath path instead of the regular application-data packet number space.
+func (h *ReceivedPacketHandler) IsPotentiallyDuplicateForPath(pathID uint64, pn protocol.PacketNumber) bool {
+	tracker, ok := h.multipathPackets[pathID]
+	return ok && tracker.IsPotentiallyDuplicate(pn)
+}
+
+// GetAckFrameForPath returns a PATH_ACK for a Multipath path when an ACK is
+// due. The caller is responsible for placing the frame on that path.
+func (h *ReceivedPacketHandler) GetAckFrameForPath(pathID uint64, now monotime.Time, onlyIfQueued bool) *wire.AckFrame {
+	tracker, ok := h.multipathPackets[pathID]
+	if !ok {
+		return nil
+	}
+	ack := tracker.GetAckFrame(now, onlyIfQueued)
+	if ack == nil {
+		return nil
+	}
+	ackPathID := pathID
+	ack.PathID = &ackPathID
+	return ack
 }
