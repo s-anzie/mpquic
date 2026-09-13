@@ -667,6 +667,7 @@ func (s *SendStream) CancelWrite(errorCode StreamErrorCode) {
 		return
 	}
 	s.resetErr = &StreamError{StreamID: s.streamID, ErrorCode: errorCode, Remote: false}
+	s.flowController.connection.cancelCloningStream(s.streamID)
 	s.ctxCancel(s.resetErr)
 
 	reliableOffset := s.reliableOffset()
@@ -752,6 +753,7 @@ func (s *SendStream) handleStopSendingFrame(f *wire.StopSendingFrame) {
 		return
 	}
 	// if the peer stopped reading from the stream, there's no need to transmit any data reliably
+	s.flowController.connection.cancelCloningStream(s.streamID)
 	s.reliableSize = 0
 	s.numOutstandingFrames = 0
 	finalSize := s.writeOffset
@@ -854,6 +856,7 @@ func (s *SendStream) SetWriteDeadline(t time.Time) error {
 // The peer will NOT be informed about this: the stream is closed without sending a FIN or RST.
 func (s *SendStream) closeForShutdown(err error) {
 	s.mutex.Lock()
+	s.flowController.connection.cancelCloningStream(s.streamID)
 	s.completed = true
 	if s.shutdownErr == nil && !s.finishedWriting {
 		s.shutdownErr = err

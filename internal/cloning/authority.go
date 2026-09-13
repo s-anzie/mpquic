@@ -35,6 +35,10 @@ type Authority struct {
 	primaryBound       bool
 	primaryInitialUsed uint64
 	primaryImported    uint64
+	delegations        map[uint64]*delegation
+	nextDelegation     uint64
+	delegatedBytes     uint64
+	canceledStreams    map[protocol.StreamID]bool
 }
 
 // Path is an opaque, process-local grant. Copying it is unsupported. Retiring a
@@ -167,7 +171,7 @@ func (a *Authority) RegisterStream(id protocol.StreamID, limit uint64) error {
 	if a.closed {
 		return ErrClosed
 	}
-	if id < 0 || id > protocol.MaxStreamID || id%4 == 2 || a.streams[id] != nil {
+	if id < 0 || id > protocol.MaxStreamID || id%4 == 2 || a.streams[id] != nil || a.canceledStreams[id] {
 		return ErrStream
 	}
 	if limit > uint64(protocol.MaxByteCount) {
@@ -191,7 +195,7 @@ func (a *Authority) Reserve(p *Path, id protocol.StreamID, length uint64) (Range
 		return Range{}, ErrDelegationNotReady
 	}
 	s := a.streams[id]
-	if s == nil || s.final {
+	if s == nil || s.final || a.canceledStreams[id] {
 		return Range{}, ErrStream
 	}
 	if length == 0 || length > s.limit-s.next || length > a.connectionLimit-a.reserved {
@@ -242,4 +246,7 @@ func (a *Authority) Close() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.closed = true
+	for _, d := range a.delegations {
+		a.releaseDelegation(d, true)
+	}
 }
