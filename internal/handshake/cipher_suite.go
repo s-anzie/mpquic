@@ -90,24 +90,32 @@ func (f *xorNonceAEAD) Overhead() int         { return f.aead.Overhead() }
 func (f *xorNonceAEAD) explicitNonceLen() int { return 0 }
 
 func (f *xorNonceAEAD) Seal(out, nonce, plaintext, additionalData []byte) []byte {
+	if len(nonce) != 8 && len(nonce) != aeadNonceLength {
+		panic("invalid nonce length")
+	}
+	offset := aeadNonceLength - len(nonce)
 	for i, b := range nonce {
-		f.nonceMask[4+i] ^= b
+		f.nonceMask[offset+i] ^= b
 	}
 	result := f.aead.Seal(out, f.nonceMask[:], plaintext, additionalData)
 	for i, b := range nonce {
-		f.nonceMask[4+i] ^= b
+		f.nonceMask[offset+i] ^= b
 	}
 
 	return result
 }
 
 func (f *xorNonceAEAD) Open(out, nonce, ciphertext, additionalData []byte) ([]byte, error) {
+	if len(nonce) != 8 && len(nonce) != aeadNonceLength {
+		panic("invalid nonce length")
+	}
+	offset := aeadNonceLength - len(nonce)
 	for i, b := range nonce {
-		f.nonceMask[4+i] ^= b
+		f.nonceMask[offset+i] ^= b
 	}
 	result, err := f.aead.Open(out, f.nonceMask[:], ciphertext, additionalData)
 	for i, b := range nonce {
-		f.nonceMask[4+i] ^= b
+		f.nonceMask[offset+i] ^= b
 	}
 
 	return result, err
