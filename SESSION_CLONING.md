@@ -88,7 +88,7 @@ Never reconstruct an authority with counters reset for an existing connection.
 | C02a | Bind a confirmed multipath server's additional-path packet allocation to the authority, preserving existing high-water marks | Implemented behind an internal staging hook |
 | C02b | Import primary stream/credit state and account ordinary writes, pre-reserved buffers, and FIN through the authority | Implemented; remote reservations remain disabled |
 | C03a | Bounded content/range ledger connected to live SendStream offsets and completion, partial delivery, retries and cancellation | Implemented as internal local primitives |
-| C03b | Authenticated worker coordination contract, packet-to-byte ACK evidence, control routing and bounded communication queues | In progress: fragment/ACK adapter, bounded mTLS transport, client PATH_ACK forwarding, stream cancellation and worker-failure routing implemented; remote packet-history handoff pending |
+| C03b | Authenticated worker coordination contract, packet-to-byte ACK evidence, control routing and bounded communication queues | In progress: control routing and bounded remote packet-plan/ACK ledger implemented; live packet-history handoff and recovery-owner integration pending |
 | C04 | Secure worker bootstrap and packet protection state, coordinated key updates and global AEAD accounting | In progress: bootstrap, shared send-budget enforcement and local worker pause/resume implemented; distributed epoch barriers and sender/history handoff pending |
 | C05 | Negotiated source endpoint advertisement and client validation for different server IPs | Pending |
 | C06 | Direct multi-server transmission and cross-path retransmission of distinct ranges | Pending |
@@ -644,3 +644,58 @@ loss recovery remain prerequisites. No multi-server HTTP/3 completion is claimed
 Validation: `go test -p 1 ./...`, race-enabled root/HTTP3/handshake/cloning suites,
 the handshake suite in FIPS mode, vet on root/handshake/cloning, and ten
 race-enabled repetitions of the new handshake scenarios passed.
+
+## C03b continuation: bounded remote packet plans and client ACK evidence
+
+The authority now stores approved remote packet plans keyed by path and packet
+number. `RecordRemotePacket` must run before the sender receives permission to
+send that exact plan. It accepts only reserved remote numbers, never prior
+primary numbers, duplicate registrations, retired grants, obsolete attempts or
+byte intervals outside retained data. Empty plans can represent control-only
+packets. Metadata is capped at 4,096 packets across all paths, with at most 16
+stream fragments per packet; capacity exhaustion is an explicit error.
+
+`PrepareRemoteStreamPacket` builds STREAM frames directly from the authority's
+retained immutable bytes and records the plan atomically. It bounds the payload
+including frame overhead and reserves room for the largest short header and
+authentication tag. Invalid or oversized plans publish no history entry. FIN
+and stream finalization remain primary-owned. Payload construction is not a
+worker assignment protocol and does not independently enforce remote pacing.
+
+`AcknowledgeRemotePackets` is a trusted authenticated-client entry point, never
+a worker RPC. It validates the entire PATH_ACK before changing any delivery
+state: acknowledged path, range ordering, bounds, and every number above the
+retention floor must match a registered plan. Merely reserving a window is not
+enough. Work is bounded by the retained packet count, even for enormous incoming
+ranges. Validated plans feed the existing byte ledger; overlapping fragments,
+duplicates and late ACKs complete each delegation exactly once, without consuming
+additional flow credit. Completed IDs are returned for future adapter wakeups.
+
+`MarkRemotePacketLost` makes the current delegation retryable but preserves its
+plan for late client evidence. Loss from an old attempt cannot invalidate its
+replacement. Retired paths still accept late ACK/loss processing; canceled stream
+bytes are not resurrected. `ForgetRemotePacketsBefore` explicitly advances a
+monotonic floor, refuses to discard pending packets, and frees acknowledged/lost
+metadata. Forgetting a lost plan sacrifices its future ACK evidence; retransmitted
+bytes still need confirmation. Old numbers, including burned gaps, cannot be
+registered again. Closing the authority clears all retained packet metadata.
+
+Tests cover atomic rejection of mixed valid/invalid ACK ranges, unsent numbers,
+late ACKs after loss/retry/retirement, cancellation, concurrent duplicate ACKs,
+capacity shared by multiple paths, retention floors, grant identity, and payload
+construction. A combined handshake test sends distinct retained STREAM portions
+from two real UDP sources after mTLS bootstrap, then sends encrypted client
+PATH_ACK packets back on path zero. Only after the primary authenticates and
+parses those packets does the ledger release the portions, with unchanged credit.
+
+This is a **crypto/packet-ledger integration test**, not a live `Conn` or HTTP/3
+transfer. The existing connection loop still validates its ordinary sent history;
+it is deliberately not redirected to this staging ledger. Live handoff must
+preserve primary pre-handoff history (ACKs below this ledger's floor must not
+bypass that validation), enforce approved plans at the remote sender, connect
+completion wakeups, and assign RTT/congestion/loss ownership. No worker-reported
+success or socket-write result is accepted as delivery proof.
+
+Validation: the full suite (`go test -p 1 ./...`), race-enabled root/HTTP3/
+cloning/handshake suites, ten race-enabled repetitions of the history scenarios,
+the FIPS handshake suite, and vet on cloning/handshake passed.

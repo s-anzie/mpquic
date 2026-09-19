@@ -32,6 +32,9 @@ func (a *Authority) ReservePacketWindow(p *Path, count uint64) (path uint64, fir
 		return 0, 0, ErrLimit
 	}
 	first = protocol.PacketNumber(p.nextPacketNumber)
+	if !p.remoteSender {
+		p.remoteFloor = first
+	}
 	p.nextPacketNumber += count
 	p.remoteSender = true
 	return p.id, first, nil
