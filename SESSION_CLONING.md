@@ -89,7 +89,7 @@ Never reconstruct an authority with counters reset for an existing connection.
 | C02b | Import primary stream/credit state and account ordinary writes, pre-reserved buffers, and FIN through the authority | Implemented; remote reservations remain disabled |
 | C03a | Bounded content/range ledger connected to live SendStream offsets and completion, partial delivery, retries and cancellation | Implemented as internal local primitives |
 | C03b | Authenticated worker coordination contract, packet-to-byte ACK evidence, control routing and bounded communication queues | In progress: fragment/ACK adapter, bounded mTLS transport, client PATH_ACK forwarding, stream cancellation and worker-failure routing implemented; remote packet-history handoff pending |
-| C04 | Secure worker bootstrap and packet protection state, coordinated key updates and global AEAD accounting | In progress: exclusive PN windows, send-only TLS bootstrap and independent packet protection; live epoch barriers and sender handoff pending |
+| C04 | Secure worker bootstrap and packet protection state, coordinated key updates and global AEAD accounting | In progress: bootstrap, shared send-budget enforcement and local worker pause/resume implemented; distributed epoch barriers and sender/history handoff pending |
 | C05 | Negotiated source endpoint advertisement and client validation for different server IPs | Pending |
 | C06 | Direct multi-server transmission and cross-path retransmission of distinct ranges | Pending |
 | C07 | HTTP/3 integration, three-source transfers, failures, reordered messages, key updates, and performance measurements | Pending |
@@ -593,3 +593,54 @@ after 30 seconds. Ten isolated repetitions subsequently passed without changing
 the timeout. The cause is not established; this remains a validation caveat,
 not evidence of a resolved HTTP/3 issue. A subsequent full-suite run with
 package-level parallelism disabled (`go test -p 1 ./...`) passed.
+
+## C04b: shared send budget and worker-side quiescence
+
+The live packet builder now calls the optional `CheckedSealer.SealWithError`
+interface for application packets. Primary encryption and reserved worker windows
+share a conservative 2^23-packet budget per key epoch across all sending paths.
+The packet that would exceed the budget is rejected with `AEAD_LIMIT_REACHED`
+before encryption, header protection, publication in the output buffer or path-0
+packet-number consumption. This follows the fail-closed requirement in
+[RFC 9001 section 6.6](https://www.rfc-editor.org/rfc/rfc9001.html#section-6.6).
+The existing key-phase selection can rotate keys before building the header when
+updates are allowed; encryption itself never silently changes the selected phase.
+Legacy direct `Seal` callers panic at the limit because their interface cannot
+return an error; production packet construction uses the checked interface.
+
+Key rotation, write-key replacement and crypto shutdown atomically invalidate
+admission for outstanding unexported bootstrap snapshots. Rejected snapshots
+erase their explicit material without refunding packet numbers or budget. An
+export already admitted to network I/O cannot be recalled by this flag. Exported
+workers still require distributed coordination: invalidation is not remote
+revocation, and primary key rotation does not yet wait for worker drain receipts.
+
+`RemotePathSender` takes exclusive ownership of a fresh imported sealer and
+serializes UDP writes with `Pause`, `Resume` and permanent `Close`. Direct packet
+sealing through an adopted handle is rejected. Pause waits for the current write
+(which has a five-second socket deadline), closes the sealer, and burns every
+remaining number in its window. Its boundary reports the full epoch and exclusive
+reservation end, not delivery or acknowledgment. Previously sent datagrams can
+still arrive after a pause. The socket remains owned by the caller and must be
+dedicated to this sender.
+
+Resume is permitted only after pause. It rejects consumed handles, overlapping
+windows, backwards full epochs, changed path/CID/suite/version, and another
+connection's header-protection key. That key stays fixed across key updates and
+binds replacements to the same sending direction. Same-epoch replenishment is
+allowed; rejected and failed-write windows remain burned. Sender objects cannot
+be copied. These are in-memory fences, not durable process-restart protection.
+
+Tests cover the last permitted encryption, shared reservation accounting,
+rejection without modifying the destination, key-update recovery, stale bootstrap
+admission, packet-builder error propagation, actual UDP sends, concurrent pause,
+a deterministically blocked write, failed writes, and invalid replacement state.
+
+This increment replaces C04a's missing live primary encryption gate, but does
+**not** enable remote cloning through `Conn`. Distributed pause/resume control,
+packet-history transfer, authenticated restart fencing, pacing/congestion and
+loss recovery remain prerequisites. No multi-server HTTP/3 completion is claimed.
+
+Validation: `go test -p 1 ./...`, race-enabled root/HTTP3/handshake/cloning suites,
+the handshake suite in FIPS mode, vet on root/handshake/cloning, and ten
+race-enabled repetitions of the new handshake scenarios passed.

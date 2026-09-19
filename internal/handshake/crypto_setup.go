@@ -212,6 +212,7 @@ func (h *cryptoSetup) StartHandshake(ctx context.Context) error {
 // Close closes the crypto setup.
 // It aborts the handshake, if it is still running.
 func (h *cryptoSetup) Close() error {
+	h.aead.invalidateRemoteEpoch()
 	if h.aead.remoteSendKeys != nil {
 		clear(h.aead.remoteSendKeys.key[:])
 		clear(h.aead.remoteSendKeys.iv[:])
