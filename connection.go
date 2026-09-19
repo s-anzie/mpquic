@@ -179,10 +179,11 @@ type Conn struct {
 
 	maxPayloadSizeEstimate atomic.Uint32
 
-	initialStream       *initialCryptoStream
-	handshakeStream     *cryptoStream
-	oneRTTStream        *cryptoStream // only set for the server
-	cryptoStreamHandler cryptoStreamHandler
+	initialStream           *initialCryptoStream
+	handshakeStream         *cryptoStream
+	oneRTTStream            *cryptoStream // only set for the server
+	cryptoStreamHandler     cryptoStreamHandler
+	experimentalCloneActive bool
 
 	notifyReceivedPacket chan struct{}
 	sendingScheduled     chan struct{}

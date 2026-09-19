@@ -36,6 +36,9 @@ type Path struct {
 	abandon    chan struct{}
 }
 
+// ID returns the connection-local path identifier. The initial path has ID zero.
+func (p *Path) ID() uint64 { return uint64(p.id) }
+
 func (p *Path) Probe(ctx context.Context) error {
 	path := p.pathManager.addPath(p, p.enablePath)
 

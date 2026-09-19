@@ -118,7 +118,7 @@ func checkRemoteTLS(c *tls.Conn, pin [32]byte) error {
 		return ErrRemoteSealer
 	}
 	s := c.ConnectionState()
-	if !s.HandshakeComplete || s.Version != tls.VersionTLS13 || s.NegotiatedProtocol != RemoteSealerALPN || len(s.VerifiedChains) == 0 || len(s.PeerCertificates) == 0 || sha256.Sum256(s.PeerCertificates[0].Raw) != pin {
+	if !s.HandshakeComplete || s.Version != tls.VersionTLS13 || (s.NegotiatedProtocol != RemoteSealerALPN && s.NegotiatedProtocol != ExperimentalRemoteALPN) || len(s.VerifiedChains) == 0 || len(s.PeerCertificates) == 0 || sha256.Sum256(s.PeerCertificates[0].Raw) != pin {
 		return ErrRemoteSealer
 	}
 	return nil

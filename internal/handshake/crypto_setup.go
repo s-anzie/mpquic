@@ -213,6 +213,7 @@ func (h *cryptoSetup) StartHandshake(ctx context.Context) error {
 // It aborts the handshake, if it is still running.
 func (h *cryptoSetup) Close() error {
 	h.aead.invalidateRemoteEpoch()
+	h.aead.experimentalLease = nil
 	if h.aead.remoteSendKeys != nil {
 		clear(h.aead.remoteSendKeys.key[:])
 		clear(h.aead.remoteSendKeys.iv[:])
