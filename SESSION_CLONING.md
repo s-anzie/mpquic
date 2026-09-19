@@ -89,7 +89,7 @@ Never reconstruct an authority with counters reset for an existing connection.
 | C02b | Import primary stream/credit state and account ordinary writes, pre-reserved buffers, and FIN through the authority | Implemented; remote reservations remain disabled |
 | C03a | Bounded content/range ledger connected to live SendStream offsets and completion, partial delivery, retries and cancellation | Implemented as internal local primitives |
 | C03b | Authenticated worker coordination contract, packet-to-byte ACK evidence, control routing and bounded communication queues | In progress: fragment/ACK adapter, bounded mTLS transport, client PATH_ACK forwarding, stream cancellation and worker-failure routing implemented; remote packet-history handoff pending |
-| C04 | Secure worker bootstrap and packet protection state, coordinated key updates and global AEAD accounting | Pending |
+| C04 | Secure worker bootstrap and packet protection state, coordinated key updates and global AEAD accounting | In progress: exclusive PN windows, send-only TLS bootstrap and independent packet protection; live epoch barriers and sender handoff pending |
 | C05 | Negotiated source endpoint advertisement and client validation for different server IPs | Pending |
 | C06 | Direct multi-server transmission and cross-path retransmission of distinct ranges | Pending |
 | C07 | HTTP/3 integration, three-source transfers, failures, reordered messages, key updates, and performance measurements | Pending |
@@ -507,3 +507,89 @@ race-enabled QUIC/HTTP3/handshake/cloning suites, ten race-enabled repetitions o
 nonce regressions, ten live single-server automatic-discovery/cloning transfers,
 and `go vet ./internal/handshake` passed. These replace no independent security
 review and make no claim that distributed key export is ready.
+
+## C04a: send-only bootstrap and independent packet protection
+
+`Authority.ReservePacketWindow` atomically reserves 1–64 consecutive numbers
+from an existing nonzero path's high-water mark. The first successful reservation
+permanently disables `NextPacketNumber` on that grant; future reservations must
+use disjoint windows. Invalid reservations do not mutate counters. Failed
+bootstrap, abandoned work and failed UDP writes never refund numbers. The caller
+must quiesce the local sender before reserving: changing the allocator alone
+cannot recall already packed packets or migrate the recovery history.
+
+`updatableAEAD.prepareRemoteSealer` is an internal staging entry point, deliberately
+not exposed through `cryptoSetup` or `Conn`. It requires confirmed multipath and
+a nonempty destination CID. It snapshots only derived send key, IV and header
+protection key for the current full key epoch, and charges the complete window
+to `numSentWithCurrentKey` before any export. Admission enforces a conservative
+2^23-packet epoch bound. This is reservation accounting, **not yet a global live
+send gate**: coordinating all primary/worker sends and key transitions remains
+required before exposing the feature. Receive keys, next-generation secrets and
+TLS resumption state are not transferred. Derived material retained at the
+primary is refreshed on key update; the header protection key remains unchanged.
+The extra primary material is cleared when the crypto setup closes.
+
+### Dedicated authenticated bootstrap channel
+
+`RemoteSealer.WriteTLS` serializes exactly once, directly into an already
+authenticated TLS 1.3 connection with ALPN `mpquic-send-bootstrap/1`. Both ends
+require a verified peer chain and an exact leaf-certificate fingerprint supplied
+by trusted policy. The caller establishes mutual TLS and dedicates this channel
+to one bootstrap: it cannot share the framed worker-control stream. There is no
+public plaintext marshal function, file export or traffic-secret logging.
+
+The fixed-size, 135-byte record contains suite (2 bytes), QUIC version (4), full
+epoch, path ID, first PN and exclusive end PN (four 8-byte integers), CID length
+(1), padded CID (20), padded send key (32), IV (12), and padded HP key (32).
+Integers are big-endian. The receiver validates sizes, supported suite/version,
+expected path, full epoch and destination CID before exposing a sealer. I/O has
+a five-second deadline. The primary snapshot becomes unusable before writing;
+even a partial write burns it. Temporary serialization bytes and explicit key
+arrays are cleared after use; Go/runtime cipher copies are not guaranteed to be
+securely erased. The receiver must never restore or replay a consumed bootstrap
+after restart. Live connection-scoped restart fencing remains pending.
+Retirement or authority closure before export admission rejects the transfer and
+clears its snapshot. Retirement racing with an already admitted network write
+cannot recall bytes already handed to the channel.
+
+### Independent worker packet engine
+
+`RemoteSealer.SealPacket` builds a complete protected short-header packet using
+the fixed destination CID, key-phase bit and 96-bit path-and-packet nonce. It
+uses four encoded PN bytes and enforces the repository packet-size limit. Its
+private counter is mutex-protected and consumes each reserved number once before
+the caller's network write. Exhaustion, closure and invalid payloads are rejected.
+The primary export object cannot encrypt from the worker's window. Separate
+worker objects do not share mutable cipher instances or header-protection buffers.
+The bounds are software checks in a trusted worker, not cryptographic confinement
+of the exported connection keys to one path.
+
+Tests transfer snapshots over mutual TLS and send protected STREAM fragments
+from two real loopback UDP source sockets to one receiver's QUIC cryptographic
+engine. Both source paths begin at PN zero and carry distinct stream offsets.
+The receiver removes header protection and authenticates the exact frames using
+the existing implementation. Tests cover v1/v2 and AES-128, AES-256, ChaCha20;
+AES also runs in FIPS mode. Additional coverage includes concurrent uniqueness,
+counter exhaustion, wrong certificate/CID/epoch/path, failed export, reservation
+budget, malformed bootstrap, and changed payload keys with stable HP keys after
+an explicitly coordinated test key update.
+
+These are multi-source **packet-protection tests**, not a live multi-server
+`Conn` or HTTP/3 transfer. The test manually coordinates key epochs. There is no
+worker-side autonomous key update, automatic lease refill, remote pacing/recovery
+engine, source advertisement, or connection scheduler handoff yet. Old exported
+windows cannot be remotely revoked by changing an in-memory flag. Epoch barriers,
+restart fencing, shared encryption limits and packet-history ownership must be
+connected before this internal bootstrap is enabled on live connections.
+
+Validation: full Go suite, race-enabled QUIC/HTTP3/handshake/cloning suites,
+ten race-enabled repetitions of the bootstrap/window tests, full handshake
+suite in FIPS mode and vet passed. A bounded decoder fuzz run completed 157,380
+executions without failure. No end-to-end HTTP/3 cloning claim is made.
+
+A later full-suite run timed out in the existing `TestHTTP3Multipath` HTTP POST
+after 30 seconds. Ten isolated repetitions subsequently passed without changing
+the timeout. The cause is not established; this remains a validation caveat,
+not evidence of a resolved HTTP/3 issue. A subsequent full-suite run with
+package-level parallelism disabled (`go test -p 1 ./...`) passed.
