@@ -68,13 +68,17 @@ func run(ctx context.Context, size int) error {
 	if err != nil {
 		return err
 	}
-	roots := x509.NewCertPool()
-	for _, cert := range []tls.Certificate{primaryCert, workerCert} {
+	primaryRoots, workerRoots := x509.NewCertPool(), x509.NewCertPool()
+	for i, cert := range []tls.Certificate{primaryCert, workerCert} {
 		parsed, err := x509.ParseCertificate(cert.Certificate[0])
 		if err != nil {
 			return err
 		}
-		roots.AddCert(parsed)
+		if i == 0 {
+			primaryRoots.AddCert(parsed)
+		} else {
+			workerRoots.AddCert(parsed)
+		}
 	}
 	primaryPin := sha256.Sum256(primaryCert.Certificate[0])
 	workerPin := sha256.Sum256(workerCert.Certificate[0])
@@ -98,7 +102,7 @@ func run(ctx context.Context, size int) error {
 	defer clientUDP.Close()
 	ct := &quic.Transport{Conn: clientUDP, ConnectionIDLength: 8}
 	defer ct.Close()
-	client, err := ct.Dial(ctx, listener.Addr(), &tls.Config{RootCAs: roots, ServerName: "localhost", NextProtos: []string{"clone-lab/1"}}, config)
+	client, err := ct.Dial(ctx, listener.Addr(), &tls.Config{RootCAs: primaryRoots, ServerName: "localhost", NextProtos: []string{"clone-lab/1"}}, config)
 	if err != nil {
 		return err
 	}
@@ -165,7 +169,7 @@ func run(ctx context.Context, size int) error {
 				workerErrors <- err
 				return
 			}
-			tlsConn := tls.Server(raw, &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{workerCert}, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: roots, NextProtos: []string{quic.ExperimentalCloningALPN}})
+			tlsConn := tls.Server(raw, &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{workerCert}, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: primaryRoots, NextProtos: []string{quic.ExperimentalCloningALPN}})
 			defer tlsConn.Close()
 			if err := tlsConn.HandshakeContext(ctx); err != nil {
 				workerErrors <- err
@@ -173,7 +177,7 @@ func run(ctx context.Context, size int) error {
 			}
 			workerErrors <- quic.ServeExperimentalCloneWorker(ctx, tlsConn, primaryPin, workerUDP, func(addr netip.AddrPort) bool { return addr == destination })
 		}()
-		dialer := tls.Dialer{Config: &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: roots, Certificates: []tls.Certificate{primaryCert}, ServerName: "localhost", NextProtos: []string{quic.ExperimentalCloningALPN}}}
+		dialer := tls.Dialer{Config: &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: workerRoots, Certificates: []tls.Certificate{primaryCert}, ServerName: "localhost", NextProtos: []string{quic.ExperimentalCloningALPN}}}
 		control, err := dialer.DialContext(ctx, "tcp", tcp.Addr().String())
 		if err != nil {
 			return err
