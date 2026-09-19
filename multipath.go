@@ -74,6 +74,7 @@ type multipathPathState struct {
 	abandoned        bool
 	cloningAuthority *cloning.Authority
 	cloningGrant     *cloning.Path
+	cloningRecovery  *cloningPathRecovery
 
 	// The peer address and local packet information identify the destination
 	// for server-side application sending and path validation.
@@ -271,6 +272,13 @@ func (m *multipathState) handlePathAck(f *wire.AckFrame, receivedAt ...monotime.
 			ErrorMessage: fmt.Sprintf("received PATH_ACK for unsent packet %d on path %d", f.LargestAcked(), *f.PathID),
 		}
 	}
+	var completed []uint64
+	if p.cloningRecovery != nil {
+		completed, err = p.cloningRecovery.acknowledge(f)
+		if err != nil {
+			return err
+		}
+	}
 	rcvTime := monotime.Now()
 	if len(receivedAt) > 0 {
 		rcvTime = receivedAt[0]
@@ -313,6 +321,9 @@ func (m *multipathState) handlePathAck(f *wire.AckFrame, receivedAt ...monotime.
 				break
 			}
 		}
+	}
+	if len(completed) > 0 && p.cloningRecovery != nil {
+		p.cloningRecovery.onCompleted(completed)
 	}
 	return nil
 }

@@ -24,6 +24,23 @@ type PacketFragment struct {
 type remotePacket struct {
 	fragments   []PacketFragment
 	acked, lost bool
+	dispatched  bool
+}
+
+// AdmitRemotePacket transfers a planned packet into trusted recovery exactly
+// once. It must precede dispatch; a worker cannot claim admission via a receipt.
+func (a *Authority) AdmitRemotePacket(p *Path, pn protocol.PacketNumber) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if err := a.checkPath(p); err != nil {
+		return err
+	}
+	packet := p.remotePackets[pn]
+	if !p.remoteSender || packet == nil || packet.acked || packet.lost || packet.dispatched {
+		return ErrPacketHistory
+	}
+	packet.dispatched = true
+	return nil
 }
 
 // checkRemoteHistoryPath permits late ACKs and loss processing after retirement.
@@ -138,6 +155,18 @@ func (a *Authority) recordRemotePacketLocked(p *Path, pn protocol.PacketNumber, 
 func (a *Authority) AcknowledgeRemotePackets(p *Path, f *wire.AckFrame) ([]uint64, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	return a.acknowledgeRemotePacketsLocked(p, f, false)
+}
+
+// AcknowledgeDispatchedRemotePackets additionally requires trusted recovery
+// admission for every retained packet. Planning alone is insufficient.
+func (a *Authority) AcknowledgeDispatchedRemotePackets(p *Path, f *wire.AckFrame) ([]uint64, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.acknowledgeRemotePacketsLocked(p, f, true)
+}
+
+func (a *Authority) acknowledgeRemotePacketsLocked(p *Path, f *wire.AckFrame, requireDispatched bool) ([]uint64, error) {
 	if err := a.checkRemoteHistoryPath(p); err != nil {
 		return nil, err
 	}
@@ -161,7 +190,7 @@ func (a *Authority) AcknowledgeRemotePackets(p *Path, f *wire.AckFrame) ([]uint6
 		}
 		for pn := first; pn <= r.Largest; pn++ {
 			packet := p.remotePackets[pn]
-			if packet == nil {
+			if packet == nil || (requireDispatched && !packet.dispatched) {
 				return nil, ErrPacketHistory
 			}
 			selected = append(selected, packet)

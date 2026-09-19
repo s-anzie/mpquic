@@ -58,6 +58,7 @@ type Path struct {
 	workerFailure    error
 	remoteSender     bool
 	remoteFloor      protocol.PacketNumber
+	remoteStart      protocol.PacketNumber
 	remotePackets    map[protocol.PacketNumber]*remotePacket
 }
 

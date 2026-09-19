@@ -42,6 +42,11 @@ func (c *Conn) sendMultipathRecoveryProbes(now monotime.Time) error {
 		// Back off even when this path cannot currently send a probe.
 		p.lastPTO = now
 		p.ptoCount++
+		if p.cloningRecovery != nil {
+			// Remote probe dispatch is not wired yet. Never fall back to the
+			// primary allocator after exclusive ownership has been transferred.
+			continue
+		}
 		cid, ok := c.connIDManager.GetConnIDForPath(pathID(id))
 		if !ok {
 			continue
