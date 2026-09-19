@@ -67,6 +67,7 @@ func (a *Authority) DelegatePrimary(path *Path, id protocol.StreamID, offset, li
 	if err := a.accountPrimary(id, offset, limit, n, connectionLimit); err != nil {
 		return nil, err
 	}
+	a.streams[id].delegated = true
 	a.nextDelegation++
 	d.id, d.rangeInfo = a.nextDelegation, Range{StreamID: id, Offset: offset, Length: n}
 	if a.delegations == nil {
@@ -191,17 +192,22 @@ func (a *Authority) releaseDelegation(d *delegation, canceled bool) {
 // CancelStream releases retained payload, never previously consumed flow credit.
 func (a *Authority) CancelStream(id protocol.StreamID) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.closed || id < 0 || id > protocol.MaxStreamID || id%4 == 2 {
+	if a.closed || id < 0 || id > protocol.MaxStreamID || id%4 == 2 || a.canceledStreams[id] {
+		a.mu.Unlock()
 		return
 	}
 	if a.canceledStreams == nil {
 		a.canceledStreams = make(map[protocol.StreamID]bool)
 	}
 	a.canceledStreams[id] = true
+	saturated := a.cancelStreamWorkersLocked(id)
 	for _, d := range a.delegations {
 		if d.rangeInfo.StreamID == id {
 			a.releaseDelegation(d, true)
 		}
+	}
+	a.mu.Unlock()
+	for _, w := range saturated {
+		w.stop(ErrWorkerBusy)
 	}
 }

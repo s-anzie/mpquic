@@ -6,6 +6,7 @@ import (
 
 	"github.com/quic-go/quic-go/internal/cloning"
 	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/quic-go/quic-go/internal/wire"
 )
 
 var errCloningNotReady = errors.New("cloning requires a confirmed multipath server connection")
@@ -29,6 +30,46 @@ func (c *Conn) prepareCloningAuthority() error {
 	case <-c.ctx.Done():
 		return context.Cause(c.ctx)
 	}
+}
+
+// forwardCloningPathACK runs only after ordinary QUIC sent-history validation.
+// The ACK's path ID (not the packet's arrival path) selects its control channel.
+// This is control forwarding, not remote packet-history or sender handoff.
+func (c *Conn) forwardCloningPathACK(f *wire.AckFrame) error {
+	a := c.multipath.cloningAuthority
+	if a == nil || f.PathID == nil || *f.PathID == 0 {
+		return nil
+	}
+	p := c.multipath.paths[*f.PathID]
+	if p == nil || p.abandoned || p.cloningGrant == nil {
+		return nil
+	}
+	err := a.ForwardPathACK(p.cloningGrant, f)
+	if errors.Is(err, cloning.ErrWorkerBusy) || errors.Is(err, cloning.ErrPath) {
+		return c.abandonFailedPath(*f.PathID, err)
+	}
+	return err
+}
+
+// handleCloningWorkerFailures runs on the connection loop, including when no
+// packets arrive. Coalesced wakeups cannot lose failures because each grant
+// retains its terminal state until the corresponding path is abandoned.
+func (c *Conn) handleCloningWorkerFailures() error {
+	a := c.multipath.cloningAuthority
+	if a == nil {
+		return nil
+	}
+	for id, p := range c.multipath.paths {
+		if p.abandoned || p.cloningGrant == nil {
+			continue
+		}
+		if cause := a.WorkerFailure(p.cloningGrant); cause != nil {
+			if err := c.abandonFailedPath(id, cause); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (c *Conn) prepareCloningAuthorityOnLoop() error {
@@ -72,5 +113,6 @@ func (c *Conn) prepareCloningAuthorityOnLoop() error {
 		p.cloningGrant, p.cloningAuthority = grant, a
 	}
 	c.multipath.cloningAuthority = a
+	c.cloningWorkerEvents = a.WorkerEvents()
 	return nil
 }

@@ -187,6 +187,7 @@ type Conn struct {
 	notifyReceivedPacket chan struct{}
 	sendingScheduled     chan struct{}
 	multipathActions     chan func()
+	cloningWorkerEvents  <-chan struct{}
 	pathSendErrors       chan error
 	receivedPacketMx     sync.Mutex
 	receivedPackets      ringbuffer.RingBuffer[receivedPacket]
@@ -718,6 +719,7 @@ runLoop:
 				break runLoop
 			case <-c.timer.C:
 			case <-c.sendingScheduled:
+			case <-c.cloningWorkerEvents:
 			case <-sendQueueAvailable:
 			case <-c.notifyReceivedPacket:
 				wasProcessed, err := c.handlePackets()
@@ -730,6 +732,11 @@ runLoop:
 					continue
 				}
 			}
+		}
+
+		if err := c.handleCloningWorkerFailures(); err != nil {
+			c.setCloseError(&closeError{err: err})
+			break runLoop
 		}
 
 		// Check for loss detection timeout.
@@ -2407,7 +2414,10 @@ func (c *Conn) handleHandshakeDoneFrame(rcvTime monotime.Time) error {
 
 func (c *Conn) handleAckFrame(frame *wire.AckFrame, encLevel protocol.EncryptionLevel, rcvTime monotime.Time) error {
 	if frame.PathID != nil && *frame.PathID != 0 {
-		return c.multipath.handlePathAck(frame, rcvTime)
+		if err := c.multipath.handlePathAck(frame, rcvTime); err != nil {
+			return err
+		}
+		return c.forwardCloningPathACK(frame)
 	}
 	acked1RTTPacket, err := c.sentPacketHandler.ReceivedAck(frame, encLevel, c.lastPacketReceivedTime)
 	if err != nil {

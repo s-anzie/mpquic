@@ -12,19 +12,21 @@ import (
 )
 
 const (
-	WorkerControlALPN = "mpquic-worker-control/1"
+	WorkerControlALPN = "mpquic-worker-control/2"
 	MaxWorkerQueue    = 16
 	MaxWorkerControls = 16
 	workerIOTimeout   = 5 * time.Second
 	workerIdleTimeout = 30 * time.Second
 
-	controlWelcome    byte = 1
-	controlAssignment byte = 2
-	controlFailed     byte = 3
-	controlStopped    byte = 4
-	controlHeartbeat  byte = 5
-	controlHeaderSize      = 9                      // kind and per-direction sequence number
-	maxWorkerMessage       = controlHeaderSize + 16 // failure: range ID and generation
+	controlWelcome      byte = 1
+	controlAssignment   byte = 2
+	controlFailed       byte = 3
+	controlStopped      byte = 4
+	controlHeartbeat    byte = 5
+	controlPathACK      byte = 6
+	controlCancelStream byte = 7
+	controlHeaderSize        = 9                      // kind and per-direction sequence number
+	maxWorkerMessage         = controlHeaderSize + 16 // failure: range ID and generation
 )
 
 var (
@@ -45,6 +47,7 @@ type WorkerControl struct {
 	path      *Path
 	conn      *tls.Conn
 	queue     chan *Attempt
+	controls  chan workerControlMessage
 	pending   map[uint64]*Attempt
 	done      chan struct{}
 	exited    chan struct{}
@@ -101,7 +104,7 @@ func (a *Authority) BindWorker(ctx context.Context, raw net.Conn, config *tls.Co
 		a.mu.Unlock()
 		return nil, ErrWorkerBusy
 	}
-	w := &WorkerControl{authority: a, path: path, conn: conn, queue: make(chan *Attempt, MaxWorkerQueue), pending: make(map[uint64]*Attempt), done: make(chan struct{}), exited: make(chan struct{})}
+	w := &WorkerControl{authority: a, path: path, conn: conn, queue: make(chan *Attempt, MaxWorkerQueue), controls: make(chan workerControlMessage, MaxWorkerControlQueue), pending: make(map[uint64]*Attempt), done: make(chan struct{}), exited: make(chan struct{})}
 	path.worker = w
 	a.workerCount++
 	a.mu.Unlock()
@@ -183,6 +186,7 @@ func (w *WorkerControl) stop(err error) {
 		return
 	}
 	w.closed, w.err, w.path.retired = true, err, true
+	w.path.workerFailure = err
 	w.path.worker = nil
 	w.authority.workerCount--
 	w.pending = nil
@@ -190,6 +194,7 @@ drain:
 	for {
 		select {
 		case <-w.queue:
+		case <-w.controls:
 		default:
 			break drain
 		}
@@ -199,6 +204,10 @@ drain:
 	// Abort the underlying transport to interrupt both I/O directions without
 	// waiting for a TLS close-notify write to an unresponsive peer.
 	_ = w.conn.NetConn().Close()
+	select {
+	case w.authority.workerEvents <- struct{}{}:
+	default:
+	}
 }
 
 func (w *WorkerControl) readLoop() {
@@ -255,18 +264,45 @@ func (w *WorkerControl) writeLoop() {
 		return
 	}
 	for {
+		message, ok := w.nextMessage()
+		if !ok {
+			return
+		}
+		sequence++
+		if sequence == 0 {
+			w.stop(ErrWorkerProtocol)
+			return
+		}
+		if err := w.write(message.kind, sequence, message.body); err != nil {
+			w.stop(err)
+			return
+		}
+	}
+}
+
+func (w *WorkerControl) nextMessage() (workerControlMessage, bool) {
+	for {
 		select {
 		case <-w.done:
-			return
+			return workerControlMessage{}, false
+		default:
+		}
+		// Prefer control information to new payload work. A TLS write already in
+		// progress cannot be preempted; it remains bounded by the write deadline.
+		select {
+		case message := <-w.controls:
+			return message, true
+		default:
+		}
+		select {
+		case <-w.done:
+			return workerControlMessage{}, false
+		case message := <-w.controls:
+			return message, true
 		case t := <-w.queue:
 			d, data, err := w.authority.ReadAttempt(t)
 			if err != nil {
 				continue // canceled, retried or retired while waiting in the queue
-			}
-			sequence++
-			if sequence == 0 {
-				w.stop(ErrWorkerProtocol)
-				return
 			}
 			body := make([]byte, 0, 80+len(data))
 			for _, value := range []uint64{d.ID, d.Generation, d.PathID, uint64(d.Range.StreamID), d.Range.Offset, d.Range.Length} {
@@ -274,10 +310,7 @@ func (w *WorkerControl) writeLoop() {
 			}
 			body = append(body, d.SHA256[:]...)
 			body = append(body, data...)
-			if err := w.write(controlAssignment, sequence, body); err != nil {
-				w.stop(err)
-				return
-			}
+			return workerControlMessage{kind: controlAssignment, body: body}, true
 		}
 	}
 }

@@ -46,6 +46,11 @@ func (c *Conn) hasValidatedPathExcept(excluded uint64) bool {
 	if c.perspective == protocol.PerspectiveServer {
 		for id, p := range c.multipath.paths {
 			if id != excluded && !p.abandoned && p.serverValidated && p.remoteAddr != nil {
+				// A worker can fail before its coalesced notification is processed.
+				// Such a path is not a survivor, even while local CID cleanup waits.
+				if p.cloningGrant != nil && p.cloningAuthority.WorkerFailure(p.cloningGrant) != nil {
+					continue
+				}
 				return true
 			}
 		}
@@ -76,12 +81,19 @@ func (c *Conn) handlePathSendError(id uint64, err error) error {
 	if !c.multipathEnabled || !c.handshakeConfirmed || !isPathSendError(err) {
 		return err
 	}
+	return c.abandonFailedPath(id, err)
+}
+
+// abandonFailedPath runs on the connection loop for either a socket failure or
+// a failed cloning control channel. Preserve other validated paths and notify
+// the peer instead of leaving local CID and recovery state partially retired.
+func (c *Conn) abandonFailedPath(id uint64, cause error) error {
 	if c.multipath.isPathAbandoned(id) {
 		return nil
 	}
 	if !c.hasValidatedPathExcept(id) {
 		return &qerr.TransportError{ErrorCode: qerr.NoViablePathError,
-			ErrorMessage: fmt.Sprintf("path %d failed with no validated alternative: %v", id, err)}
+			ErrorMessage: fmt.Sprintf("path %d failed with no validated alternative: %v", id, cause)}
 	}
 	if err := c.multipath.markPathAbandoned(id); err != nil {
 		return err

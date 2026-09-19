@@ -82,7 +82,7 @@ Never reconstruct an authority with counters reset for an existing connection.
 | C02a | Bind a confirmed multipath server's additional-path packet allocation to the authority, preserving existing high-water marks | Implemented behind an internal staging hook |
 | C02b | Import primary stream/credit state and account ordinary writes, pre-reserved buffers, and FIN through the authority | Implemented; remote reservations remain disabled |
 | C03a | Bounded content/range ledger connected to live SendStream offsets and completion, partial delivery, retries and cancellation | Implemented as internal local primitives |
-| C03b | Authenticated worker coordination contract, packet-to-byte ACK evidence, control routing and bounded communication queues | In progress: fragment/ACK adapter and bounded mTLS control transport implemented; live packet/control routing pending |
+| C03b | Authenticated worker coordination contract, packet-to-byte ACK evidence, control routing and bounded communication queues | In progress: fragment/ACK adapter, bounded mTLS transport, client PATH_ACK forwarding, stream cancellation and worker-failure routing implemented; remote packet-history handoff pending |
 | C04 | Secure worker bootstrap and packet protection state, coordinated key updates and global AEAD accounting | Pending |
 | C05 | Negotiated source endpoint advertisement and client validation for different server IPs | Pending |
 | C06 | Direct multi-server transmission and cross-path retransmission of distinct ranges | Pending |
@@ -369,3 +369,90 @@ suites; ten race-enabled repetitions of the entire cloning package; and
 `go vet ./internal/cloning`. A ten-second codec fuzz run completed 137,523
 executions without failure. These results do not establish production readiness
 or multi-source data-plane interoperability.
+
+## C03b, third increment: ACK, cancellation and failure routing
+
+The connection's existing ACK ingestion now forwards successfully processed
+non-initial PATH_ACK frames to the worker bound to the **acknowledged** path.
+The arrival path is not the routing key: the multipath draft explicitly allows
+[PATH_ACK on another path](https://www.ietf.org/archive/id/draft-ietf-quic-multipath-21.html#section-3.1).
+Parsing, encryption-level checks and existing sent-history checks still happen
+before forwarding. Abandoned paths are ignored. Paths with no worker retain
+their original behavior and do not allocate a notification.
+
+`Authority.ForwardPathACK` is a trusted connection-loop API, not a worker RPC.
+It snapshots ACK ranges, the parsed ACK delay and ECN counters into immutable
+notification bytes. It does not acknowledge stream data, reserve packet numbers,
+refund credit or accept a worker's claim of delivery. The existing packet
+callbacks remain responsible for delivery accounting. Process-local monotonic
+timestamps are not transmitted or compared across hosts; any future worker RTT
+algorithm must account for the actual feedback route, including control relay
+latency, rather than assuming synchronized clocks.
+
+### Reference control protocol version 2
+
+The ALPN is now `mpquic-worker-control/2`; version 1 is rejected. This explicitly
+requires workers to understand the new primary-to-worker notifications instead
+of silently assuming that old receivers support them. Message framing and the
+existing kinds remain unchanged. Two primary-to-worker kinds are added:
+
+| Kind | Payload after kind and sequence |
+| --- | --- |
+| 6: PATH_ACK observation | Acknowledged path ID, ACK delay in nanoseconds, ECT0, ECT1, ECNCE, range count (six 8-byte integers); then smallest and largest packet number for each range (two 8-byte integers per range, highest range first) |
+| 7: cancel stream | Stream ID (8 bytes) |
+
+Both kinds are rejected in the worker-to-primary direction. The separate
+notification queue holds at most 32 entries; an ACK notification holds at most
+256 ranges, with no silent truncation. Control messages take priority over
+queued assignments, but cannot interrupt a TLS message already being written.
+The existing write deadline bounds that in-progress operation.
+
+Canceling a stream that has ever had a delegated range broadcasts one cancel
+notification to all active workers on this authority. Broadcasting includes
+previous owners whose failed attempts have already left pending metadata.
+Workers must treat cancellation of an unknown/already-canceled stream as an
+idempotent stop instruction, not an error. Repeated primary cancellation emits
+no further notification. Never-delegated streams do not generate worker traffic.
+Canceled queued assignments are skipped; already-issued work cannot be recalled.
+This is a control instruction, not an implementation of the remote sender yet.
+
+Saturating the notification queue or exceeding its ACK-range bound retires the
+affected worker path rather than discarding mandatory controls. This is a local
+resource failure, not a claim that a large peer ACK violates QUIC. Assignment
+queue saturation still only returns backpressure without retiring the path.
+
+### Connection-loop failure handling
+
+Worker termination records a permanent failure on the grant and signals a
+one-entry coalescing wakeup channel. The connection loop inspects all grants, so
+simultaneous failures cannot be lost and no new client ACK is needed to trigger
+cleanup. It uses the same path-failure cleanup as socket errors: pending packet
+frames are returned to their handlers, receive/CID state is abandoned and a
+PATH_ABANDON is queued for the peer. Surviving validated paths are preserved;
+without one, the connection reports NO_VIABLE_PATH.
+Survivor selection excludes workers already marked failed even before their
+coalesced notification has triggered connection-loop CID cleanup. Simultaneous
+worker failures must not count each other as usable alternatives.
+
+### Validation boundary
+
+Tests combine the actual QUIC frame parser, sent-packet bookkeeping, connection
+ACK handler and mutually authenticated worker TLS channels. They cover ACKs
+arriving on another path, invalid/Handshake-level ACK rejection, immutable
+snapshots, exact range limits, cancellation after failed ownership, control
+saturation, CID cleanup, independent surviving paths and coalesced failures
+without another ACK. The connection fixture has no running packet sender: it
+uses pre-handoff history, not a remote sender sharing a live local path.
+
+This increment does **not** transfer packet-history ownership, accept remotely
+issued packet numbers into the live history, or distribute keys. ACK forwarding
+currently operates on history already registered with the primary; it must not
+be mistaken for support for arbitrary worker-generated QUIC packets. The remote
+packet engine, coordinated key lifecycle and direct multi-server data-plane
+test remain pending.
+
+Validation for this increment: full Go suite, race-enabled QUIC/HTTP3/cloning
+suites, ten race-enabled repetitions of the worker-control and connection-routing
+tests, and `go vet ./internal/cloning`.
+The simultaneous-failure regression additionally verifies that a worker which
+has stopped cannot count as a validated survivor before loop-side cleanup.
