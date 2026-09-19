@@ -62,10 +62,11 @@ type updatableAEAD struct {
 	nextRcvTrafficSecret  []byte
 	nextSendTrafficSecret []byte
 
-	headerDecrypter  headerProtector
-	headerEncrypter  headerProtector
-	remoteSendKeys   *remoteSendKeys
-	remoteEpochValid *atomic.Bool
+	headerDecrypter   headerProtector
+	headerEncrypter   headerProtector
+	remoteSendKeys    *remoteSendKeys
+	remoteEpochValid  *atomic.Bool
+	experimentalLease *RemoteSealer
 
 	rttStats *utils.RTTStats
 
@@ -287,6 +288,10 @@ func (a *updatableAEAD) open(dst, src []byte, rcvTime monotime.Time, pn protocol
 			return nil, ErrDecryptionFailed
 		}
 		// Opening succeeded. Check if the peer was allowed to update.
+		if a.experimentalLease != nil {
+			// This is a local prototype limitation, not a peer protocol error.
+			return nil, &qerr.TransportError{ErrorCode: qerr.InternalError, ErrorMessage: "experimental worker drain pending during peer key update"}
+		}
 		if a.keyPhase > 0 && a.firstSentWithCurrentKey == protocol.InvalidPacketNumber {
 			return nil, &qerr.TransportError{
 				ErrorCode:    qerr.KeyUpdateError,
@@ -406,6 +411,9 @@ func (a *updatableAEAD) firstSentInAckSpace() protocol.PacketNumber {
 }
 
 func (a *updatableAEAD) shouldInitiateKeyUpdate() bool {
+	if a.experimentalLease != nil {
+		return false
+	}
 	if !a.updateAllowed() {
 		return false
 	}

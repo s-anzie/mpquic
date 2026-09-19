@@ -1,5 +1,12 @@
 # Distributed multipath session cloning
 
+An **experimental raw-QUIC prototype is now runnable** with
+`go run ./example/cloning`. It uses one live QUIC connection and two worker UDP
+sources. See [the laboratory guide](example/cloning/README.md) before using the
+public experimental API. This is not production-ready, geographically validated,
+or integrated with HTTP/3; full source discovery and distributed key rotation
+remain unfinished.
+
 > Security correction discovered during C04 preparation: the earlier multipath
 > sender truncated the 96-bit path-and-packet nonce to 64 bits, dropping the low
 > 32 packet-number bits. Do not deploy those revisions for multipath. The nonce
@@ -86,12 +93,12 @@ Never reconstruct an authority with counters reset for an existing connection.
 | --- | --- | --- |
 | C01 | Local authority: exclusive path grants, monotonic packet numbers, shared stream range and credit reservations, final size, closure, concurrent tests | Implemented as an internal primitive |
 | C02a | Bind a confirmed multipath server's additional-path packet allocation to the authority, preserving existing high-water marks | Implemented behind an internal staging hook |
-| C02b | Import primary stream/credit state and account ordinary writes, pre-reserved buffers, and FIN through the authority | Implemented; remote reservations remain disabled |
+| C02b | Import primary stream/credit state and account ordinary writes, pre-reserved buffers, and FIN through the authority | Implemented; remote reservations enabled only through the experimental writer |
 | C03a | Bounded content/range ledger connected to live SendStream offsets and completion, partial delivery, retries and cancellation | Implemented as internal local primitives |
-| C03b | Authenticated worker coordination contract, packet-to-byte ACK evidence, control routing and bounded communication queues | In progress: control routing, packet ledger and staged bridge to path congestion/loss recovery implemented; live authenticated handoff and remote PTO pending |
-| C04 | Secure worker bootstrap and packet protection state, coordinated key updates and global AEAD accounting | In progress: bootstrap, shared send-budget enforcement and local worker pause/resume implemented; distributed epoch barriers and sender/history handoff pending |
+| C03b | Authenticated worker coordination contract, packet-to-byte ACK evidence, control routing and bounded communication queues | In progress: experimental authenticated live dispatch and recovery bridge; worker-local recovery and durable fencing pending |
+| C04 | Secure worker bootstrap and packet protection state, coordinated key updates and global AEAD accounting | In progress: experimental single-packet leases with fail-closed key transitions; seamless distributed key rotation pending |
 | C05 | Negotiated source endpoint advertisement and client validation for different server IPs | Pending |
-| C06 | Direct multi-server transmission and cross-path retransmission of distinct ranges | Pending |
+| C06 | Direct multi-server transmission and cross-path retransmission of distinct ranges | Experimental two-source live QUIC transfer and same-path fresh-PN retries implemented; cross-source failover pending |
 | C07 | HTTP/3 integration, three-source transfers, failures, reordered messages, key updates, and performance measurements | Pending |
 
 Dependencies can require splitting or reordering lots; none should weaken the
@@ -103,8 +110,9 @@ single-connection safety rules merely to produce an early demo.
 now provides optional integration with `Conn` and additional-path packet packing,
 as described below. C02b adds live primary stream accounting. TLS and HTTP/3
 state are not cloned. Cloning remains opt-in through an internal hook; ordinary
-streams retain their flow-control semantics. The library currently exposes no public
-session-cloning switch and no network snapshot import/export API.
+streams retain their flow-control semantics. C01 originally exposed no public
+cloning API. The later experimental writer described below is the only public
+activation path; there is still no general-purpose connection snapshot API.
 
 The authority uses opaque local grants. Worker names are labels, not verified
 identities. Both packet allocation and stream reservation are serialized; ranges
@@ -745,3 +753,51 @@ necessary before a multi-server HTTP/3 transfer can be claimed.
 Validation: the full suite (`go test -p 1 ./...`), race-enabled root/HTTP3/
 cloning/handshake suites, twenty race-enabled repetitions of the new recovery
 tests, and vet on root/cloning passed.
+
+## Experimental usable prototype (not general distributed cloning)
+
+`Conn.NewExperimentalCloneWriter`, `ExperimentalCloneWriter.WriteContext`,
+`ExperimentalCloneWriter.Stats`, `ServeExperimentalCloneWorker`, and `Path.ID`
+now provide a narrow public entry point. A confirmed server connection, warmed-up
+initial key phase, idle send stream, validated additional paths, pinned mutual
+TLS worker channels, and operator destination policies are required. One writer
+is allowed per connection. Partial-delivery stream resets are rejected.
+
+The primary reserves and retains 1,000-byte portions, advances the real stream
+offset/flow accounting once, constructs approved STREAM frames, admits their
+packet plans into path congestion/recovery, and exports a single-PN send-only
+lease. The worker validates the expected window, encrypts and emits its own UDP
+packet, exhausts and closes the window, then sends a sequenced drain receipt.
+Only authenticated client ACKs release the retained portion and complete its
+real stream obligation. FIN remains primary-owned. Metadata history is pruned
+conservatively after delivery without reusing packet numbers.
+
+Only one lease is outstanding per connection. Local key updates wait for its
+drain; a peer key update during an active lease closes the connection with a local
+internal error rather than exporting or continuing ambiguous state. Failures,
+cancellation, unsupported CID/destination changes and uncertain dispatch also
+close the whole connection. This is a bounded stop-and-wait prototype, not the
+final epoch coordination or worker recovery architecture. A one-second ACK wait
+permits fresh-PN retransmission of identical bytes, capped at eight transmissions.
+
+`example/cloning` creates ephemeral in-memory identities and runs a primary,
+client and two UDP worker endpoints over real loopback sockets in one process.
+The normal receiver reads one QUIC stream and verifies exact content. This is
+neither synthetic packet decoding nor a claim of deployment on separate machines.
+On the development host the final 1,048,576-byte cloned transfer completed in 28.267 s
+(0.297 Mbit/s), with 525 and 524 drained worker packets and SHA-256
+`06b7bbfb7824aa03382051691630eb26de85102d1b08a81e907ec0744cd8a286`.
+The separate 512 KiB ordinary warm-up is excluded. These stop-and-wait numbers
+are not representative of multipath capacity.
+
+Live regression tests verify two-source content and FIN, deliberate loss with
+a fresh-PN retry, worker failure closing the connection, and concurrent writer
+close. Crypto tests verify lease exclusivity, local key-update deferral, authenticated
+peer-update rejection during a lease, and exact release identity. See the example
+guide for source-address, NAT, HTTP/3, failover and performance limitations.
+
+Validation: full Go suite; race-enabled root/HTTP3/cloning/handshake suites;
+three race-enabled repetitions of live transfer, loss, worker failure and close
+tests; experimental root/handshake tests in FIPS mode; vet on root, handshake and
+the example; and executable 64 KiB / 1 MiB laboratory runs passed. No deployment
+or HTTP/3 cloning readiness is inferred from these checks.

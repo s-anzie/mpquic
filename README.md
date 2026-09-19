@@ -28,6 +28,11 @@ quic-go also supports HTTP/3 ([RFC 9114](https://datatracker.ietf.org/doc/html/r
 This fork adds Multipath QUIC, including opt-in
 [automatic local path discovery for QUIC and HTTP/3](http3/MULTIPATH.md).
 
+An opt-in [experimental session-cloning laboratory](example/cloning/README.md)
+also sends a single raw QUIC stream from two worker UDP sources. Run
+`go run ./example/cloning` in this checkout. It is a private-network prototype,
+not production-ready or integrated with HTTP/3.
+
 Other HTTP/3 specifications:
 
 * QPACK: Field Compression for HTTP/3 ([RFC 9204](https://datatracker.ietf.org/doc/html/rfc9204))
