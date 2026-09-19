@@ -58,7 +58,7 @@ func (c *Conn) retryServerPathValidation(now monotime.Time) error {
 func (c *Conn) nextServerApplicationPath(now monotime.Time) (pathID, protocol.ConnectionID, bool) {
 	ids := []uint64{0}
 	for id, p := range c.multipath.paths {
-		if id != 0 && p.serverValidated && !p.abandoned && p.remoteAddr != nil {
+		if id != 0 && p.serverValidated && !p.abandoned && p.remoteAddr != nil && p.cloningRecovery == nil {
 			ids = append(ids, id)
 		}
 	}

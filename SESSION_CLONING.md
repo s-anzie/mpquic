@@ -88,7 +88,7 @@ Never reconstruct an authority with counters reset for an existing connection.
 | C02a | Bind a confirmed multipath server's additional-path packet allocation to the authority, preserving existing high-water marks | Implemented behind an internal staging hook |
 | C02b | Import primary stream/credit state and account ordinary writes, pre-reserved buffers, and FIN through the authority | Implemented; remote reservations remain disabled |
 | C03a | Bounded content/range ledger connected to live SendStream offsets and completion, partial delivery, retries and cancellation | Implemented as internal local primitives |
-| C03b | Authenticated worker coordination contract, packet-to-byte ACK evidence, control routing and bounded communication queues | In progress: control routing and bounded remote packet-plan/ACK ledger implemented; live packet-history handoff and recovery-owner integration pending |
+| C03b | Authenticated worker coordination contract, packet-to-byte ACK evidence, control routing and bounded communication queues | In progress: control routing, packet ledger and staged bridge to path congestion/loss recovery implemented; live authenticated handoff and remote PTO pending |
 | C04 | Secure worker bootstrap and packet protection state, coordinated key updates and global AEAD accounting | In progress: bootstrap, shared send-budget enforcement and local worker pause/resume implemented; distributed epoch barriers and sender/history handoff pending |
 | C05 | Negotiated source endpoint advertisement and client validation for different server IPs | Pending |
 | C06 | Direct multi-server transmission and cross-path retransmission of distinct ranges | Pending |
@@ -699,3 +699,49 @@ success or socket-write result is accepted as delivery proof.
 Validation: the full suite (`go test -p 1 ./...`), race-enabled root/HTTP3/
 cloning/handshake suites, ten race-enabled repetitions of the history scenarios,
 the FIPS handshake suite, and vet on cloning/handshake passed.
+
+## Recovery bridge: preserving primary history across delegated packet admission
+
+`multipathState.attachCloningRecovery` is an internal connection-loop staging
+hook. It binds the existing authority/grant at its immutable first remote packet
+number, verifies that this boundary matches the primary allocator high-water
+mark and is above all recorded primary sends, and requires a completion callback.
+Existing primary packets, frame handlers, bytes in flight, RTT and congestion
+state remain in place. The caller must already have quiesced primary sending;
+this hook is not itself an authenticated handoff or public cloning API.
+
+`recordCloningPacket` admits a primary-approved, ACK-eliciting packet plan into
+the existing per-path recovery controller. It checks size, monotonic packet
+numbers, congestion and pacing, and marks authority admission exactly once
+before creating the recovery entry. Admission uses trusted local-host time;
+foreign monotonic timestamps must never be imported. Dispatch can conservatively
+charge congestion before remote emission, but worker-side pacing and transit
+delay policy are still required for geographical deployment.
+
+PATH_ACK processing validates the remote portion against **admitted** plans
+before changing any primary recovery state. A merely prepared packet in a reserved
+window does not qualify. A mixed ACK can then acknowledge both pre-handoff primary
+packets and delegated packets. Congestion accounting occurs through the ordinary
+path machinery, while completed range IDs wake the supplied internal callback.
+Loss callbacks make retained ranges retryable. Late ACKs after loss still reach
+the ledger even after ordinary recovery has removed the packet, without charging
+bytes-in-flight a second time. Reassignment itself remains explicit.
+
+The primary application scheduler excludes a path with this recovery attachment.
+Primary PTO handling backs off without using the now-exclusive remote allocator;
+worker probe dispatch remains pending. This is intentionally fail-closed, not
+complete PTO recovery. Pre-handoff ACK validation retains the existing primary
+behavior; this increment does not reconstruct a missing history of old skipped
+primary packet numbers.
+
+Tests exercise mixed ACKs, atomic rejection of undispatched packets, preserved
+primary callbacks, congestion-gated admission, loss/reassignment/late ACK,
+immutable handoff boundaries, and primary application/PTO send exclusion.
+These drive the actual multipath recovery methods, but do not enable the hook on
+live user connections. Distributed epoch barriers, approved-plan dispatch,
+worker pacing/PTO, source validation and the public connection adapter remain
+necessary before a multi-server HTTP/3 transfer can be claimed.
+
+Validation: the full suite (`go test -p 1 ./...`), race-enabled root/HTTP3/
+cloning/handshake suites, twenty race-enabled repetitions of the new recovery
+tests, and vet on root/cloning passed.

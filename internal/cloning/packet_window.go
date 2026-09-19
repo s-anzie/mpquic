@@ -34,8 +34,23 @@ func (a *Authority) ReservePacketWindow(p *Path, count uint64) (path uint64, fir
 	first = protocol.PacketNumber(p.nextPacketNumber)
 	if !p.remoteSender {
 		p.remoteFloor = first
+		p.remoteStart = first
 	}
 	p.nextPacketNumber += count
 	p.remoteSender = true
 	return p.id, first, nil
+}
+
+// RemotePacketStart is the immutable boundary between primary and remote
+// allocation. Retention-floor advancement must not move this handoff boundary.
+func (a *Authority) RemotePacketStart(p *Path) (protocol.PacketNumber, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if err := a.checkPath(p); err != nil {
+		return 0, err
+	}
+	if !p.remoteSender {
+		return 0, ErrPath
+	}
+	return p.remoteStart, nil
 }
