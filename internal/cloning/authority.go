@@ -42,6 +42,7 @@ type Authority struct {
 	canceledStreams    map[protocol.StreamID]bool
 	workerCount        int
 	workerEvents       chan struct{}
+	remotePacketCount  int
 }
 
 // Path is an opaque, process-local grant. Copying it is unsupported. Retiring a
@@ -56,6 +57,8 @@ type Path struct {
 	worker           *WorkerControl // active channel; disconnect permanently retires the path
 	workerFailure    error
 	remoteSender     bool
+	remoteFloor      protocol.PacketNumber
+	remotePackets    map[protocol.PacketNumber]*remotePacket
 }
 
 type stream struct {
@@ -265,10 +268,12 @@ func (a *Authority) Close() {
 	}
 	var workers []*WorkerControl
 	for p := range a.paths {
+		p.remotePackets = nil
 		if p.worker != nil {
 			workers = append(workers, p.worker)
 		}
 	}
+	a.remotePacketCount = 0
 	a.mu.Unlock()
 	for _, w := range workers {
 		w.Close()

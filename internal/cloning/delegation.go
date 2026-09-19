@@ -152,6 +152,10 @@ func (a *Authority) Retry(t *Attempt, path *Path) (*Attempt, error) {
 func (a *Authority) Acknowledge(t *Attempt, offset, length uint64) (bool, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	return a.acknowledgeLocked(t, offset, length)
+}
+
+func (a *Authority) acknowledgeLocked(t *Attempt, offset, length uint64) (bool, error) {
 	d, err := a.checkAttempt(t)
 	if err != nil {
 		return false, err
