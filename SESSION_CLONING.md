@@ -1,5 +1,11 @@
 # Distributed multipath session cloning
 
+> Security correction discovered during C04 preparation: the earlier multipath
+> sender truncated the 96-bit path-and-packet nonce to 64 bits, dropping the low
+> 32 packet-number bits. Do not deploy those revisions for multipath. The nonce
+> safety increment described at the end fixes this; old multipath peers using
+> the truncated construction are not wire-compatible with the correction.
+
 ## Objective and scope
 
 Expose one QUIC connection to the client while multiple trusted, geographically
@@ -456,3 +462,48 @@ suites, ten race-enabled repetitions of the worker-control and connection-routin
 tests, and `go vet ./internal/cloning`.
 The simultaneous-failure regression additionally verifies that a worker which
 has stopped cannot count as a validated survivor before loop-side cleanup.
+
+## C04 prerequisite: correct full-width application packet nonces
+
+Preparing independent worker packet protection exposed a pre-existing security
+defect: `updatableAEAD.setNonce` copied the 12-byte path-and-packet number into
+the eight-byte nonce buffer provided by the TLS-style AEAD wrapper. This kept
+the path ID and high packet-number bits but dropped the low 32 packet-number
+bits, reusing a nonce for consecutive packets under one traffic key. Round-trip
+tests had not caught this because both peers made the same error. Earlier
+throughput tests establish neither cryptographic correctness nor confidentiality.
+
+All application-data key generations (current, next, previous) now use an
+explicit 12-byte input AEAD. The ordinary non-multipath construction zeros the
+prefix and places the packet number in the final eight bytes, preserving its
+existing wire behavior. Initial, Handshake and 0-RTT AEAD wrappers keep their
+eight-byte input contract. Truncated inputs to the application wrapper panic
+instead of silently constructing another nonce.
+
+Outside FIPS mode, XOR uses the full IV width. In FIPS mode the TLS AES wrapper
+still takes an eight-byte sequence number: independent instances per path use
+an IV with the path ID XORed into its first four bytes, then receive the final
+eight packet-number bytes. This yields the same 96-bit nonce and keeps each
+path's monotonic send sequence independent. The instance map lives for one key
+generation; it is local cryptographic state, not an exported worker snapshot.
+
+Regression tests reproduce successful authentication with an incorrect packet
+number before the fix. They now require distinct ciphertexts and failed
+authentication for changed packet numbers, including low-bit changes, the
+32-bit boundary and maximum packet numbers. An independent AES-GCM/ChaCha20
+reference checks every nonce byte for QUIC v1/v2, zero/nonzero/maximum path IDs
+and ordinary-QUIC compatibility. Additional tests cover multiple key generations
+and FIPS path separation. No ciphertext or traffic-secret value is logged.
+
+This prerequisite does not implement remote cryptographic bootstrap. The planned
+bootstrap code was deferred rather than exporting the unsafe existing state.
+Live key-generation coordination, global worker encryption budgets, path sender
+handoff and the multi-server QUIC transfer are still pending. Main is not changed
+by the cloning branch workflow; it must receive this correction before use for
+multipath. Fixed and old multipath builds must not be mixed.
+
+Validation: the full Go suite, the full handshake suite with FIPS enabled,
+race-enabled QUIC/HTTP3/handshake/cloning suites, ten race-enabled repetitions of the
+nonce regressions, ten live single-server automatic-discovery/cloning transfers,
+and `go vet ./internal/handshake` passed. These replace no independent security
+review and make no claim that distributed key export is ready.
