@@ -41,6 +41,7 @@ type Authority struct {
 	delegatedBytes     uint64
 	canceledStreams    map[protocol.StreamID]bool
 	workerCount        int
+	workerEvents       chan struct{}
 }
 
 // Path is an opaque, process-local grant. Copying it is unsupported. Retiring a
@@ -53,12 +54,14 @@ type Path struct {
 	retired          bool
 	nextPacketNumber uint64
 	worker           *WorkerControl // active channel; disconnect permanently retires the path
+	workerFailure    error
 }
 
 type stream struct {
-	limit uint64
-	next  uint64
-	final bool
+	limit     uint64
+	next      uint64
+	final     bool
+	delegated bool
 }
 
 // Range identifies a new, non-overlapping portion of a stream. Reservations
@@ -74,7 +77,7 @@ func NewAuthority(connectionLimit uint64) (*Authority, error) {
 	if connectionLimit > uint64(protocol.MaxByteCount) {
 		return nil, ErrLimit
 	}
-	return &Authority{connectionLimit: connectionLimit, streams: make(map[protocol.StreamID]*stream), paths: make(map[*Path]struct{}), pathIDs: make(map[uint64]struct{})}, nil
+	return &Authority{connectionLimit: connectionLimit, streams: make(map[protocol.StreamID]*stream), paths: make(map[*Path]struct{}), pathIDs: make(map[uint64]struct{}), workerEvents: make(chan struct{}, 1)}, nil
 }
 
 // GrantPath reserves a fresh, increasing, nonzero path ID for one worker.

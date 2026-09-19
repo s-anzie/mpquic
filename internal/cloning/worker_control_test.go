@@ -154,7 +154,7 @@ func TestWorkerControlTLSAssignmentFailureAndRetirement(t *testing.T) {
 }
 
 func TestWorkerControlRejectsIdentityAndProtocol(t *testing.T) {
-	for _, mode := range []string{"wrong-pin", "unverified", "no-certificate", "wrong-alpn", "tls12", "config-callback"} {
+	for _, mode := range []string{"wrong-pin", "unverified", "no-certificate", "wrong-alpn", "legacy-alpn", "tls12", "config-callback"} {
 		t.Run(mode, func(t *testing.T) {
 			sc, cc, pin := workerTestTLS(t)
 			switch mode {
@@ -167,6 +167,8 @@ func TestWorkerControlRejectsIdentityAndProtocol(t *testing.T) {
 				cc.Certificates = nil
 			case "wrong-alpn":
 				sc.NextProtos, cc.NextProtos = []string{"other"}, []string{"other"}
+			case "legacy-alpn":
+				sc.NextProtos, cc.NextProtos = []string{"mpquic-worker-control/1"}, []string{"mpquic-worker-control/1"}
 			case "tls12":
 				sc.MinVersion, sc.MaxVersion = tls.VersionTLS12, tls.VersionTLS12
 				cc.MinVersion, cc.MaxVersion = tls.VersionTLS12, tls.VersionTLS12
@@ -186,7 +188,7 @@ func TestWorkerControlRejectsIdentityAndProtocol(t *testing.T) {
 }
 
 func TestWorkerControlRejectsReplayAndDeliveryClaims(t *testing.T) {
-	for _, mode := range []string{"replay", "gap", "delivered", "oversized", "malformed"} {
+	for _, mode := range []string{"replay", "gap", "delivered", "cancel-command", "oversized", "malformed"} {
 		t.Run(mode, func(t *testing.T) {
 			sc, cc, pin := workerTestTLS(t)
 			server, client, handshake := workerTestTransport(t, cc, false)
@@ -205,6 +207,8 @@ func TestWorkerControlRejectsReplayAndDeliveryClaims(t *testing.T) {
 				require.NoError(t, writeControlMessage(client, controlHeartbeat, 2, nil))
 			case "delivered":
 				require.NoError(t, writeControlMessage(client, 6, 1, nil))
+			case "cancel-command":
+				require.NoError(t, writeControlMessage(client, controlCancelStream, 1, binary.BigEndian.AppendUint64(nil, 3)))
 			case "oversized":
 				_, err := client.Write(binary.BigEndian.AppendUint32(nil, ^uint32(0)))
 				require.NoError(t, err)
@@ -392,7 +396,8 @@ func TestWorkerControlSkipsCanceledQueueAndUnsolicitedFailure(t *testing.T) {
 	require.Len(t, w.pending, 1, "terminal metadata is pruned on admission")
 	a.mu.Unlock()
 	workerTestRead(t, client, 1, controlWelcome)
-	body := workerTestRead(t, client, 2, controlAssignment)
+	require.Equal(t, uint64(3), binary.BigEndian.Uint64(workerTestRead(t, client, 2, controlCancelStream)))
+	body := workerTestRead(t, client, 3, controlAssignment)
 	require.Equal(t, uint64(2), binary.BigEndian.Uint64(body))
 	require.Equal(t, []byte("live"), body[80:])
 	unoffered, err := a.DelegatePrimary(p, 11, 0, 1000, []byte("private"), 1<<20)
