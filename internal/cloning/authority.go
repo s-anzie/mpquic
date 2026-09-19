@@ -55,6 +55,7 @@ type Path struct {
 	nextPacketNumber uint64
 	worker           *WorkerControl // active channel; disconnect permanently retires the path
 	workerFailure    error
+	remoteSender     bool
 }
 
 type stream struct {
@@ -164,6 +165,9 @@ func (a *Authority) NextPacketNumber(p *Path) (protocol.PacketNumber, error) {
 	defer a.mu.Unlock()
 	if err := a.checkPath(p); err != nil {
 		return 0, err
+	}
+	if p.remoteSender {
+		return 0, ErrPath
 	}
 	if p.nextPacketNumber > uint64(protocol.MaxPathAndPacketNumber) {
 		return 0, ErrLimit

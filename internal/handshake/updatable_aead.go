@@ -64,6 +64,7 @@ type updatableAEAD struct {
 
 	headerDecrypter headerProtector
 	headerEncrypter headerProtector
+	remoteSendKeys  *remoteSendKeys
 
 	rttStats *utils.RTTStats
 
@@ -125,6 +126,9 @@ func (a *updatableAEAD) rollKeys() {
 	a.prevRcvAEAD = a.rcvAEAD
 	a.rcvAEAD = a.nextRcvAEAD
 	a.sendAEAD = a.nextSendAEAD
+	if a.remoteSendKeys != nil {
+		a.remoteSendKeys.update(a.suite, a.nextSendTrafficSecret, a.version)
+	}
 
 	a.nextRcvTrafficSecret = a.getNextTrafficSecret(a.suite.Hash, a.nextRcvTrafficSecret)
 	a.nextSendTrafficSecret = a.getNextTrafficSecret(a.suite.Hash, a.nextSendTrafficSecret)
@@ -160,6 +164,7 @@ func (a *updatableAEAD) SetReadKey(suite cipherSuite, trafficSecret []byte) {
 // For the client, this function is called after SetReadKey.
 // For the server, this function is called before SetReadKey.
 func (a *updatableAEAD) SetWriteKey(suite cipherSuite, trafficSecret []byte) {
+	a.remoteSendKeys = deriveRemoteSendKeys(suite, trafficSecret, a.version)
 	a.sendAEAD = createApplicationAEAD(suite, trafficSecret, a.version)
 	a.headerEncrypter = newHeaderProtector(suite, trafficSecret, false, a.version)
 	if a.suite.ID == 0 { // suite is not set yet
