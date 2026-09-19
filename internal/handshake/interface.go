@@ -54,6 +54,12 @@ type ShortHeaderSealer interface {
 	KeyPhase() protocol.KeyPhaseBit
 }
 
+// CheckedSealer rejects encryption before exceeding the current key budget.
+// Packet builders must propagate this error without publishing a packet.
+type CheckedSealer interface {
+	SealWithError(dst, src []byte, packetNumber protocol.PacketNumber, associatedData []byte) ([]byte, error)
+}
+
 // MultipathCryptoSetup is implemented by crypto setups that can select the
 // path-aware nonce format and the path ID for 1-RTT packet protection.
 // It is optional so existing packet protection users can continue to operate

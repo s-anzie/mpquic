@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/quic-go/quic-go/internal/cloning"
@@ -20,6 +21,9 @@ import (
 
 const RemoteSealerALPN = "mpquic-send-bootstrap/1"
 const remoteSealerSize = 135
+
+// Conservative ceiling shared by all supported suites and all sending paths.
+const maxSendPacketsPerEpoch uint64 = 1 << 23
 
 var ErrRemoteSealer = errors.New("invalid, exhausted or unavailable remote sealer")
 
@@ -53,20 +57,32 @@ func (m *remoteSendKeys) update(s cipherSuite, secret []byte, v protocol.Version
 // must not be copied. It neither validates paths nor provides congestion/loss
 // control. Shared keys still imply one trust domain, not cryptographic isolation.
 type RemoteSealer struct {
-	mu        sync.Mutex
-	self      *RemoteSealer
-	keys      remoteSendKeys
-	suite     cipherSuite
-	version   protocol.Version
-	epoch     protocol.KeyPhase
-	path      uint64
-	next, end protocol.PacketNumber
-	cid       protocol.ConnectionID
-	aead      cipher.AEAD
-	hp        headerProtector
-	closed    bool
-	authority *cloning.Authority
-	grant     *cloning.Path
+	mu         sync.Mutex
+	self       *RemoteSealer
+	keys       remoteSendKeys
+	suite      cipherSuite
+	version    protocol.Version
+	epoch      protocol.KeyPhase
+	path       uint64
+	next, end  protocol.PacketNumber
+	cid        protocol.ConnectionID
+	aead       cipher.AEAD
+	hp         headerProtector
+	closed     bool
+	owned      bool
+	used       bool
+	authority  *cloning.Authority
+	grant      *cloning.Path
+	epochValid *atomic.Bool
+}
+
+// The crypto loop invalidates admission without waiting for bootstrap network I/O.
+// This cannot revoke material already exported to another process.
+func (a *updatableAEAD) invalidateRemoteEpoch() {
+	if a.remoteEpochValid != nil {
+		a.remoteEpochValid.Store(false)
+		a.remoteEpochValid = nil
+	}
 }
 
 func (*RemoteSealer) Format(s fmt.State, _ rune) {
@@ -78,7 +94,7 @@ func (*RemoteSealer) Format(s fmt.State, _ rune) {
 // window is charged immediately against the current key's usage, never refunded.
 // Live use also requires an epoch barrier across workers and sent-history handoff.
 func (a *updatableAEAD) prepareRemoteSealer(authority *cloning.Authority, path *cloning.Path, count uint64, cid protocol.ConnectionID) (*RemoteSealer, error) {
-	if authority == nil || !a.multipath || !a.handshakeConfirmed || a.remoteSendKeys == nil || cid.Len() == 0 || count == 0 || count > cloning.MaxRemotePacketWindow || a.numSentWithCurrentKey > 1<<23 || count > (1<<23)-a.numSentWithCurrentKey {
+	if authority == nil || !a.multipath || !a.handshakeConfirmed || a.remoteSendKeys == nil || cid.Len() == 0 || count == 0 || count > cloning.MaxRemotePacketWindow || a.numSentWithCurrentKey > maxSendPacketsPerEpoch || count > maxSendPacketsPerEpoch-a.numSentWithCurrentKey {
 		return nil, ErrRemoteSealer
 	}
 	id, first, err := authority.ReservePacketWindow(path, count)
@@ -88,6 +104,11 @@ func (a *updatableAEAD) prepareRemoteSealer(authority *cloning.Authority, path *
 	p := &RemoteSealer{keys: *a.remoteSendKeys, suite: a.suite, version: a.version, epoch: a.keyPhase, path: id, next: first, end: first + protocol.PacketNumber(count), cid: cid}
 	p.self = p
 	p.authority, p.grant = authority, path
+	if a.remoteEpochValid == nil {
+		a.remoteEpochValid = &atomic.Bool{}
+		a.remoteEpochValid.Store(true)
+	}
+	p.epochValid = a.remoteEpochValid
 	a.numSentWithCurrentKey += count
 	return p, nil
 }
@@ -118,6 +139,9 @@ func (p *RemoteSealer) WriteTLS(c *tls.Conn, pin [32]byte) error {
 	}
 	p.closed = true
 	defer p.clearKeys()
+	if p.epochValid == nil || !p.epochValid.Load() {
+		return ErrRemoteSealer
+	}
 	if err := p.authority.ValidateRemotePath(p.grant); err != nil {
 		return err
 	}
@@ -212,11 +236,19 @@ func decodeRemoteSealer(b []byte, path uint64, epoch protocol.KeyPhase) (*Remote
 func (p *RemoteSealer) SealPacket(payload []byte) ([]byte, protocol.PacketNumber, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.owned {
+		return nil, 0, ErrRemoteSealer
+	}
+	return p.sealPacketLocked(payload)
+}
+
+func (p *RemoteSealer) sealPacketLocked(payload []byte) ([]byte, protocol.PacketNumber, error) {
 	if p.self != p || p.closed || p.aead == nil || p.next >= p.end || len(payload) == 0 || 1+p.cid.Len()+4+len(payload)+p.aead.Overhead() > int(protocol.MaxPacketBufferSize) {
 		return nil, 0, ErrRemoteSealer
 	}
 	pn := p.next
 	p.next++
+	p.used = true
 	nonce, err := protocol.PathAndPacketNumber(p.path, pn)
 	if err != nil {
 		return nil, 0, err

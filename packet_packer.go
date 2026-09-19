@@ -1003,7 +1003,10 @@ func (p *packetPacker) appendLongHeaderPacket(buffer *packetBuffer, header *wire
 	if err != nil {
 		return nil, err
 	}
-	raw = p.encryptPacket(raw, sealer, header.PacketNumber, payloadOffset, pnLen)
+	raw, err = p.encryptPacket(raw, sealer, header.PacketNumber, payloadOffset, pnLen)
+	if err != nil {
+		return nil, err
+	}
 	buffer.Data = buffer.Data[:len(buffer.Data)+len(raw)]
 
 	if pn := p.pnManager.PopPacketNumber(encLevel); pn != header.PacketNumber {
@@ -1069,7 +1072,10 @@ func (p *packetPacker) appendShortHeaderPacketForPath(
 			return shortHeaderPacket{}, fmt.Errorf("PacketPacker BUG: packet too large (%d bytes, allowed %d bytes)", size, maxPacketSize)
 		}
 	}
-	raw = p.encryptPacket(raw, sealer, pn, payloadOffset, protocol.ByteCount(pnLen))
+	raw, err = p.encryptPacket(raw, sealer, pn, payloadOffset, protocol.ByteCount(pnLen))
+	if err != nil {
+		return shortHeaderPacket{}, err
+	}
 	buffer.Data = buffer.Data[:len(buffer.Data)+len(raw)]
 
 	if pathID == 0 {
@@ -1130,13 +1136,19 @@ func (p *packetPacker) appendPacketPayload(raw []byte, pl payload, paddingLen pr
 	return raw, nil
 }
 
-func (p *packetPacker) encryptPacket(raw []byte, sealer sealer, pn protocol.PacketNumber, payloadOffset, pnLen protocol.ByteCount) []byte {
-	_ = sealer.Seal(raw[payloadOffset:payloadOffset], raw[payloadOffset:], pn, raw[:payloadOffset])
+func (p *packetPacker) encryptPacket(raw []byte, sealer sealer, pn protocol.PacketNumber, payloadOffset, pnLen protocol.ByteCount) ([]byte, error) {
+	if checked, ok := sealer.(handshake.CheckedSealer); ok {
+		if _, err := checked.SealWithError(raw[payloadOffset:payloadOffset], raw[payloadOffset:], pn, raw[:payloadOffset]); err != nil {
+			return nil, err
+		}
+	} else {
+		_ = sealer.Seal(raw[payloadOffset:payloadOffset], raw[payloadOffset:], pn, raw[:payloadOffset])
+	}
 	raw = raw[:len(raw)+sealer.Overhead()]
 	// apply header protection
 	pnOffset := payloadOffset - pnLen
 	sealer.EncryptHeader(raw[pnOffset+4:pnOffset+4+16], &raw[0], raw[pnOffset:payloadOffset])
-	return raw
+	return raw, nil
 }
 
 func (p *packetPacker) SetToken(token []byte) {

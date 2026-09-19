@@ -62,9 +62,10 @@ type updatableAEAD struct {
 	nextRcvTrafficSecret  []byte
 	nextSendTrafficSecret []byte
 
-	headerDecrypter headerProtector
-	headerEncrypter headerProtector
-	remoteSendKeys  *remoteSendKeys
+	headerDecrypter  headerProtector
+	headerEncrypter  headerProtector
+	remoteSendKeys   *remoteSendKeys
+	remoteEpochValid *atomic.Bool
 
 	rttStats *utils.RTTStats
 
@@ -85,6 +86,7 @@ type updatableAEAD struct {
 var (
 	_ ShortHeaderOpener = &updatableAEAD{}
 	_ ShortHeaderSealer = &updatableAEAD{}
+	_ CheckedSealer     = &updatableAEAD{}
 )
 
 func newUpdatableAEAD(rttStats *utils.RTTStats, qlogger qlogwriter.Recorder, logger utils.Logger, version protocol.Version) *updatableAEAD {
@@ -102,6 +104,7 @@ func newUpdatableAEAD(rttStats *utils.RTTStats, qlogger qlogwriter.Recorder, log
 }
 
 func (a *updatableAEAD) rollKeys() {
+	a.invalidateRemoteEpoch()
 	if a.prevRcvAEAD != nil {
 		a.logger.Debugf("Dropping key phase %d ahead of scheduled time. Drop time was: %s", a.keyPhase-1, a.prevRcvAEADExpiry)
 		if a.qlogger != nil {
@@ -164,6 +167,7 @@ func (a *updatableAEAD) SetReadKey(suite cipherSuite, trafficSecret []byte) {
 // For the client, this function is called after SetReadKey.
 // For the server, this function is called before SetReadKey.
 func (a *updatableAEAD) SetWriteKey(suite cipherSuite, trafficSecret []byte) {
+	a.invalidateRemoteEpoch()
 	a.remoteSendKeys = deriveRemoteSendKeys(suite, trafficSecret, a.version)
 	a.sendAEAD = createApplicationAEAD(suite, trafficSecret, a.version)
 	a.headerEncrypter = newHeaderProtector(suite, trafficSecret, false, a.version)
@@ -329,6 +333,21 @@ func (a *updatableAEAD) open(dst, src []byte, rcvTime monotime.Time, pn protocol
 }
 
 func (a *updatableAEAD) Seal(dst, src []byte, pn protocol.PacketNumber, ad []byte) []byte {
+	sealed, err := a.SealWithError(dst, src, pn, ad)
+	if err != nil {
+		// Legacy callers cannot receive errors. Never encrypt past the limit.
+		// The live packet builder uses CheckedSealer instead.
+		panic(err)
+	}
+	return sealed
+}
+
+// SealWithError charges ordinary packets to the same counter as remote windows.
+// KeyPhase must be selected before constructing the header; do not roll keys here.
+func (a *updatableAEAD) SealWithError(dst, src []byte, pn protocol.PacketNumber, ad []byte) ([]byte, error) {
+	if a.numSentWithCurrentKey >= maxSendPacketsPerEpoch {
+		return nil, &qerr.TransportError{ErrorCode: qerr.AEADLimitReached, ErrorMessage: "application send key budget exhausted"}
+	}
 	if a.pathID == 0 && a.firstSentWithCurrentKeyOnPath0 == protocol.InvalidPacketNumber {
 		a.firstSentWithCurrentKeyOnPath0 = pn
 	}
@@ -342,7 +361,7 @@ func (a *updatableAEAD) Seal(dst, src []byte, pn protocol.PacketNumber, ad []byt
 	a.setNonce(pn)
 	// The AEAD we're using here will be the qtls.aeadAESGCM13.
 	// It uses the nonce provided here and XOR it with the IV.
-	return a.sendAEAD.Seal(dst, a.nonceBuf, src, ad)
+	return a.sendAEAD.Seal(dst, a.nonceBuf, src, ad), nil
 }
 
 func (a *updatableAEAD) SetLargestAcked(pn protocol.PacketNumber) error {
