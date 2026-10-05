@@ -40,7 +40,14 @@ const DefaultMaxIncomingUniStreams = 100
 const MaxServerUnprocessedPackets = 1024
 
 // MaxConnUnprocessedPackets is the max number of packets stored in each connection that are not yet processed.
-const MaxConnUnprocessedPackets = 256
+//
+// Mycelium (04/10/2026) : 256 -> 8192. Un émetteur sans espacement des envois (nginx) expédie sa
+// fenêtre de congestion d'une traite, à la vitesse de la carte ; à 30 ms de RTT cela fait ~5 800
+// paquets. Au-delà de cette file, quic-go jette les paquets (dos_prevention), l'émetteur y voit des
+// pertes et réduit sa fenêtre : 25-35 Mio/s par connexion au lieu de ~270 (mesuré, nginx 1.29,
+// 8 Gio, une connexion). 8192 est la plus petite valeur testée sans aucun rejet jusqu'à 100 ms
+// (1024 et 4096 rejetaient encore et interrompaient le transfert).
+const MaxConnUnprocessedPackets = 8192
 
 // SkipPacketInitialPeriod is the initial period length used for packet number skipping to prevent an Optimistic ACK attack.
 // Every time a packet number is skipped, the period is doubled, up to SkipPacketMaxPeriod.
