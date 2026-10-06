@@ -80,6 +80,29 @@ func isGSOEnabled(conn syscall.RawConn) bool {
 	return serr == nil
 }
 
+// udpGROMsgType est le type du message de contrôle qui porte la taille des segments agrégés.
+const udpGROMsgType = unix.UDP_GRO
+
+// enableGRO active l'agrégation UDP à la réception (UDP_GRO, Linux >= 5) : le noyau remonte en un
+// seul message jusqu'à 64 Ko de datagrammes consécutifs du même flux, que ReadPacket redécoupe au
+// pas indiqué. Un appel système et un passage dans la pile UDP pour des dizaines de paquets au lieu
+// d'un par paquet (Mycelium, 06/10/2026). QUIC_GO_DISABLE_GRO=true la désactive.
+func enableGRO(conn syscall.RawConn) bool {
+	if kernelVersionMajor < 5 {
+		return false
+	}
+	if disabled, err := strconv.ParseBool(os.Getenv("QUIC_GO_DISABLE_GRO")); err == nil && disabled {
+		return false
+	}
+	var serr error
+	if err := conn.Control(func(fd uintptr) {
+		serr = unix.SetsockoptInt(int(fd), unix.IPPROTO_UDP, unix.UDP_GRO, 1)
+	}); err != nil {
+		return false
+	}
+	return serr == nil
+}
+
 func appendUDPSegmentSizeMsg(b []byte, size uint16) []byte {
 	startLen := len(b)
 	const dataLen = 2 // payload is a uint16

@@ -3,10 +3,13 @@
 package quic
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net"
+	"runtime"
 	"testing"
 	"time"
+	"unsafe"
 
 	"golang.org/x/net/ipv4"
 	"golang.org/x/sys/unix"
@@ -295,6 +298,7 @@ func (c *mockBatchConn) ReadBatch(ms []ipv4.Message, _ int) (int, error) {
 }
 
 func TestReadsMultipleMessagesInOneBatch(t *testing.T) {
+	t.Setenv("QUIC_GO_DISABLE_GRO", "true") // chemin sans GRO : tampons de MaxPacketBufferSize
 	bc := &mockBatchConn{t: t, numMsgRead: batchSize/2 + 1}
 
 	udpConn := newUDPConnLocalhost(t)
@@ -339,4 +343,45 @@ func TestSysConnSendGSO(t *testing.T) {
 	expected := appendUDPSegmentSizeMsg([]byte{}, 3)
 	// Check that the first control message is the OOB control message.
 	require.Equal(t, expected, oobMsg[:len(expected)])
+}
+
+// Réception GRO (Mycelium, 06/10/2026) : un message agrégé est rendu segment par segment, chacun
+// dans son propre tampon de paquet.
+type mockGROBatchConn struct{ calls int }
+
+func (c *mockGROBatchConn) ReadBatch(ms []ipv4.Message, _ int) (int, error) {
+	c.calls++
+	payload := []byte("aaaabbbbcc") // 3 segments de 4 octets au plus
+	n := copy(ms[0].Buffers[0], payload)
+	ms[0].N = n
+	oob := make([]byte, unix.CmsgSpace(2))
+	h := (*unix.Cmsghdr)(unsafe.Pointer(&oob[0]))
+	h.Level = unix.IPPROTO_UDP
+	h.Type = udpGROMsgType
+	h.SetLen(unix.CmsgLen(2))
+	binary.NativeEndian.PutUint16(oob[unix.CmsgLen(0):], 4)
+	ms[0].NN = copy(ms[0].OOB, oob)
+	return 1, nil
+}
+
+func TestReadPacketSplitsGROSegments(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("GRO : Linux seulement")
+	}
+	udpConn := newUDPConnLocalhost(t)
+	oobConn, err := newConn(udpConn, true)
+	require.NoError(t, err)
+	if !oobConn.gro {
+		t.Skip("GRO non disponible sur ce noyau")
+	}
+	bc := &mockGROBatchConn{}
+	oobConn.batchConn = bc
+	for _, want := range []string{"aaaa", "bbbb", "cc"} {
+		p, err := oobConn.ReadPacket()
+		require.NoError(t, err)
+		require.Equal(t, want, string(p.data))
+		require.Equal(t, 1, p.buffer.refCount)
+		p.buffer.Release()
+	}
+	require.Equal(t, 1, bc.calls)
 }
