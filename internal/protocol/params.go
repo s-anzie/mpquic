@@ -79,7 +79,7 @@ const MaxNonAckElicitingAcks = 19
 
 // MaxStreamFrameSorterGaps is the maximum number of gaps between received StreamFrames
 // prevents DoS attacks against the streamFrameSorter
-const MaxStreamFrameSorterGaps = 1000
+const MaxStreamFrameSorterGaps = 10000 // Mycelium : 1000 fermait les connexions à 10 Gbit/s × 30 ms (réordonnancement), essai du 11/10
 
 // MinStreamFrameBufferSize is the minimum data length of a received STREAM frame
 // that we use the buffer for. This protects against a DoS where an attacker would send us
