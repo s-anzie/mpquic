@@ -1052,6 +1052,10 @@ func TestSentPacketHandler0RTT(t *testing.T) {
 func TestSentPacketHandlerCongestion(t *testing.T) {
 	mockCtrl := gomock.NewController(t)
 	cong := mocks.NewMockSendAlgorithmWithDebugInfos(mockCtrl)
+	// Mycelium instrumentation (publishCongestionStats) reads the window and state after each ACK frame.
+	cong.EXPECT().GetCongestionWindow().AnyTimes()
+	cong.EXPECT().InRecovery().AnyTimes()
+	cong.EXPECT().InSlowStart().AnyTimes()
 	rttStats := utils.NewRTTStats()
 	sph := NewSentPacketHandler(
 		0,
@@ -1247,6 +1251,10 @@ func TestSentPacketHandlerRetryAfterPTO(t *testing.T) {
 func TestSentPacketHandlerECN(t *testing.T) {
 	mockCtrl := gomock.NewController(t)
 	cong := mocks.NewMockSendAlgorithmWithDebugInfos(mockCtrl)
+	// Mycelium instrumentation (publishCongestionStats) reads the window and state after each ACK frame.
+	cong.EXPECT().GetCongestionWindow().AnyTimes()
+	cong.EXPECT().InRecovery().AnyTimes()
+	cong.EXPECT().InSlowStart().AnyTimes()
 	cong.EXPECT().OnPacketSent(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes()
 	cong.EXPECT().OnPacketAcked(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes()
 	cong.EXPECT().MaybeExitSlowStart().AnyTimes()

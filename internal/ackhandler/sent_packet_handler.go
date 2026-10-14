@@ -92,6 +92,10 @@ type sentPacketHandler struct {
 	congestion congestion.SendAlgorithmWithDebugInfos
 	rttStats   *utils.RTTStats
 	connStats  *utils.ConnectionStats
+	// Mycelium instrumentation: last congestion window, peak and state
+	// published to connStats (publishCongestionStats), to store only on change.
+	lastCwnd, maxCwnd uint64
+	lastCCState       uint32
 
 	// The number of times a PTO has been sent without receiving an ack.
 	ptoCount uint32
@@ -157,6 +161,7 @@ func NewSentPacketHandler(
 		h.enableECN = true
 		h.ecnTracker = newECNTracker(logger, qlogger)
 	}
+	h.publishCongestionStats()
 	return h
 }
 
@@ -477,9 +482,38 @@ func (h *sentPacketHandler) ReceivedAck(ack *wire.AckFrame, encLevel protocol.En
 	if h.qlogger != nil {
 		h.qlogMetricsUpdated()
 	}
+	h.publishCongestionStats()
 
 	h.setLossDetectionTimer(rcvTime)
 	return acked1RTTPacket, nil
+}
+
+// publishCongestionStats copies the congestion window, its peak and the
+// controller's state into connStats when they changed (Mycelium
+// instrumentation, see utils.ConnectionStats). Called from the run loop after
+// each ACK frame, after a loss-detection timeout and when the controller is
+// replaced: three integer comparisons per ACK frame, an atomic store only on
+// change.
+func (h *sentPacketHandler) publishCongestionStats() {
+	if cwnd := uint64(h.congestion.GetCongestionWindow()); cwnd != h.lastCwnd {
+		h.lastCwnd = cwnd
+		h.connStats.CongestionWindow.Store(cwnd)
+		if cwnd > h.maxCwnd {
+			h.maxCwnd = cwnd
+			h.connStats.MaxCongestionWindow.Store(cwnd)
+		}
+	}
+	var state uint32 // 0 slow start, 1 congestion avoidance, 2 recovery
+	switch {
+	case h.congestion.InRecovery():
+		state = 2
+	case !h.congestion.InSlowStart():
+		state = 1
+	}
+	if state != h.lastCCState {
+		h.lastCCState = state
+		h.connStats.CongestionState.Store(state)
+	}
 }
 
 func (h *sentPacketHandler) detectSpuriousLosses(ack *wire.AckFrame, ackTime monotime.Time) {
@@ -866,6 +900,7 @@ func (h *sentPacketHandler) detectLostPackets(now monotime.Time, encLevel protoc
 
 func (h *sentPacketHandler) OnLossDetectionTimeout(now monotime.Time) error {
 	defer h.setLossDetectionTimer(now)
+	defer h.publishCongestionStats()
 
 	if h.handshakeConfirmed {
 		h.detectLostPathProbes(now)
@@ -1139,5 +1174,6 @@ func (h *sentPacketHandler) MigratedPath(now monotime.Time, initialMaxDatagramSi
 		true, // use Reno
 		h.qlogger,
 	)
+	h.publishCongestionStats()
 	h.setLossDetectionTimer(now)
 }

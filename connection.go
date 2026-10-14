@@ -830,6 +830,14 @@ type ConnectionStats struct {
 	// StreamGaps summarises the reassembly gaps of the receive streams
 	// (Mycelium instrumentation, see gap_stats.go).
 	StreamGaps StreamGapStats
+
+	// CongestionWindow is the current congestion window of the connection
+	// (bytes), MaxCongestionWindow the largest it reached, and CongestionState
+	// the state of the congestion controller, as last published by the run loop
+	// (Mycelium instrumentation, see congestion_stats.go).
+	CongestionWindow    uint64
+	MaxCongestionWindow uint64
+	CongestionState     CongestionState
 }
 
 func (c *Conn) ConnectionStats() ConnectionStats {
@@ -847,6 +855,10 @@ func (c *Conn) ConnectionStats() ConnectionStats {
 		PacketsLost:     c.connStats.PacketsLost.Load(),
 
 		StreamGaps: c.gapStats.snapshot(),
+
+		CongestionWindow:    c.connStats.CongestionWindow.Load(),
+		MaxCongestionWindow: c.connStats.MaxCongestionWindow.Load(),
+		CongestionState:     CongestionState(c.connStats.CongestionState.Load()),
 	}
 }
 
