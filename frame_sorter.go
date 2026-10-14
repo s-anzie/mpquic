@@ -29,6 +29,11 @@ type frameSorter struct {
 	queue   map[protocol.ByteCount]frameSorterEntry
 	readPos protocol.ByteCount
 	gaps    *list.List[byteInterval]
+
+	// Mycelium instrumentation: peak number of gaps of this stream, reported to
+	// the connection's accumulator (nil for crypto streams) when it grows.
+	peakGaps int
+	stats    *gapStats
 }
 
 var errDuplicateStreamData = errors.New("duplicate stream data")
@@ -169,6 +174,12 @@ func (s *frameSorter) push(data []byte, offset protocol.ByteCount, doneCb func()
 		}
 	}
 
+	if n := s.gaps.Len() - 1; n > s.peakGaps { // the last gap is the open range after the data
+		if s.stats != nil {
+			s.stats.observe(s.peakGaps, n)
+		}
+		s.peakGaps = n
+	}
 	if s.gaps.Len() > protocol.MaxStreamFrameSorterGaps {
 		return errors.New("too many gaps in received data")
 	}

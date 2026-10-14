@@ -36,6 +36,8 @@ type streamsMap struct {
 	incomingUniStreams    *incomingStreamsMap[*ReceiveStream]
 	reset                 bool
 	supportsResetStreamAt bool
+
+	gapStats *gapStats // Mycelium instrumentation, see gap_stats.go
 }
 
 func newStreamsMap(
@@ -64,7 +66,9 @@ func (m *streamsMap) initMaps() {
 	m.outgoingBidiStreams = newOutgoingStreamsMap(
 		protocol.StreamTypeBidi,
 		func(id protocol.StreamID) *Stream {
-			return newStream(m.ctx, id, m.sender, m.newFlowController(id), m.supportsResetStreamAt)
+			s := newStream(m.ctx, id, m.sender, m.newFlowController(id), m.supportsResetStreamAt)
+			s.receiveStr.frameQueue.stats = m.gapStats
+			return s
 		},
 		m.queueControlFrame,
 		m.perspective,
@@ -72,7 +76,9 @@ func (m *streamsMap) initMaps() {
 	m.incomingBidiStreams = newIncomingStreamsMap(
 		protocol.StreamTypeBidi,
 		func(id protocol.StreamID) *Stream {
-			return newStream(m.ctx, id, m.sender, m.newFlowController(id), m.supportsResetStreamAt)
+			s := newStream(m.ctx, id, m.sender, m.newFlowController(id), m.supportsResetStreamAt)
+			s.receiveStr.frameQueue.stats = m.gapStats
+			return s
 		},
 		m.maxIncomingBidiStreams,
 		m.queueControlFrame,
@@ -89,7 +95,9 @@ func (m *streamsMap) initMaps() {
 	m.incomingUniStreams = newIncomingStreamsMap(
 		protocol.StreamTypeUni,
 		func(id protocol.StreamID) *ReceiveStream {
-			return newReceiveStream(id, m.sender, m.newFlowController(id))
+			s := newReceiveStream(id, m.sender, m.newFlowController(id))
+			s.frameQueue.stats = m.gapStats
+			return s
 		},
 		m.maxIncomingUniStreams,
 		m.queueControlFrame,

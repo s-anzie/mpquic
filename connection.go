@@ -149,6 +149,7 @@ type Conn struct {
 
 	rttStats  *utils.RTTStats
 	connStats utils.ConnectionStats
+	gapStats  gapStats // Mycelium instrumentation, see gap_stats.go
 
 	cryptoStreamManager   *cryptoStreamManager
 	sentPacketHandler     ackhandler.SentPacketHandler
@@ -542,6 +543,7 @@ func (c *Conn) preSetup() {
 		uint64(c.config.MaxIncomingUniStreams),
 		c.perspective,
 	)
+	c.streamsMap.gapStats = &c.gapStats
 	c.framer = newFramer(c.connFlowController)
 	c.receivedPackets.Init(8)
 	c.notifyReceivedPacket = make(chan struct{}, 1)
@@ -824,6 +826,10 @@ type ConnectionStats struct {
 	// (does not monotonically increase, because packets that are declared lost
 	// can subsequently be received).
 	PacketsLost uint64
+
+	// StreamGaps summarises the reassembly gaps of the receive streams
+	// (Mycelium instrumentation, see gap_stats.go).
+	StreamGaps StreamGapStats
 }
 
 func (c *Conn) ConnectionStats() ConnectionStats {
@@ -839,6 +845,8 @@ func (c *Conn) ConnectionStats() ConnectionStats {
 		PacketsReceived: c.connStats.PacketsReceived.Load(),
 		BytesLost:       c.connStats.BytesLost.Load(),
 		PacketsLost:     c.connStats.PacketsLost.Load(),
+
+		StreamGaps: c.gapStats.snapshot(),
 	}
 }
 
