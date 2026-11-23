@@ -3124,9 +3124,20 @@ func (c *Conn) sendMultipathApplicationPacket(now monotime.Time) (bool, error) {
 			break
 		}
 		pathAck = c.receivedPacketHandler.GetAckFrameForPath(uint64(pathID), now, true)
-		nextPacket, nextBuf, nextErr := pathPacker.PackApplicationPacketForPath(
-			uint64(pathID), connID, pathAck, maxSize, now, c.version,
-		)
+		var nextPacket shortHeaderPacket
+		var nextErr error
+		if appender, ok := pathPacker.(interface {
+			AppendApplicationPacketForPath(*packetBuffer, uint64, protocol.ConnectionID, *wire.AckFrame, protocol.ByteCount, monotime.Time, protocol.Version) (shortHeaderPacket, error)
+		}); ok {
+			nextPacket, nextErr = appender.AppendApplicationPacketForPath(batch, uint64(pathID), connID, pathAck, maxSize, now, c.version)
+		} else {
+			var nextBuf *packetBuffer
+			nextPacket, nextBuf, nextErr = pathPacker.PackApplicationPacketForPath(uint64(pathID), connID, pathAck, maxSize, now, c.version)
+			if nextErr == nil {
+				batch.Data = append(batch.Data, nextBuf.Data...)
+				nextBuf.Release()
+			}
+		}
 		if nextErr == errNothingToPack {
 			break
 		}
@@ -3134,10 +3145,8 @@ func (c *Conn) sendMultipathApplicationPacket(now monotime.Time) (bool, error) {
 			batch.Release()
 			return false, nextErr
 		}
-		c.logShortHeaderPacket(nextPacket, protocol.ECNNon, nextBuf.Len())
+		c.logShortHeaderPacket(nextPacket, protocol.ECNNon, nextPacket.Length)
 		c.registerPackedShortHeaderPacket(nextPacket, protocol.ECNNon, now)
-		batch.Data = append(batch.Data, nextBuf.Data...)
-		nextBuf.Release()
 		// GSO permits a shorter final segment. Keep it in the same queue
 		// entry so sending one batch never requires two available slots.
 		if nextPacket.Length != maxSize {

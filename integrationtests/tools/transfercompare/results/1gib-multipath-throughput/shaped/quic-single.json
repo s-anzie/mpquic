@@ -1,0 +1,1 @@
+{"cut_at_seconds":-1,"cut_interface":"","interface_bytes_rx_tx":{"mpq-ca":[1102224157,16277472],"mpq-cb":[636,550]},"mbps":190.76033808080132,"multipath":false,"path_traffic_ok":true,"protocol":"quic","received_bytes":1073741824,"requested_bytes":1073741824,"same_connection_followup_ok":true,"seconds":45.02998201,"sha256_ok":true}
