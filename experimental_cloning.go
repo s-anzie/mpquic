@@ -46,19 +46,27 @@ type ExperimentalCloneSource struct {
 // ExperimentalCloneSourceStats counts locally drained worker packets, including
 // retransmissions. It is not an application-byte or client-delivery counter.
 type ExperimentalCloneSourceStats struct {
-	PathID       uint64
-	Packets      uint64
-	Batches      uint64
+	PathID  uint64
+	Packets uint64
+	Batches uint64
+	// CapacityWait measures successful worker capacity exchanges.
+	CapacityWait time.Duration
+	// DispatchTime measures successful lease dispatches, including DrainWait.
+	DispatchTime time.Duration
+	// DrainWait is the time waiting for worker emission receipts, not client ACKs.
+	DrainWait    time.Duration
 	LastKeyEpoch uint64
 	KeyRotations uint64
 }
+
+type experimentalSourceTiming struct{ capacity, dispatch, drain time.Duration }
 
 func (w *ExperimentalCloneWriter) Stats() []ExperimentalCloneSourceStats {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	stats := make([]ExperimentalCloneSourceStats, len(w.sources))
 	for i, source := range w.sources {
-		stats[i] = ExperimentalCloneSourceStats{PathID: source.PathID, Packets: w.sequences[i], Batches: w.batches[i], LastKeyEpoch: w.epochs[i], KeyRotations: w.rotations[i]}
+		stats[i] = ExperimentalCloneSourceStats{PathID: source.PathID, Packets: w.sequences[i], Batches: w.batches[i], CapacityWait: w.timings[i].capacity, DispatchTime: w.timings[i].dispatch, DrainWait: w.timings[i].drain, LastKeyEpoch: w.epochs[i], KeyRotations: w.rotations[i]}
 	}
 	return stats
 }
@@ -77,6 +85,7 @@ type ExperimentalCloneWriter struct {
 	sources     []ExperimentalCloneSource
 	sequences   []uint64
 	batches     []uint64
+	timings     []experimentalSourceTiming
 	epochs      []uint64
 	rotations   []uint64
 	failed      []bool
@@ -115,6 +124,7 @@ func (c *Conn) NewExperimentalCloneWriter(ctx context.Context, stream *SendStrea
 	w := &ExperimentalCloneWriter{conn: c, stream: stream, sources: append([]ExperimentalCloneSource(nil), sources...), sequences: make([]uint64, len(sources)), pending: make(map[uint64]*clonedRange), delivered: make(chan struct{}, 1)}
 	w.epochs, w.rotations = make([]uint64, len(sources)), make([]uint64, len(sources))
 	w.batches = make([]uint64, len(sources))
+	w.timings = make([]experimentalSourceTiming, len(sources))
 	w.failed, w.additions, w.assignments = make([]bool, len(sources)), make(chan experimentalSourceAddition, 8), make(map[uint64]int)
 	w.objects = make(map[uint64]*experimentalObjectJob)
 	err := w.onLoop(ctx, func() error {
@@ -241,6 +251,7 @@ func (w *ExperimentalCloneWriter) writeContent(ctx context.Context, data []byte,
 		end, source, tries int
 		sent               time.Time
 		done               bool
+		retry              bool
 	}
 	flightLimit := 8
 	for _, source := range w.sources {
@@ -337,8 +348,31 @@ func (w *ExperimentalCloneWriter) writeContent(ctx context.Context, data []byte,
 		// Completion notifications are coalesced wakeups only. The loop-owned
 		// ledger is authoritative, including out-of-order and late ACKs.
 		err = w.onLoop(ctx, func() error {
+			// Sample delivery and retry state in one connection-loop action.
+			// Per-range round trips serialized thousands of scheduler wakeups
+			// while most of the ranges merely waited for an ACK.
+			now := time.Now()
+			unavailable := make(map[int]bool)
 			for _, f := range flights {
 				f.done = w.pending[f.id] == nil
+				if f.done {
+					continue
+				}
+				f.retry = now.Sub(f.sent) >= time.Second
+				if !w.sources[f.source].Autonomous {
+					continue
+				}
+				p := w.conn.multipath.paths[w.sources[f.source].PathID]
+				failed, checked := unavailable[f.source]
+				if !checked {
+					failed = p == nil || p.abandoned || !w.conn.experimentalSourceReady(w.sources[f.source])
+					unavailable[f.source] = failed
+				}
+				f.retry = failed
+				if p != nil {
+					f.retry = f.retry || p.experimentalRetryRanges[f.id]
+					delete(p.experimentalRetryRanges, f.id)
+				}
 			}
 			return nil
 		})
@@ -353,26 +387,10 @@ func (w *ExperimentalCloneWriter) writeContent(ctx context.Context, data []byte,
 			if f.done {
 				continue
 			}
-			retry := time.Since(f.sent) >= time.Second
-			if w.sources[f.source].Autonomous {
-				if err = w.onLoop(ctx, func() error {
-					source := w.sources[f.source]
-					p := w.conn.multipath.paths[source.PathID]
-					// Expired sources stop forwarding worker retry requests. Let
-					// source selection fence them even with no fresh work to admit.
-					retry = p == nil || p.abandoned || !w.conn.experimentalSourceReady(source)
-					if p != nil {
-						retry = retry || p.experimentalRetryRanges[f.id]
-						delete(p.experimentalRetryRanges, f.id)
-					}
-					return nil
-				}); err != nil {
-					return n, err
-				}
-			}
-			if !retry {
+			if !f.retry {
 				continue
 			}
+
 			if f.tries == 8 {
 				if !w.conn.sourceOffersNegotiated() {
 					return n, errors.New("experimental clone delivery retry limit")
@@ -489,6 +507,7 @@ func (w *ExperimentalCloneWriter) dispatchBatch(ctx context.Context, index int, 
 	for len(rangeIDs) > 0 {
 		count := len(rangeIDs)
 		if source.Autonomous {
+			capacityStart := time.Now()
 			if err := source.Control.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
 				return err
 			}
@@ -500,14 +519,17 @@ func (w *ExperimentalCloneWriter) dispatchBatch(ctx context.Context, index int, 
 			if _, err := io.ReadFull(source.Control, capacity[:]); err != nil {
 				return err
 			}
+			w.timings[index].capacity += time.Since(capacityStart)
 			count = int(binary.BigEndian.Uint16(capacity[:]))
 			if count < 1 || count > len(rangeIDs) {
 				return ErrExperimentalCloningNotReady
 			}
 		}
+		dispatchStart := time.Now()
 		if err := w.dispatchWindow(ctx, index, rangeIDs[:count]); err != nil {
 			return err
 		}
+		w.timings[index].dispatch += time.Since(dispatchStart)
 		rangeIDs = rangeIDs[count:]
 	}
 	return nil
@@ -684,6 +706,7 @@ func (w *ExperimentalCloneWriter) dispatchWindow(ctx context.Context, index int,
 	if _, err := io.Copy(source.Control, &records); err != nil {
 		return err
 	}
+	drainStart := time.Now()
 	var receipt [8]byte
 	if _, err := io.ReadFull(source.Control, receipt[:]); err != nil {
 		return err
@@ -691,6 +714,7 @@ func (w *ExperimentalCloneWriter) dispatchWindow(ctx context.Context, index int,
 	if binary.BigEndian.Uint64(receipt[:]) != job.Sequence+uint64(len(rangeIDs))-1 {
 		return errors.New("invalid experimental worker drain receipt")
 	}
+	w.timings[index].drain += time.Since(drainStart)
 	w.sequences[index] = job.Sequence + uint64(len(rangeIDs)) - 1
 	w.batches[index]++
 	if job.Sequence > 1 && w.epochs[index] != job.Epoch {

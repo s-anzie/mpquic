@@ -1,7 +1,6 @@
 package quic
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -116,15 +115,6 @@ type experimentalObjectJob struct {
 	StreamOffset int64
 }
 
-type experimentalObjectBuffer struct {
-	*bytes.Reader
-	offset int64
-}
-
-func (b experimentalObjectBuffer) ReadAt(p []byte, off int64) (int, error) {
-	return b.Reader.ReadAt(p, off-b.offset)
-}
-
 // One source read serves a whole contiguous dispatch, but every chunk still
 // verifies its own primary-authorized digest before any packet is emitted.
 func (j *experimentalObjectJob) batchPayloads(resolver ExperimentalCloneObjectResolver, bodies [][]byte, version protocol.Version) ([][]byte, error) {
@@ -151,14 +141,14 @@ func (j *experimentalObjectJob) batchPayloads(resolver ExperimentalCloneObjectRe
 	if n != len(data) || err != nil && !errors.Is(err, io.EOF) {
 		return nil, io.ErrUnexpectedEOF
 	}
-	buffer := experimentalObjectBuffer{Reader: bytes.NewReader(data), offset: j.Offset}
-	cached := ExperimentalCloneObjectResolverFunc(func(ExperimentalCloneObjectID) (io.ReaderAt, error) { return buffer, nil })
+
 	for i, hash := range bodies {
 		chunk := *j
 		chunk.Offset += int64(i * 1000)
 		chunk.StreamOffset += int64(i * 1000)
 		chunk.Hash = hash
-		bodies[i], err = chunk.payload(cached, version)
+		start := i * 1000
+		bodies[i], err = chunk.payloadFromBytes(data[start:min(start+1000, len(data))], version)
 		if err != nil {
 			return nil, err
 		}
@@ -183,6 +173,21 @@ func (j *experimentalObjectJob) payload(resolver ExperimentalCloneObjectResolver
 	b := make([]byte, min(int64(ExperimentalCloneObjectChunkSize), j.Size-j.Offset))
 	n, err := r.ReadAt(b, j.Offset)
 	if n != len(b) || err != nil && !errors.Is(err, io.EOF) {
+		return nil, io.ErrUnexpectedEOF
+	}
+	return j.payloadFromBytes(b, version)
+}
+
+// The batch reader already owns these bytes. Verify and frame them directly,
+// avoiding a second per-chunk allocation and copy through an io.ReaderAt.
+func (j *experimentalObjectJob) payloadFromBytes(b []byte, version protocol.Version) ([]byte, error) {
+	if len(j.ID) != 32 || len(j.Hash) != 32 || j.Offset < 0 || j.Offset%ExperimentalCloneObjectChunkSize != 0 || j.Offset >= j.Size || j.StreamID < 0 || j.StreamID > int64(protocol.MaxStreamID) || j.StreamOffset < 0 || j.StreamOffset > int64(protocol.MaxByteCount)-1000 {
+		return nil, ErrExperimentalSourceOffer
+	}
+	if _, err := experimentalCloneObjectCount(j.Size); err != nil {
+		return nil, err
+	}
+	if int64(len(b)) != min(int64(ExperimentalCloneObjectChunkSize), j.Size-j.Offset) {
 		return nil, io.ErrUnexpectedEOF
 	}
 	if sha256.Sum256(b) != [32]byte(j.Hash) {

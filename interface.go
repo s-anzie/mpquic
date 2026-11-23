@@ -186,6 +186,8 @@ type Config struct {
 	EnableMultipath bool
 	// EnableExperimentalSourceOffers negotiates private source announcements.
 	// Offers never trigger probes automatically or mark an address validated.
+	// Opting in also permits up to 4096 queued receive datagrams per connection
+	// to accommodate bounded multi-source flights (256 otherwise).
 	EnableExperimentalSourceOffers bool
 	// DisableAutomaticPathDiscovery leaves path creation to the application.
 	// Otherwise, multipath clients discover and validate additional local addresses

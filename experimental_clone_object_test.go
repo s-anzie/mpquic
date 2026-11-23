@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"errors"
+	"github.com/quic-go/quic-go/internal/protocol"
 	"io"
 	"math"
 	"sync"
@@ -234,4 +235,37 @@ func TestExperimentalCloneObjectConcurrentReads(t *testing.T) {
 		}(int64(i%3) * 1000)
 	}
 	wg.Wait()
+}
+
+func TestExperimentalObjectBatchChecksFinalChunk(t *testing.T) {
+	data := bytes.Repeat([]byte{7}, 2001)
+	manifest, err := BuildExperimentalCloneObjectManifest(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := manifest.ID()
+	job := &experimentalObjectJob{ID: id[:], Size: int64(len(data)), StreamID: 0}
+	for _, corrupt := range []bool{false, true} {
+		content := bytes.Clone(data)
+		if corrupt {
+			content[len(content)-1] ^= 1
+		}
+		calls := 0
+		resolver := ExperimentalCloneObjectResolverFunc(func(ExperimentalCloneObjectID) (io.ReaderAt, error) { calls++; return bytes.NewReader(content), nil })
+		hashes := make([][]byte, len(manifest.hashes))
+		for i := range hashes {
+			hashes[i] = bytes.Clone(manifest.hashes[i][:])
+		}
+		payloads, err := job.batchPayloads(resolver, hashes, protocol.Version1)
+		if calls != 1 {
+			t.Fatalf("resolved object %d times", calls)
+		}
+		if corrupt {
+			if err == nil || payloads != nil {
+				t.Fatal("released a batch with a corrupt final chunk")
+			}
+		} else if err != nil || len(payloads) != 3 {
+			t.Fatalf("valid partial final chunk: %v", err)
+		}
+	}
 }

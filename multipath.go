@@ -469,6 +469,25 @@ func (m *multipathState) nextPathPacingTime() (monotime.Time, bool) {
 	return earliest, !earliest.IsZero()
 }
 
+// Recovery of an autonomous source needs only the primary packets that were
+// outstanding at handoff. Scanning the remote mirror on every timer pass adds
+// work proportional to the full source flight even though every entry is skipped.
+func (p *multipathPathState) primaryRecoveryPackets(yield func(protocol.PacketNumber, multipathSentPacket) bool) {
+	if p.experimentalWorkerControlled && p.cloningRecovery != nil {
+		for _, pn := range p.cloningRecovery.primaryPackets {
+			if packet, ok := p.sentPackets[pn]; ok && !yield(pn, packet) {
+				return
+			}
+		}
+		return
+	}
+	for pn, packet := range p.sentPackets {
+		if !yield(pn, packet) {
+			return
+		}
+	}
+}
+
 func (m *multipathState) nextPathProbeLossTime(lossDelay time.Duration) monotime.Time {
 	var earliest monotime.Time
 	for _, p := range m.paths {
@@ -482,10 +501,7 @@ func (m *multipathState) nextPathProbeLossTime(lossDelay time.Duration) monotime
 		if pathLossDelay <= 0 {
 			pathLossDelay = lossDelay
 		}
-		for pn, packet := range p.sentPackets {
-			if p.experimentalWorkerControlled && p.cloningRecovery != nil && pn >= p.cloningRecovery.boundary {
-				continue
-			}
+		for pn, packet := range p.primaryRecoveryPackets {
 			if !packet.isProbe && pn > p.packetNumberSpace.largestAcknowledged {
 				continue
 			}
@@ -518,10 +534,7 @@ func (m *multipathState) detectLostPathPackets(now monotime.Time, lossDelay time
 			pathLossDelay = lossDelay
 		}
 		lossTime := now.Add(-pathLossDelay)
-		for packetNumber, packet := range p.sentPackets {
-			if p.experimentalWorkerControlled && p.cloningRecovery != nil && packetNumber >= p.cloningRecovery.boundary {
-				continue
-			}
+		for packetNumber, packet := range p.primaryRecoveryPackets {
 			// An elapsed time alone is not evidence of application packet loss.
 			// Validation probes have their own retry lifecycle.
 			if !packet.isProbe && packetNumber > p.packetNumberSpace.largestAcknowledged {
