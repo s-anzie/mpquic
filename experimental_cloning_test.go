@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/quic-go/quic-go/internal/handshake"
 	"github.com/quic-go/quic-go/internal/testdata"
 	"github.com/stretchr/testify/require"
 )
@@ -89,7 +90,19 @@ func TestExperimentalCloningConcurrentClose(t *testing.T) {
 	testExperimentalCloningLive(t, false, false, true)
 }
 
-func testExperimentalCloningLive(t *testing.T, dropPacket, failWorker, interrupt bool) {
+func TestExperimentalCloningKeyRotation(t *testing.T) {
+	reset := handshake.SetKeyUpdateInterval(20)
+	defer reset()
+	testExperimentalCloningLive(t, false, false, false, true)
+}
+
+func TestExperimentalCloningAutomaticKeyRotation(t *testing.T) {
+	reset := handshake.SetKeyUpdateInterval(20)
+	defer reset()
+	testExperimentalCloningLive(t, false, false, false)
+}
+
+func testExperimentalCloningLive(t *testing.T, dropPacket, failWorker, interrupt bool, rotation ...bool) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	cfg := &Config{EnableMultipath: true, MaxPathID: 4}
@@ -198,6 +211,9 @@ func testExperimentalCloningLive(t *testing.T, dropPacket, failWorker, interrupt
 	// A stale notification must not complete a new range prematurely.
 	cut := len(data) / 2
 	n, err := writer.WriteContext(ctx, data[:cut])
+	if err == nil && len(rotation) > 0 && rotation[0] {
+		err = writer.RotateKeys(ctx)
+	}
 	if err == nil {
 		var rest int
 		rest, err = writer.WriteContext(ctx, data[cut:])
@@ -227,6 +243,13 @@ func testExperimentalCloningLive(t *testing.T, dropPacket, failWorker, interrupt
 	require.NoError(t, <-readDone)
 	require.Greater(t, writer.sequences[0], uint64(0))
 	require.Greater(t, writer.sequences[1], uint64(0))
+	if len(rotation) > 0 && rotation[0] {
+		stats := writer.Stats()
+		for _, stat := range stats {
+			require.Greater(t, stat.KeyRotations, uint64(0))
+			t.Logf("path %d: epoch %d, rotations %d", stat.PathID, stat.LastKeyEpoch, stat.KeyRotations)
+		}
+	}
 	if drop != nil {
 		require.True(t, drop.dropped.Load())
 		require.Greater(t, writer.sequences[0], uint64(48))

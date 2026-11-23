@@ -20,11 +20,13 @@ type ExperimentalSourceOffer struct {
 	ID, Generation uint64
 	Address        netip.AddrPort
 	ExpiresAt      time.Time
+	Accepted       bool // consent only; never path validation
 }
 
 type experimentalSourceEntry struct {
-	frame   wire.ExperimentalSourceOfferFrame
-	expires time.Time
+	frame    wire.ExperimentalSourceOfferFrame
+	expires  time.Time
+	accepted bool
 }
 
 type experimentalSourceRegistry struct {
@@ -117,18 +119,28 @@ func (c *Conn) AnnounceExperimentalSource(ctx context.Context, id, generation ui
 // Private, loopback and link-local destinations require explicit application
 // permission before any future path-establishment API can use them.
 func (c *Conn) ExperimentalSourceOffers(ctx context.Context) ([]ExperimentalSourceOffer, error) {
+	return c.experimentalSourceSnapshot(ctx, false)
+}
+
+// ExperimentalAcceptedSources lets the primary inspect authenticated client
+// consent. It does not authorize application transmission to an unvalidated path.
+func (c *Conn) ExperimentalAcceptedSources(ctx context.Context) ([]ExperimentalSourceOffer, error) {
+	return c.experimentalSourceSnapshot(ctx, true)
+}
+
+func (c *Conn) experimentalSourceSnapshot(ctx context.Context, acceptedOnly bool) ([]ExperimentalSourceOffer, error) {
 	// A buffered result avoids sharing caller-visible memory after cancellation.
 	result := make(chan []ExperimentalSourceOffer, 1)
 	err := (&ExperimentalCloneWriter{conn: c}).onLoop(ctx, func() error {
-		if !c.sourceOffersNegotiated() || c.perspective != protocol.PerspectiveClient {
+		if !c.sourceOffersNegotiated() || (acceptedOnly && c.perspective != protocol.PerspectiveServer) || (!acceptedOnly && c.perspective != protocol.PerspectiveClient) {
 			return ErrExperimentalSourceOffer
 		}
 		var offers []ExperimentalSourceOffer
 		if c.experimentalSources != nil {
 			now := time.Now()
 			for _, entry := range c.experimentalSources.entries {
-				if entry.frame.TTL > 0 && entry.expires.After(now) {
-					offers = append(offers, ExperimentalSourceOffer{ID: entry.frame.ID, Generation: entry.frame.Generation, Address: entry.frame.Address, ExpiresAt: entry.expires})
+				if entry.frame.TTL > 0 && entry.expires.After(now) && (!acceptedOnly || entry.accepted) {
+					offers = append(offers, ExperimentalSourceOffer{ID: entry.frame.ID, Generation: entry.frame.Generation, Address: entry.frame.Address, ExpiresAt: entry.expires, Accepted: entry.accepted})
 				}
 			}
 		}
@@ -148,4 +160,63 @@ func (c *Conn) ExperimentalSourceOffers(ctx context.Context) ([]ExperimentalSour
 		return nil, err
 	}
 	return <-result, nil
+}
+
+// AcceptExperimentalSource records consent for the current generation only.
+// policy runs on the caller goroutine and is mandatory, including for public IPs.
+// The offer is rechecked after policy returns to close update/withdrawal races.
+// This does not create a path, send a probe, or validate the worker address.
+func (c *Conn) AcceptExperimentalSource(ctx context.Context, id, generation uint64, policy func(ExperimentalSourceOffer) bool) error {
+	if policy == nil {
+		return ErrExperimentalSourceOffer
+	}
+	offers, err := c.ExperimentalSourceOffers(ctx)
+	if err != nil {
+		return err
+	}
+	var offer ExperimentalSourceOffer
+	for _, o := range offers {
+		if o.ID == id && o.Generation == generation {
+			offer = o
+			break
+		}
+	}
+	if offer.ID == 0 || !policy(offer) {
+		return ErrExperimentalSourceOffer
+	}
+	return (&ExperimentalCloneWriter{conn: c}).onLoop(ctx, func() error {
+		if !c.sourceOffersNegotiated() || c.perspective != protocol.PerspectiveClient || c.experimentalSources == nil {
+			return ErrExperimentalSourceOffer
+		}
+		entry, ok := c.experimentalSources.entries[id]
+		if !ok || entry.frame.Generation != generation || entry.frame.Address != offer.Address || entry.frame.TTL == 0 || !entry.expires.After(time.Now()) {
+			return ErrExperimentalSourceOffer
+		}
+		if entry.accepted {
+			return nil
+		}
+		entry.accepted = true
+		c.experimentalSources.entries[id] = entry
+		c.queueControlFrame(&wire.ExperimentalSourceAcceptFrame{ID: id, Generation: generation})
+		return nil
+	})
+}
+
+func (c *Conn) receiveSourceAcceptance(f *wire.ExperimentalSourceAcceptFrame, level protocol.EncryptionLevel) error {
+	if !c.sourceOffersNegotiated() || c.perspective != protocol.PerspectiveServer || level != protocol.Encryption1RTT {
+		return &qerr.TransportError{ErrorCode: qerr.ProtocolViolation, ErrorMessage: "unexpected source acceptance"}
+	}
+	if c.experimentalSources == nil {
+		return &qerr.TransportError{ErrorCode: qerr.ProtocolViolation, ErrorMessage: "acceptance without offer"}
+	}
+	entry, ok := c.experimentalSources.entries[f.ID]
+	if !ok || f.Generation > entry.frame.Generation {
+		return &qerr.TransportError{ErrorCode: qerr.ProtocolViolation, ErrorMessage: "acceptance for unknown offer"}
+	}
+	if f.Generation < entry.frame.Generation || entry.frame.TTL == 0 || !entry.expires.After(time.Now()) {
+		return nil
+	}
+	entry.accepted = true
+	c.experimentalSources.entries[f.ID] = entry
+	return nil
 }

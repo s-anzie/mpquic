@@ -355,7 +355,7 @@ func (p *TransportParameters) readNumericTransportParameter(b []byte, paramID tr
 		}
 		p.InitialMaxPathID = &val
 	case experimentalSourceOffersParameterID:
-		if val != 1 {
+		if val != 2 {
 			return errors.New("unsupported experimental source offer version")
 		}
 		p.ExperimentalSourceOffers = true
@@ -464,7 +464,7 @@ func (p *TransportParameters) Marshal(pers protocol.Perspective) []byte {
 		b = p.marshalVarintParam(b, initialMaxPathIDParameterID, *p.InitialMaxPathID)
 	}
 	if p.ExperimentalSourceOffers {
-		b = p.marshalVarintParam(b, experimentalSourceOffersParameterID, 1)
+		b = p.marshalVarintParam(b, experimentalSourceOffersParameterID, 2)
 	}
 	// initial_source_connection_id
 	b = quicvarint.Append(b, uint64(initialSourceConnectionIDParameterID))

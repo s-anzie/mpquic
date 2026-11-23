@@ -87,7 +87,7 @@ func (t FrameType) isAllowedAtEncLevel(encLevel protocol.EncryptionLevel) bool {
 			return false
 		}
 	case protocol.Encryption0RTT:
-		if t == FrameTypeExperimentalSourceOffer {
+		if t == FrameTypeExperimentalSourceOffer || t == FrameTypeExperimentalSourceAccept {
 			return false
 		}
 		if t.isMultipathFrameType() {

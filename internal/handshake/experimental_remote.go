@@ -4,7 +4,9 @@ import (
 	"crypto/tls"
 
 	"github.com/quic-go/quic-go/internal/cloning"
+	"github.com/quic-go/quic-go/internal/monotime"
 	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/quic-go/quic-go/qlog"
 )
 
 // ExperimentalRemoteALPN separates framed jobs from the bare snapshot protocol.
@@ -17,12 +19,28 @@ type ExperimentalRemoteCrypto interface {
 	ExperimentalRemoteReady() bool
 	AcquireExperimentalRemote(*cloning.Authority, *cloning.Path, protocol.ConnectionID) (*RemoteSealer, uint64, protocol.PacketNumber, error)
 	ReleaseExperimentalRemote(*RemoteSealer) error
+	RotateExperimentalKeys() error
+}
+
+// RotateExperimentalKeys initiates a local update only at a drained barrier
+// and after the normal QUIC acknowledgment requirements permit another update.
+func (h *cryptoSetup) RotateExperimentalKeys() error {
+	if !h.ExperimentalRemoteReady() || !h.aead.updateAllowed() {
+		return ErrRemoteSealer
+	}
+	h.aead.rollKeys()
+	if h.aead.qlogger != nil {
+		for _, keyType := range []qlog.KeyType{qlog.KeyTypeClient1RTT, qlog.KeyTypeServer1RTT} {
+			h.aead.qlogger.RecordEvent(qlog.KeyUpdated{Trigger: qlog.KeyUpdateLocal, KeyType: keyType, KeyPhase: h.aead.keyPhase})
+		}
+	}
+	return nil
 }
 
 func (h *cryptoSetup) ExperimentalRemoteReady() bool {
-	// Exercise the initial key transition before delegating. Later peer updates
-	// during a lease deliberately fail closed in this experimental mode.
-	return h.aead.handshakeConfirmed && h.aead.multipath && h.aead.keyPhase > 0 && h.aead.numRcvdWithCurrentKey > 0 && h.aead.experimentalLease == nil
+	// Exercise the initial key transition before delegating. Key transitions
+	// temporarily stop admission until new-phase peer traffic is authenticated.
+	return h.aead.handshakeConfirmed && h.aead.multipath && h.aead.keyPhase > 0 && h.aead.firstRcvdWithCurrentKey != protocol.InvalidPacketNumber && h.aead.experimentalLease == nil
 }
 
 func (h *cryptoSetup) AcquireExperimentalRemote(a *cloning.Authority, p *cloning.Path, cid protocol.ConnectionID) (*RemoteSealer, uint64, protocol.PacketNumber, error) {
@@ -42,6 +60,16 @@ func (h *cryptoSetup) ReleaseExperimentalRemote(s *RemoteSealer) error {
 		return ErrRemoteSealer
 	}
 	h.aead.experimentalLease = nil
+	if h.aead.experimentalPeerUpdatePending {
+		h.aead.experimentalPeerUpdatePending = false
+		h.aead.rollKeys()
+		h.aead.startKeyDropTimer(monotime.Now())
+		if h.aead.qlogger != nil {
+			for _, keyType := range []qlog.KeyType{qlog.KeyTypeClient1RTT, qlog.KeyTypeServer1RTT} {
+				h.aead.qlogger.RecordEvent(qlog.KeyUpdated{Trigger: qlog.KeyUpdateRemote, KeyType: keyType, KeyPhase: h.aead.keyPhase})
+			}
+		}
+	}
 	return nil
 }
 

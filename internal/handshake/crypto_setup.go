@@ -214,6 +214,7 @@ func (h *cryptoSetup) StartHandshake(ctx context.Context) error {
 func (h *cryptoSetup) Close() error {
 	h.aead.invalidateRemoteEpoch()
 	h.aead.experimentalLease = nil
+	h.aead.experimentalPeerUpdatePending = false
 	if h.aead.remoteSendKeys != nil {
 		clear(h.aead.remoteSendKeys.key[:])
 		clear(h.aead.remoteSendKeys.iv[:])

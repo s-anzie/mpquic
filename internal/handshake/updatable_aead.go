@@ -47,6 +47,7 @@ type updatableAEAD struct {
 	prevRcvAEAD       cipher.AEAD
 
 	firstRcvdWithCurrentKey        protocol.PacketNumber
+	firstRcvdWithCurrentKeyByPath  map[uint64]protocol.PacketNumber
 	firstSentWithCurrentKey        protocol.PacketNumber
 	firstSentWithCurrentKeyOnPath0 protocol.PacketNumber
 	highestRcvdPN                  protocol.PacketNumber // highest packet number received (which could be successfully unprotected)
@@ -62,11 +63,12 @@ type updatableAEAD struct {
 	nextRcvTrafficSecret  []byte
 	nextSendTrafficSecret []byte
 
-	headerDecrypter   headerProtector
-	headerEncrypter   headerProtector
-	remoteSendKeys    *remoteSendKeys
-	remoteEpochValid  *atomic.Bool
-	experimentalLease *RemoteSealer
+	headerDecrypter               headerProtector
+	headerEncrypter               headerProtector
+	remoteSendKeys                *remoteSendKeys
+	remoteEpochValid              *atomic.Bool
+	experimentalLease             *RemoteSealer
+	experimentalPeerUpdatePending bool
 
 	rttStats *utils.RTTStats
 
@@ -123,6 +125,7 @@ func (a *updatableAEAD) rollKeys() {
 
 	a.keyPhase++
 	a.firstRcvdWithCurrentKey = protocol.InvalidPacketNumber
+	clear(a.firstRcvdWithCurrentKeyByPath)
 	a.firstSentWithCurrentKey = protocol.InvalidPacketNumber
 	a.firstSentWithCurrentKeyOnPath0 = protocol.InvalidPacketNumber
 	a.numRcvdWithCurrentKey = 0
@@ -209,6 +212,7 @@ func (a *updatableAEAD) SetMultipath(enabled bool) {
 	a.multipath = enabled
 	if enabled && a.highestRcvdPNByPath == nil {
 		a.highestRcvdPNByPath = make(map[uint64]protocol.PacketNumber)
+		a.firstRcvdWithCurrentKeyByPath = make(map[uint64]protocol.PacketNumber)
 	}
 }
 
@@ -271,7 +275,11 @@ func (a *updatableAEAD) open(dst, src []byte, rcvTime monotime.Time, pn protocol
 	}
 	a.setNonce(pn)
 	if kp != a.keyPhase.Bit() {
-		if a.keyPhase > 0 && a.firstRcvdWithCurrentKey == protocol.InvalidPacketNumber || pn < a.firstRcvdWithCurrentKey {
+		first, known := a.firstRcvdWithCurrentKey, true
+		if a.multipath {
+			first, known = a.firstRcvdWithCurrentKeyByPath[a.pathID]
+		}
+		if a.keyPhase > 0 && a.firstRcvdWithCurrentKey == protocol.InvalidPacketNumber || known && pn < first {
 			if a.prevRcvAEAD == nil {
 				return nil, ErrKeysDropped
 			}
@@ -282,21 +290,30 @@ func (a *updatableAEAD) open(dst, src []byte, rcvTime monotime.Time, pn protocol
 			}
 			return dec, err
 		}
+		// Without a current-generation boundary on this path, a differing
+		// phase bit may identify either a delayed previous epoch or the next
+		// epoch. Another path's packet number cannot disambiguate it.
+		if a.multipath && !known && a.prevRcvAEAD != nil {
+			// Failed Open may overwrite dst, including src when they alias.
+			if dec, err := a.prevRcvAEAD.Open(nil, a.nonceBuf, src, ad); err == nil {
+				return append(dst, dec...), nil
+			}
+		}
 		// try opening the packet with the next key phase
 		dec, err := a.nextRcvAEAD.Open(dst, a.nonceBuf, src, ad)
 		if err != nil {
 			return nil, ErrDecryptionFailed
 		}
 		// Opening succeeded. Check if the peer was allowed to update.
-		if a.experimentalLease != nil {
-			// This is a local prototype limitation, not a peer protocol error.
-			return nil, &qerr.TransportError{ErrorCode: qerr.InternalError, ErrorMessage: "experimental worker drain pending during peer key update"}
-		}
 		if a.keyPhase > 0 && a.firstSentWithCurrentKey == protocol.InvalidPacketNumber {
 			return nil, &qerr.TransportError{
 				ErrorCode:    qerr.KeyUpdateError,
 				ErrorMessage: "keys updated too quickly",
 			}
+		}
+		if a.experimentalLease != nil {
+			a.experimentalPeerUpdatePending = true
+			return nil, ErrRemoteKeyUpdatePending
 		}
 		a.rollKeys()
 		a.logger.Debugf("Peer updated keys to %d", a.keyPhase)
@@ -316,6 +333,9 @@ func (a *updatableAEAD) open(dst, src []byte, rcvTime monotime.Time, pn protocol
 			})
 		}
 		a.firstRcvdWithCurrentKey = pn
+		if a.multipath {
+			a.firstRcvdWithCurrentKeyByPath[a.pathID] = pn
+		}
 		return dec, err
 	}
 	// The AEAD we're using here will be the qtls.aeadAESGCM13.
@@ -325,6 +345,11 @@ func (a *updatableAEAD) open(dst, src []byte, rcvTime monotime.Time, pn protocol
 		return dec, ErrDecryptionFailed
 	}
 	a.numRcvdWithCurrentKey++
+	if a.multipath {
+		if first, known := a.firstRcvdWithCurrentKeyByPath[a.pathID]; !known || pn < first {
+			a.firstRcvdWithCurrentKeyByPath[a.pathID] = pn
+		}
+	}
 	if a.firstRcvdWithCurrentKey == protocol.InvalidPacketNumber {
 		// We initiated the key updated, and now we received the first packet protected with the new key phase.
 		// Therefore, we are certain that the peer rolled its keys as well. Start a timer to drop the old keys.

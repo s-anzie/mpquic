@@ -215,6 +215,36 @@ func TestUpdatableAEADEncryptDecryptMessage(t *testing.T) {
 	}
 }
 
+func TestUpdatableAEADMultipathKeyUpdateBoundaries(t *testing.T) {
+	client, server, _ := setupEndpoints(t, utils.NewRTTStats())
+	client.SetMultipath(true)
+	server.SetMultipath(true)
+	client.rollKeys()
+	server.rollKeys()
+	// Preserve a delayed previous-epoch packet on a path with no boundary.
+	old := server.Seal(nil, []byte("old"), 1, nil)
+	for _, endpoint := range []*updatableAEAD{client, server} {
+		require.NoError(t, endpoint.SetPathID(2))
+	}
+	packet := server.Seal(nil, []byte("current"), 731, nil)
+	_, err := client.Open(nil, packet, monotime.Now(), 731, server.keyPhase.Bit(), nil)
+	require.NoError(t, err)
+	client.Seal(nil, []byte("reply"), 800, nil)
+	// The next update arrives on path 0 with PN 419, below path 2's 731.
+	server.rollKeys()
+	for _, endpoint := range []*updatableAEAD{client, server} {
+		require.NoError(t, endpoint.SetPathID(0))
+	}
+	packet = server.Seal(nil, []byte("next"), 419, nil)
+	plain, err := client.Open(packet[:0], packet, monotime.Now(), 419, server.keyPhase.Bit(), nil)
+	require.NoError(t, err)
+	require.Equal(t, []byte("next"), plain)
+	require.Equal(t, protocol.KeyPhase(2), client.keyPhase)
+	plain, err = client.Open(nil, old, monotime.Now(), 1, protocol.KeyPhaseOne, nil)
+	require.NoError(t, err)
+	require.Equal(t, []byte("old"), plain)
+}
+
 func TestUpdatableAEADMultipathNonce(t *testing.T) {
 	client, server, _ := setupEndpoints(t, utils.NewRTTStats())
 	client.SetMultipath(true)

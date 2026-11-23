@@ -1536,6 +1536,10 @@ func (c *Conn) handleLongHeaderPacket(p receivedPacket, hdr *wire.Header, datagr
 
 func (c *Conn) handleUnpackError(err error, p receivedPacket, pt qlog.PacketType, datagramPayloadChecksum qlog.DatagramPayloadChecksum) (wasQueued bool, _ error) {
 	switch err {
+	case handshake.ErrRemoteKeyUpdatePending:
+		// Do not ACK or queue plaintext from the future phase before worker
+		// drain. The peer retransmits; release activates the authenticated phase.
+		return false, nil
 	case handshake.ErrKeysDropped:
 		if c.qlogger != nil {
 			connID, _ := wire.ParseConnectionID(p.data, c.srcConnIDLen)
@@ -2076,6 +2080,8 @@ func (c *Conn) handleFrameForPath(
 	switch frame := f.(type) {
 	case *wire.ExperimentalSourceOfferFrame:
 		err = c.receiveSourceOffer(frame, encLevel)
+	case *wire.ExperimentalSourceAcceptFrame:
+		err = c.receiveSourceAcceptance(frame, encLevel)
 	case *wire.CryptoFrame:
 		err = c.handleCryptoFrame(frame, encLevel, rcvTime)
 	case *wire.ConnectionCloseFrame:
