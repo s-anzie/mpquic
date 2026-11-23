@@ -175,57 +175,96 @@ func (w *ExperimentalCloneWriter) WriteContext(ctx context.Context, data []byte)
 			w.fail()
 		}
 	}()
+	type flight struct {
+		id                 uint64
+		end, source, tries int
+		sent               time.Time
+		done               bool
+	}
+	var flights []*flight
+	queued := 0
 	for n < len(data) {
-		chunk := data[n:min(n+1000, len(data))]
-		index := w.next % len(w.sources)
-		w.next++
-		var rangeID uint64
-		for {
-			err = w.onLoop(ctx, func() error {
-				r, e := w.stream.delegateCloningRange(w.conn.multipath.paths[w.sources[index].PathID].cloningGrant, chunk)
-				if e == nil {
-					desc, _, readErr := r.read()
-					if readErr != nil {
-						return readErr
+		// Bound retained application data independently of stream flow credit.
+		for queued < len(data) && len(flights) < 8 {
+			chunk := data[queued:min(queued+1000, len(data))]
+			index := w.next % len(w.sources)
+			w.next++
+			var rangeID uint64
+			for {
+				err = w.onLoop(ctx, func() error {
+					r, e := w.stream.delegateCloningRange(w.conn.multipath.paths[w.sources[index].PathID].cloningGrant, chunk)
+					if e == nil {
+						desc, _, readErr := r.read()
+						if readErr != nil {
+							return readErr
+						}
+						rangeID = desc.ID
+						w.pending[desc.ID] = r
 					}
-					rangeID = desc.ID
-					w.pending[desc.ID] = r
+					return e
+				})
+				if !errors.Is(err, ErrWouldBlock) {
+					break
 				}
-				return e
-			})
-			if !errors.Is(err, ErrWouldBlock) {
-				break
+				if err = waitCloneTick(ctx, w.conn.ctx, 5*time.Millisecond); err != nil {
+					return n, err
+				}
 			}
-			if err = waitCloneTick(ctx, w.conn.ctx, 5*time.Millisecond); err != nil {
+			if err != nil {
 				return n, err
-			}
-		}
-		if err != nil {
-			return n, err
-		}
-		for tries := 0; ; tries++ {
-			if tries == 8 {
-				return n, errors.New("experimental clone delivery retry limit")
 			}
 			if err = w.dispatch(ctx, index, rangeID); err != nil {
 				return n, err
 			}
-			timer := time.NewTimer(time.Second)
-			select {
-			case <-w.delivered:
-				timer.Stop()
-				n += len(chunk)
-			case <-ctx.Done():
-				timer.Stop()
-				return n, ctx.Err()
-			case <-w.conn.ctx.Done():
-				timer.Stop()
-				return n, context.Cause(w.conn.ctx)
-			case <-timer.C:
-				continue // retransmit identical bytes with a fresh PN
+			queued += len(chunk)
+			flights = append(flights, &flight{id: rangeID, end: queued, source: index, tries: 1, sent: time.Now()})
+		}
+		// Completion notifications are coalesced wakeups only. The loop-owned
+		// ledger is authoritative, including out-of-order and late ACKs.
+		err = w.onLoop(ctx, func() error {
+			for _, f := range flights {
+				f.done = w.pending[f.id] == nil
 			}
+			return nil
+		})
+		if err != nil {
+			return n, err
+		}
+		for len(flights) > 0 && flights[0].done {
+			n = flights[0].end
+			flights = flights[1:]
+		}
+		for _, f := range flights {
+			if f.done || time.Since(f.sent) < time.Second {
+				continue
+			}
+			if f.tries == 8 {
+				return n, errors.New("experimental clone delivery retry limit")
+			}
+			if err = w.dispatch(ctx, f.source, f.id); err != nil {
+				return n, err
+			}
+			f.tries++
+			f.sent = time.Now()
+		}
+		if n == len(data) {
 			break
 		}
+		if queued < len(data) && len(flights) < 8 {
+			continue
+		}
+		timer := time.NewTimer(5 * time.Millisecond)
+		select {
+		case <-w.delivered:
+		case <-ctx.Done():
+			timer.Stop()
+			return n, ctx.Err()
+		case <-w.conn.ctx.Done():
+			timer.Stop()
+			return n, context.Cause(w.conn.ctx)
+		case <-timer.C:
+		}
+		timer.Stop()
 	}
 	return n, nil
 }

@@ -25,9 +25,10 @@ Certificates and keys are generated in memory for each run; nothing is written
 to disk, and all listeners bind to loopback. The 512 KiB ordinary warm-up is
 excluded from the reported cloned-transfer throughput.
 
-This baseline is deliberately stop-and-wait, with 1,000-byte portions. It is
-expected to be slow: it is a correctness prototype, **not representative of
-multipath capacity**.
+The writer permits up to eight 1,000-byte portions awaiting client ACKs.
+Worker key leases remain serialized: this is bounded packet pipelining, not
+concurrent key export. It is a correctness prototype, **not representative of
+geographical multipath capacity**.
 
 ## Public experimental API
 
@@ -82,7 +83,7 @@ supports concurrent `Close` to interrupt them.
   dispatch or cancellation closes the whole connection. No transparent failover
   or restart from old keys/counters. Retry the application transfer on a fresh
   connection if needed.
-- Each portion waits one second for its ACK before a fresh-PN retransmission,
+- Each outstanding portion waits one second for its ACK before a fresh-PN retransmission,
   with at most eight transmissions. This is not adaptive geographical PTO or
   worker-local congestion control. The existing primary path recovery owns
   congestion accounting. Worker control has bounded I/O deadlines and a

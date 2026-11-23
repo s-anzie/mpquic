@@ -194,7 +194,15 @@ func testExperimentalCloningLive(t *testing.T, dropPacket, failWorker, interrupt
 	if failWorker {
 		require.NoError(t, firstWorker.Close())
 	}
-	n, err := writer.WriteContext(ctx, data)
+	// Exercise a second call after coalesced delivery wakeups from the first.
+	// A stale notification must not complete a new range prematurely.
+	cut := len(data) / 2
+	n, err := writer.WriteContext(ctx, data[:cut])
+	if err == nil {
+		var rest int
+		rest, err = writer.WriteContext(ctx, data[cut:])
+		n += rest
+	}
 	if failWorker {
 		require.Error(t, err)
 		require.Zero(t, n)

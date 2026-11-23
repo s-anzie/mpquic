@@ -801,3 +801,32 @@ three race-enabled repetitions of live transfer, loss, worker failure and close
 tests; experimental root/handshake tests in FIPS mode; vet on root, handshake and
 the example; and executable 64 KiB / 1 MiB laboratory runs passed. No deployment
 or HTTP/3 cloning readiness is inferred from these checks.
+
+## Bounded live packet pipeline
+
+The experimental writer now permits eight outstanding 1,000-byte portions while
+keeping single-packet key export and worker drain serialized. ACK notifications
+are only coalesced wakeups: each portion's delivery is queried from the
+connection-loop-owned pending ledger. Out-of-order completion cannot advance the
+returned byte count beyond the contiguous confirmed prefix. Missing portions are
+retried with fresh packet numbers, without repeating unique-byte flow credit.
+The eight-entry window includes completed portions behind a missing prefix, so
+memory remains bounded during loss and reordering.
+
+An initial loopback run transferred 1 MiB with exact SHA-256 verification in
+499 ms (16.807 Mbit/s), with 525 and 524 worker packets. This is a new development
+host measurement, not a controlled comparison with the September 28.267-second
+run, and not a geographic-network benchmark. Source validation, seamless key
+rotation, worker failover and HTTP/3 integration remain unfinished.
+
+Validation: three race-enabled repetitions of the live experimental scenarios
+passed, including consecutive writes, deliberate packet loss, worker failure and
+concurrent close. The experimental live tests also passed in FIPS mode; vet
+passed. An 8 MiB laboratory transfer verified all bytes (21.852 s, 3.071 Mbit/s,
+4,195 and 4,194 worker packets), exercising history pruning beyond 4,096 packets.
+The full-suite attempt did not finish: `integrationtests/self` was interrupted
+after more than ten minutes, with the captured stack blocked in
+`TestCancelAcceptStream` at `cancelation_test.go:406`. Its cause is not established;
+the full suite must not be reported as passing for this increment.
+Three isolated repetitions of `TestCancelAcceptStream` subsequently passed in
+1.274 s, without changing that test or its timeout.
