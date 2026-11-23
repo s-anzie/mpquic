@@ -1,0 +1,145 @@
+{
+  "application_bytes": 1073741824,
+  "runs_per_mode": 1,
+  "scope": "One physical Linux host, loopback; client+primary in one process; two distinct source worker subprocesses and tmpfs files. No independent physical links.",
+  "timer": "Transfer start to complete client SHA256 verification and EOF; excludes setup, source-file preparation, initial warm-up and path validation.",
+  "results": {
+    "single": {
+      "mode": "single",
+      "bytes": 1073741824,
+      "seconds": 3.78068686,
+      "mbit_per_second": 2272.0566156595155,
+      "mib_per_second": 270.8502549719233,
+      "sha256": "188e43c2f1b607dc07b58ee779b9b58fb176a51d79a7abfa70c80a16947b692c",
+      "client_sockets": [
+        {
+          "Address": "127.0.0.1:58647",
+          "UDPBytes": 1099500049,
+          "Datagrams": 775550
+        }
+      ],
+      "go_version": "go1.26.0",
+      "gomaxprocs": 8
+    },
+    "multipath": {
+      "mode": "multipath",
+      "bytes": 1073741824,
+      "seconds": 4.175020186,
+      "mbit_per_second": 2057.4594155986197,
+      "mib_per_second": 245.268275213077,
+      "sha256": "188e43c2f1b607dc07b58ee779b9b58fb176a51d79a7abfa70c80a16947b692c",
+      "client_sockets": [
+        {
+          "Address": "127.0.0.1:36897",
+          "UDPBytes": 607774350,
+          "Datagrams": 424653
+        },
+        {
+          "Address": "127.0.0.1:43313",
+          "UDPBytes": 491579797,
+          "Datagrams": 345811
+        }
+      ],
+      "go_version": "go1.26.0",
+      "gomaxprocs": 8
+    },
+    "multisource": {
+      "mode": "multisource",
+      "bytes": 1073741824,
+      "seconds": 625.606244607,
+      "mbit_per_second": 13.730576806176408,
+      "mib_per_second": 1.6368123061867248,
+      "sha256": "188e43c2f1b607dc07b58ee779b9b58fb176a51d79a7abfa70c80a16947b692c",
+      "client_sockets": [
+        {
+          "Address": "127.0.0.1:42869",
+          "UDPBytes": 2275541,
+          "Datagrams": 26161
+        },
+        {
+          "Address": "127.0.0.1:52785",
+          "UDPBytes": 556735207,
+          "Datagrams": 536871
+        },
+        {
+          "Address": "127.0.0.1:59091",
+          "UDPBytes": 556735035,
+          "Datagrams": 536871
+        }
+      ],
+      "sources": [
+        {
+          "PathID": 1,
+          "Packets": 536871,
+          "LastKeyEpoch": 12,
+          "KeyRotations": 11
+        },
+        {
+          "PathID": 2,
+          "Packets": 536871,
+          "LastKeyEpoch": 12,
+          "KeyRotations": 11
+        }
+      ],
+      "worker_pids": [
+        3243995,
+        3244120
+      ],
+      "go_version": "go1.26.0",
+      "gomaxprocs": 8
+    }
+  },
+  "multipath_throughput_change_percent": -9.445063938189069,
+  "multisource_duration_vs_single": 165.47422935921227,
+  "multisource_duration_vs_multipath": 149.84508259500905,
+  "multisource_packet_jobs": 1073742,
+  "multisource_retry_jobs": 0,
+  "multisource_mean_elapsed_microseconds_per_job": 582.6411229205899,
+  "cpu_samples": [
+    {
+      "pid": 3243811,
+      "role": "primary_and_client",
+      "sampled_seconds": 530.0321207046509,
+      "average_cpu_cores": 2.449266656281363,
+      "peak_sampled_rss_bytes": 87482368
+    },
+    {
+      "pid": 3243995,
+      "role": "source",
+      "sampled_seconds": 490.02456426620483,
+      "average_cpu_cores": 0.2908221554431743,
+      "peak_sampled_rss_bytes": 16560128
+    },
+    {
+      "pid": 3244120,
+      "role": "source",
+      "sampled_seconds": 490.0245997905731,
+      "average_cpu_cores": 0.29235266976642915,
+      "peak_sampled_rss_bytes": 16150528
+    }
+  ],
+  "profile_followup": {
+    "bytes": 33554432,
+    "separate_from_1gib_measurements": true,
+    "scope": "Primary and client process only; worker CPU not sampled by pprof",
+    "wall_seconds": 18.18,
+    "cpu_sample_seconds": 44.28,
+    "nextPathProbeLossTime_cumulative_percent": 36.02,
+    "Conn_run_cumulative_percent": 82.9,
+    "note": "Cumulative percentages overlap and must not be added."
+  },
+  "findings": [
+    {
+      "evidence": "multipath.go:445 and connection.go:996",
+      "finding": "The connection timer considers every non-abandoned path congestion controller; immediately available pacing yields an immediate deadline without checking whether the connection has pending data on that path. This is a concrete busy-loop candidate consistent with the CPU profile, not an isolated causal speedup measurement."
+    },
+    {
+      "evidence": "experimental_cloning.go:242,243,556-573",
+      "finding": "At most eight 1000-byte chunks await ACK. Each dispatch exports a one-packet key lease over mTLS and waits for its drain receipt before the next dispatch."
+    },
+    {
+      "evidence": "experimental_source_path.go:38 and sys_conn.go:105",
+      "finding": "The source-destination wrapper exposes net.PacketConn, losing OOB/batched UDP capabilities used by the ordinary transport."
+    }
+  ]
+}

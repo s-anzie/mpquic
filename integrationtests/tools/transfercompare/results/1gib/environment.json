@@ -1,0 +1,21 @@
+{
+  "created_unix": 1795433265.665344,
+  "platform": "Linux-7.1.5+kali-amd64-x86_64-with-glibc2.43",
+  "git_revision": "9a7e22e3642021d738b4740ade5fd1cb32712a04",
+  "git_status": "?? integrationtests/tools/transfercompare/\n",
+  "bytes": 1073741824,
+  "initial_load_average": [
+    3.4619140625,
+    2.203125,
+    1.611328125
+  ],
+  "gomaxprocs_environment": null,
+  "measurement": "loopback; client and primary share a process; each source is a distinct subprocess",
+  "binary_sha256": "648bcc9fc3725ce9ef0ad56850b32b3318520b5a09ceba53a8f1728a5acaa690",
+  "logical_cpus": 8,
+  "cpu_model": "Intel(R) Core(TM) i7-8650U CPU @ 1.90GHz",
+  "network": "Linux loopback, no added delay/loss/rate limit",
+  "source_storage": "separate tmpfs files, prepared before timing",
+  "warmup_bytes": 524288,
+  "qlog_enabled": false
+}

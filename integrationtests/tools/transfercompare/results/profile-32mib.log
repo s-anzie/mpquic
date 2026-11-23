@@ -1,0 +1,4 @@
+2026/11/23 12:38:49 connection doesn't allow setting of receive buffer size. Not a *net.UDPConn?. See https://github.com/quic-go/quic-go/wiki/UDP-Buffer-Sizes for details.
+progress mode=multisource received=19154000 elapsed=10s
+EOF
+EOF
