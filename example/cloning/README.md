@@ -7,8 +7,9 @@ the normal QUIC stream receiver. Worker receipts are not delivery proofs: the
 primary waits for authenticated client PATH_ACKs.
 
 The actors run in one process for a reproducible loopback laboratory, using real
-TCP/TLS and UDP sockets. This is not a three-machine deployment test, a socket
-relay, or three independent QUIC downloads.
+TCP/TLS and UDP sockets. This is not a three-machine deployment test or three
+independent QUIC downloads. A separate mTLS channel relays opaque received packets
+and primary-generated validation replies; workers encrypt the data packets.
 
 ## Run
 
@@ -36,22 +37,34 @@ The repository still uses the module name `github.com/quic-go/quic-go`. Run the
 example in this checkout, or use a local module replacement when integrating it
 into another application; the upstream quic-go module does not contain this API.
 
-1. Establish one QUIC connection with `EnableMultipath: true` and sufficient
+1. Establish one QUIC connection with `EnableMultipath: true`,
+   `EnableExperimentalSourceOffers: true` and sufficient
    `MaxPathID` on both endpoints. Do not enable partial-delivery stream resets.
 2. Exchange ordinary traffic first (the example uses 512 KiB) to complete the
    initial key transition. `NewExperimentalCloneWriter` can return
    `ErrExperimentalCloningNotReady`; retry only with a bounded context.
-3. On the client, call `AddPath` and `Probe`. `Path.ID()` identifies each source
-   assignment. Exchange source choices out of band with explicit client consent.
-4. Establish a dedicated TLS 1.3 connection per worker with
+3. On the primary, announce each worker's literal UDP endpoint using
+   `AnnounceExperimentalSource`. Establish a dedicated mutually authenticated
+   TLS 1.3 channel with `ExperimentalSourceRelayALPN`. Call
+   `PrepareExperimentalSource` on the primary and `ServeExperimentalSourceRelay`
+   on the worker, using the same UDP socket that will send cloned data.
+4. On the client, explicitly accept the offer through `AcceptExperimentalSource`
+   with destination policy, then call `ProbeExperimentalSource` with a dedicated
+   client UDP socket. Keep the returned path alive until the transfer ends.
+   Its `ID()` identifies the path. Both challenge/response directions traverse
+   the worker UDP endpoint; validation against the primary is not reused.
+5. Establish another dedicated TLS 1.3 connection per worker with
    `ExperimentalCloningALPN`, certificate-chain validation and client certificates.
    Configure trusted SHA-256 leaf-certificate fingerprints on both sides. Do not
    derive expected fingerprints from the connection being authenticated.
-5. On each worker, call `ServeExperimentalCloneWorker` with its dedicated UDP
+6. On each worker, call `ServeExperimentalCloneWorker` with its dedicated UDP
    socket and an explicit destination allowlist. The example permits exactly the
    associated client's additional-path socket, not an arbitrary address.
-6. On the primary, create one `ExperimentalCloneWriter` for a `SendStream` and
-   the source assignments. `WriteContext` alternates portions across workers and
+7. On the primary, create one `ExperimentalCloneWriter` for a `SendStream` and
+   source assignments containing `SourceID`, `Generation`, `PathID`, the job TLS
+   channel and the worker certificate pin. Both channels must use the same worker
+   identity. Retry readiness until the server has also validated its return path.
+   `WriteContext` alternates portions across workers and
    returns the confirmed prefix length. Close the original stream after a
    successful write so the primary sends FIN. Read any application confirmation
    before closing the writer: **writer Close closes the entire connection**.
@@ -66,11 +79,10 @@ supports concurrent `Close` to interrupt them.
 - **Experimental, private-network use only; not production-ready.** No independent
   security review has been performed. All workers share the connection's trust
   domain and must be trusted with its derived sending keys.
-- No standardized source advertisement, discovery, NAT traversal, endpoint
-  migration or geographic-network validation. Client path establishment initially
-  targets the primary; this lab relies on explicitly trusted worker sources being
-  reachable directly on loopback/private networks. Do not expose it as a general
-  Internet endpoint-discovery mechanism.
+- No standardized source advertisement, automatic NAT traversal, endpoint
+  migration or geographic-network validation. The client directly probes the
+  accepted worker address. The lab uses explicitly trusted loopback endpoints;
+  policy must restrict destinations before any Internet deployment.
 - One clone writer and one send stream per connection, up to eight sources.
   The primary retains and distributes the bytes. Independent source retrieval
   and energy-aware selection remain application work.
@@ -94,21 +106,24 @@ supports concurrent `Close` to interrupt them.
 - **No HTTP/3 integration.** This API writes raw QUIC streams, not HTTP/3 responses
   or QPACK state. Existing HTTP/3 multipath remains separate.
 
-### Source announcements (separate opt-in stage)
+### Source announcements and direct validation
 
 `Config.EnableExperimentalSourceOffers` now permits the primary to publish and
 withdraw literal endpoints through `Conn.AnnounceExperimentalSource`. The client
 can read authenticated proposals with `Conn.ExperimentalSourceOffers`. Both peers
 must opt in; this uses private negotiated QUIC control frames, not application
 streams. Announcements do **not** establish paths, validate workers, or authorize
-network probes. The lab still uses its explicit loopback assignments. See
-`SESSION_CLONING.md` for lifecycle limits and the remaining validation work.
+network probes. The lab follows announcement, explicit acceptance, direct probing
+and writer activation. See `SESSION_CLONING.md` for lifecycle limits.
 The client can call `AcceptExperimentalSource(ctx, id, generation, policy)` with
 an explicit destination policy. The primary reads consent with
 `ExperimentalAcceptedSources(ctx)`. Consent applies only to that generation;
 renewal, withdrawal and expiry invalidate it. The negotiated private extension
-is now version 2 and must match on both peers. Acceptance still performs no
-network probe and is not connected to the clone writer's path assignments.
+is now version 3 and must match on both peers. Acceptance alone performs no
+network probe. `ProbeExperimentalSource` binds the generation to a fresh path and
+validates it. The writer rejects missing, stale, mismatched or unvalidated bindings.
+Renewal/withdrawal of a prepared source or relay failure currently fails closed;
+automatic replacement within the existing connection is not implemented.
 
 ## Verification
 

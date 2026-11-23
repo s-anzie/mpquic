@@ -42,10 +42,13 @@ func TestExperimentalCloneRecordBounds(t *testing.T) {
 	require.Error(t, writeCloneRecord(&buf, make([]byte, 1501)))
 }
 
-func experimentalWorkerTLS(t *testing.T, ctx context.Context) (*tls.Conn, *tls.Conn, [32]byte) {
+func experimentalWorkerTLS(t *testing.T, ctx context.Context, alpn ...string) (*tls.Conn, *tls.Conn, [32]byte) {
 	t.Helper()
 	sc := testdata.GetTLSConfig()
 	sc.ClientAuth, sc.ClientCAs, sc.NextProtos = tls.RequireAndVerifyClientCert, testdata.GetRootCA(), []string{ExperimentalCloningALPN}
+	if len(alpn) != 0 {
+		sc.NextProtos = alpn
+	}
 	cc := &tls.Config{MinVersion: tls.VersionTLS13, Certificates: sc.Certificates, RootCAs: testdata.GetRootCA(), ServerName: "localhost", NextProtos: sc.NextProtos}
 	l, r := net.Pipe()
 	t.Cleanup(func() { l.Close(); r.Close() })
@@ -102,10 +105,26 @@ func TestExperimentalCloningAutomaticKeyRotation(t *testing.T) {
 	testExperimentalCloningLive(t, false, false, false)
 }
 
+func TestExperimentalCloningDirectSources(t *testing.T) {
+	testExperimentalCloningLive(t, false, false, false, false, true)
+}
+
+func TestExperimentalCloningDirectSourcesWorkerFailure(t *testing.T) {
+	testExperimentalCloningLive(t, false, true, false, false, true)
+}
+
+func TestExperimentalCloningDirectSourcesKeyRotation(t *testing.T) {
+	reset := handshake.SetKeyUpdateInterval(20)
+	defer reset()
+	testExperimentalCloningLive(t, false, false, false, true, true)
+}
+
 func testExperimentalCloningLive(t *testing.T, dropPacket, failWorker, interrupt bool, rotation ...bool) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	cfg := &Config{EnableMultipath: true, MaxPathID: 4}
+	direct := len(rotation) > 1 && rotation[1]
+	cfg.EnableExperimentalSourceOffers = direct
 	st := &Transport{Conn: experimentalUDP(t), ConnectionIDLength: 8}
 	defer st.Close()
 	listener, err := st.Listen(testdata.GetTLSConfig(), cfg)
@@ -143,13 +162,39 @@ func testExperimentalCloningLive(t *testing.T, dropPacket, failWorker, interrupt
 			drop = &experimentalDropConn{PacketConn: pc}
 			pc = drop
 		}
-		tr := &Transport{Conn: pc, ConnectionIDLength: 8}
-		defer tr.Close()
-		path, err := client.AddPath(tr)
-		require.NoError(t, err)
-		require.NoError(t, path.Probe(ctx))
 		primaryControl, workerControl, pin := experimentalWorkerTLS(t, ctx)
 		udp := experimentalUDP(t)
+		if direct {
+			udp, err = net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, byte(i+2))})
+			require.NoError(t, err)
+			defer udp.Close()
+		}
+		var path *Path
+		source := ExperimentalCloneSource{Control: primaryControl, CertificateSHA256: pin}
+		if direct {
+			id := uint64(i + 1)
+			address := udp.LocalAddr().(*net.UDPAddr).AddrPort()
+			require.NoError(t, server.AnnounceExperimentalSource(ctx, id, 1, address, time.Minute))
+			relayPrimary, relayWorker, relayPin := experimentalWorkerTLS(t, ctx, ExperimentalSourceRelayALPN)
+			go func() {
+				_ = ServeExperimentalSourceRelay(ctx, relayWorker, relayPin, udp, func(addr netip.AddrPort) bool { return addr == pc.LocalAddr().(*net.UDPAddr).AddrPort() })
+			}()
+			require.NoError(t, server.PrepareExperimentalSource(ctx, id, 1, relayPrimary, relayPin))
+			require.Eventually(t, func() bool {
+				return client.AcceptExperimentalSource(ctx, id, 1, func(o ExperimentalSourceOffer) bool { return o.Address == address }) == nil
+			}, time.Second, time.Millisecond)
+			directPath, err := client.ProbeExperimentalSource(ctx, id, 1, pc.(*net.UDPConn))
+			require.NoError(t, err)
+			defer directPath.Close()
+			path = directPath.path
+			source.SourceID, source.Generation = id, 1
+		} else {
+			tr := &Transport{Conn: pc, ConnectionIDLength: 8}
+			defer tr.Close()
+			path, err = client.AddPath(tr)
+			require.NoError(t, err)
+			require.NoError(t, path.Probe(ctx))
+		}
 		if i == 0 {
 			firstWorker = udp
 			if drop != nil {
@@ -161,10 +206,17 @@ func testExperimentalCloningLive(t *testing.T, dropPacket, failWorker, interrupt
 		go func() {
 			done <- ServeExperimentalCloneWorker(ctx, workerControl, pin, udp, func(addr netip.AddrPort) bool { return addr.Addr().IsLoopback() })
 		}()
-		sources = append(sources, ExperimentalCloneSource{PathID: path.ID(), Control: primaryControl, CertificateSHA256: pin})
+		source.PathID = path.ID()
+		sources = append(sources, source)
 	}
 	stream, err := server.OpenUniStreamSync(ctx)
 	require.NoError(t, err)
+	if direct {
+		bad := append([]ExperimentalCloneSource(nil), sources...)
+		bad[0].SourceID = 999
+		_, err := server.NewExperimentalCloneWriter(ctx, stream, bad)
+		require.ErrorIs(t, err, ErrExperimentalCloningNotReady)
+	}
 	var writer *ExperimentalCloneWriter
 	for {
 		writer, err = server.NewExperimentalCloneWriter(ctx, stream, sources)

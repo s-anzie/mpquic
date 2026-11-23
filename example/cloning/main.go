@@ -90,7 +90,7 @@ func run(ctx context.Context, size int, rotate bool) error {
 	defer serverUDP.Close()
 	st := &quic.Transport{Conn: serverUDP, ConnectionIDLength: 8}
 	defer st.Close()
-	config := &quic.Config{EnableMultipath: true, MaxPathID: 4}
+	config := &quic.Config{EnableMultipath: true, MaxPathID: 4, EnableExperimentalSourceOffers: true}
 	listener, err := st.Listen(&tls.Config{Certificates: []tls.Certificate{primaryCert}, NextProtos: []string{"clone-lab/1"}}, config)
 	if err != nil {
 		return err
@@ -137,21 +137,12 @@ func run(ctx context.Context, size int, rotate bool) error {
 	}
 	fmt.Println("primary warm-up: 524288 bytes (excluded from cloned-transfer statistics)")
 	var sources []quic.ExperimentalCloneSource
-	for range 2 {
+	for i := range 2 {
 		pathUDP, err := udp()
 		if err != nil {
 			return err
 		}
 		defer pathUDP.Close()
-		tr := &quic.Transport{Conn: pathUDP, ConnectionIDLength: 8}
-		defer tr.Close()
-		path, err := client.AddPath(tr)
-		if err != nil {
-			return err
-		}
-		if err := path.Probe(ctx); err != nil {
-			return err
-		}
 		workerUDP, err := udp()
 		if err != nil {
 			return err
@@ -163,6 +154,53 @@ func run(ctx context.Context, size int, rotate bool) error {
 		}
 		defer tcp.Close()
 		destination := pathUDP.LocalAddr().(*net.UDPAddr).AddrPort()
+		id := uint64(i + 1)
+		address := workerUDP.LocalAddr().(*net.UDPAddr).AddrPort()
+		if err := server.AnnounceExperimentalSource(ctx, id, 1, address, time.Hour); err != nil {
+			return err
+		}
+		relayListener, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			return err
+		}
+		defer relayListener.Close()
+		go func() {
+			raw, err := relayListener.Accept()
+			if err != nil {
+				return
+			}
+			tc := tls.Server(raw, &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{workerCert}, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: primaryRoots, NextProtos: []string{quic.ExperimentalSourceRelayALPN}})
+			defer tc.Close()
+			if err := tc.HandshakeContext(ctx); err != nil {
+				return
+			}
+			_ = quic.ServeExperimentalSourceRelay(ctx, tc, primaryPin, workerUDP, func(addr netip.AddrPort) bool { return addr == destination })
+		}()
+		relayDialer := tls.Dialer{Config: &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: workerRoots, Certificates: []tls.Certificate{primaryCert}, ServerName: "localhost", NextProtos: []string{quic.ExperimentalSourceRelayALPN}}}
+		relay, err := relayDialer.DialContext(ctx, "tcp", relayListener.Addr().String())
+		if err != nil {
+			return err
+		}
+		defer relay.Close()
+		if err := server.PrepareExperimentalSource(ctx, id, 1, relay.(*tls.Conn), workerPin); err != nil {
+			return err
+		}
+		for {
+			err = client.AcceptExperimentalSource(ctx, id, 1, func(o quic.ExperimentalSourceOffer) bool { return o.Address == address })
+			if err == nil {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Millisecond):
+			}
+		}
+		path, err := client.ProbeExperimentalSource(ctx, id, 1, pathUDP)
+		if err != nil {
+			return err
+		}
+		defer path.Close()
 		workerErrors := make(chan error, 1)
 		go func() {
 			raw, err := tcp.Accept()
@@ -184,8 +222,8 @@ func run(ctx context.Context, size int, rotate bool) error {
 			return err
 		}
 		defer control.Close()
-		sources = append(sources, quic.ExperimentalCloneSource{PathID: path.ID(), Control: control.(*tls.Conn), CertificateSHA256: workerPin})
-		fmt.Printf("worker path=%d source=%s destination=%s\n", path.ID(), workerUDP.LocalAddr(), destination)
+		sources = append(sources, quic.ExperimentalCloneSource{PathID: path.ID(), SourceID: id, Generation: 1, Control: control.(*tls.Conn), CertificateSHA256: workerPin})
+		fmt.Printf("validated worker source_id=%d path=%d source=%s destination=%s\n", id, path.ID(), workerUDP.LocalAddr(), destination)
 	}
 	stream, err := server.OpenUniStreamSync(ctx)
 	if err != nil {

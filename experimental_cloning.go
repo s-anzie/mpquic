@@ -31,9 +31,10 @@ var ErrExperimentalCloningNotReady = errors.New("experimental cloning requires w
 // CertificateSHA256 is the expected worker leaf fingerprint from trusted policy.
 // The writer takes exclusive ownership of Control on successful construction.
 type ExperimentalCloneSource struct {
-	PathID            uint64
-	Control           *tls.Conn
-	CertificateSHA256 [32]byte
+	PathID               uint64
+	SourceID, Generation uint64
+	Control              *tls.Conn
+	CertificateSHA256    [32]byte
 }
 
 // ExperimentalCloneSourceStats counts locally drained worker packets, including
@@ -57,7 +58,7 @@ func (w *ExperimentalCloneWriter) Stats() []ExperimentalCloneSourceStats {
 
 // ExperimentalCloneWriter sends retained stream portions through trusted workers.
 // It serializes single-packet leases and waits for authenticated QUIC ACKs.
-// This is a private-network prototype: no source advertisement/NAT traversal,
+// This is a private-network prototype: no automatic NAT traversal,
 // transparent worker failover, or HTTP/3 integration. Uncertain coordination
 // closes the WHOLE connection. Do not use in production.
 type ExperimentalCloneWriter struct {
@@ -79,7 +80,9 @@ type ExperimentalCloneWriter struct {
 // NewExperimentalCloneWriter requires the initial key update to have completed;
 // first exchange ordinary stream traffic and retry readiness with a bounded ctx.
 // It supports one writer per server connection, on one caller-owned send stream.
-// Sources must be opted into by the client out of band on a private network.
+// With source offers negotiated, sources must name an accepted generation and
+// its directly validated relay path. Without negotiation, legacy private-network
+// paths still require client consent out of band.
 func (c *Conn) NewExperimentalCloneWriter(ctx context.Context, stream *SendStream, sources []ExperimentalCloneSource) (*ExperimentalCloneWriter, error) {
 	if stream == nil || len(sources) == 0 || len(sources) > 8 {
 		return nil, ErrExperimentalCloningNotReady
@@ -114,6 +117,9 @@ func (c *Conn) NewExperimentalCloneWriter(ctx context.Context, stream *SendStrea
 				return ErrExperimentalCloningNotReady
 			}
 			if _, ok := c.connIDManager.GetConnIDForPath(pathID(s.PathID)); !ok {
+				return ErrExperimentalCloningNotReady
+			}
+			if !c.experimentalSourceReady(s) {
 				return ErrExperimentalCloningNotReady
 			}
 		}
@@ -353,6 +359,9 @@ func (w *ExperimentalCloneWriter) dispatch(ctx context.Context, index int, range
 				return ErrWouldBlock
 			}
 			p := w.conn.multipath.paths[source.PathID]
+			if !w.conn.experimentalSourceReady(source) {
+				return ErrExperimentalSourceOffer
+			}
 			if p.abandoned || !p.serverValidated {
 				return ErrExperimentalCloningNotReady
 			}

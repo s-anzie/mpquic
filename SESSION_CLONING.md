@@ -4,7 +4,9 @@ An **experimental raw-QUIC prototype is now runnable** with
 `go run ./example/cloning`. It uses one live QUIC connection and two worker UDP
 sources. See [the laboratory guide](example/cloning/README.md) before using the
 public experimental API. This is not production-ready, geographically validated,
-or integrated with HTTP/3; full source discovery and distributed key rotation
+or integrated with HTTP/3. Negotiated source offers, direct worker path validation
+and coordinated key rotation are implemented for the experimental API. Worker-local
+recovery, automatic source replacement and geographically distributed validation
 remain unfinished.
 
 > Security correction discovered during C04 preparation: the earlier multipath
@@ -27,13 +29,15 @@ The transport still needs a coordination contract for packet protection, stream
 offsets, acknowledgment routing, and flow control. Applications may provide the
 communication channel, but cannot bypass transport invariants.
 
-This is an experimental project extension, not TLS session resumption, a socket
-proxy, or multiple independent QUIC connections hidden behind an API.
+This is an experimental project extension, not TLS session resumption or multiple
+independent QUIC connections hidden behind an API. Workers encrypt their own data
+packets; opaque received packets and validation replies use a dedicated relay to
+keep receive keys and authoritative QUIC state at the primary.
 The [multipath draft used by this implementation](https://www.ietf.org/archive/id/draft-ietf-quic-multipath-21.html)
 defines client-initiated paths and path-specific packet number spaces, but leaves
 address discovery outside its scope. It does not define our distributed endpoint
-coordination protocol. The source advertisement format and negotiation are still
-to be designed; they must not be presented as standard multipath frames.
+coordination protocol. Our source advertisement and negotiation are private
+extensions; they must not be presented as standard multipath frames.
 
 ## Architecture decision
 
@@ -96,8 +100,8 @@ Never reconstruct an authority with counters reset for an existing connection.
 | C02b | Import primary stream/credit state and account ordinary writes, pre-reserved buffers, and FIN through the authority | Implemented; remote reservations enabled only through the experimental writer |
 | C03a | Bounded content/range ledger connected to live SendStream offsets and completion, partial delivery, retries and cancellation | Implemented as internal local primitives |
 | C03b | Authenticated worker coordination contract, packet-to-byte ACK evidence, control routing and bounded communication queues | In progress: experimental authenticated live dispatch and recovery bridge; worker-local recovery and durable fencing pending |
-| C04 | Secure worker bootstrap and packet protection state, coordinated key updates and global AEAD accounting | In progress: experimental single-packet leases with fail-closed key transitions; seamless distributed key rotation pending |
-| C05 | Negotiated source endpoint advertisement and client validation for different server IPs | Authenticated opt-in source announcement/withdrawal implemented; acceptance, worker provisioning and direct address validation pending |
+| C04 | Secure worker bootstrap and packet protection state, coordinated key updates and global AEAD accounting | Experimental single-packet leases, coordinated local/peer rotation and per-path epoch boundaries implemented; durable worker recovery pending |
+| C05 | Negotiated source endpoint advertisement and client validation for different server IPs | Experimental announcement, consent, direct path validation and writer binding implemented; automatic replacement and geographical deployment testing pending |
 | C06 | Direct multi-server transmission and cross-path retransmission of distinct ranges | Experimental two-source live QUIC transfer and same-path fresh-PN retries implemented; cross-source failover pending |
 | C07 | HTTP/3 integration, three-source transfers, failures, reordered messages, key updates, and performance measurements | Pending |
 
@@ -935,3 +939,65 @@ the passing results above are after its correction. The final loopback lab
 transferred and verified 1,048,576 bytes with `-rotate` in 529 ms (15.853 Mbit/s),
 525 worker packets per source and one observed epoch transition on each source.
 This is a functional measurement, not a controlled throughput comparison.
+
+## Direct source path validation and activation (lot 17)
+
+The experimental lab now establishes paths directly against announced worker
+UDP endpoints. It no longer validates against the primary and then silently
+changes the packet source. Both peers negotiate private source extension version
+3; the acceptance frame additionally carries a path ID (zero means consent only).
+A generation can bind only one fresh, nonzero path, and a path cannot be shared
+between source IDs. The new frame is incompatible with experimental version 2.
+
+The operator establishes two dedicated, mutually authenticated TLS 1.3 channels
+per worker, with expected leaf certificate pins and separate ALPNs:
+
+- `mpquic-clone-lab/1` carries bounded send-key jobs and drain receipts.
+- `mpquic-clone-relay/1` carries opaque UDP datagrams and primary-generated
+  validation replies. Receive keys remain exclusively at the primary.
+
+After `AnnounceExperimentalSource`, the primary calls `PrepareExperimentalSource`
+and the worker runs `ServeExperimentalSourceRelay` on the same UDP socket used by
+`ServeExperimentalCloneWorker`. The client applies explicit destination policy
+through `AcceptExperimentalSource`, then calls `ProbeExperimentalSource` with a
+dedicated UDP socket. That transport pins outgoing and incoming datagrams to the
+accepted literal endpoint. QUIC PATH_CHALLENGE/PATH_RESPONSE traverses the actual
+worker socket in both directions; existing server amplification limits apply.
+The returned handle exposes `ID()` and `Close()`, not migration of path 0.
+
+The primary authenticates relayed packets using the original connection keys.
+Admission checks the relay identity, source generation, consent, expiry and path
+ID before decrypting. Packets from the primary socket cannot validate a bound
+worker path. A 64-packet outgoing queue bounds relay memory; a full queue fails
+closed instead of blocking the QUIC loop on TLS. Records carry at most 1452 bytes
+of UDP payload. Worker destination policy is checked in both directions.
+
+`ExperimentalCloneSource` now includes `SourceID` and `Generation`. With source
+offers negotiated, writer admission requires an accepted binding, the correct
+worker identity on both channels and successful server return-path validation.
+Every dispatch rechecks the generation and expiration. Legacy non-negotiated
+private-network assignments remain available for existing tests and users.
+
+Withdrawal or replacement closes the prepared relay and invalidates the client
+socket; relay failure closes the logical QUIC connection. This is conservative
+revocation, not transparent source replacement. Automatic failover, NAT traversal,
+worker-local recovery, independent worker content retrieval, HTTP/3 cloning and
+geographically distributed deployment testing remain outside this increment.
+The primary relay adds coordination latency and TCP head-of-line blocking; it
+must not be presented as independently operating path controllers.
+
+The runnable example uses the complete announcement/consent/probe/activation flow
+and still supports `-rotate`. Tests additionally use distinct worker loopback IPs
+(`127.0.0.2` and `127.0.0.3`), not just different ports on the primary's IP.
+
+Validation: the final full suite (`go test -p 1 -timeout 90s ./...`), vet,
+three race-enabled repetitions of the source validation/wire/live scenarios,
+and five FIPS repetitions passed. Direct transfers also passed ten race-enabled
+repetitions before the additional rejection tests were added. Negative tests
+cover no probe before consent, an unreachable worker, wrong relay/path/source
+bindings, expiration, distinct ALPNs and certificate pins, and worker failure.
+The lab verified 1,048,576 bytes with rotation (525 packets per worker, one epoch
+transition each); its 1.355-second loopback run is not a geographical benchmark.
+Earlier full-suite attempts had intermittent failures in automatic discovery's
+cloning scenario and HTTP/3 graceful shutdown. Each passed five isolated repeats,
+and the final full run passed; no fix for those timing failures is claimed.

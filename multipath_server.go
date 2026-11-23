@@ -41,7 +41,7 @@ func (c *Conn) retryServerPathValidation(now monotime.Time) error {
 			return err
 		}
 		c.registerPackedShortHeaderPacket(packet, protocol.ECNNon, now)
-		err = c.conn.WriteTo(buf.Data, p.remoteAddr, p.packetInfo)
+		err = c.writeExperimentalPath(id, buf.Data, p.remoteAddr, p.packetInfo)
 		p.serverProbeBytesSent += buf.Len()
 		buf.Release()
 		if err != nil {
@@ -58,7 +58,7 @@ func (c *Conn) retryServerPathValidation(now monotime.Time) error {
 func (c *Conn) nextServerApplicationPath(now monotime.Time) (pathID, protocol.ConnectionID, bool) {
 	ids := []uint64{0}
 	for id, p := range c.multipath.paths {
-		if id != 0 && p.serverValidated && !p.abandoned && p.remoteAddr != nil && p.cloningRecovery == nil {
+		if id != 0 && p.serverValidated && !p.abandoned && p.remoteAddr != nil && p.cloningRecovery == nil && p.experimentalRelay == nil {
 			ids = append(ids, id)
 		}
 	}
@@ -103,7 +103,7 @@ func (c *Conn) writeMultipathApplication(id uint64, tr *Transport, data []byte, 
 		return tr.writePacket(data, c.conn.RemoteAddr(), gsoSize)
 	}
 	path := c.multipath.paths[id]
-	if conn, ok := c.conn.(*sconn); ok && gsoSize != 0 {
+	if conn, ok := c.conn.(*sconn); ok && gsoSize != 0 && path.experimentalRelay == nil {
 		_, err := conn.rawConn.WritePacket(data, path.remoteAddr, path.packetInfo.OOB(), gsoSize, protocol.ECNUnsupported)
 		if err == nil || !isGSOError(err) {
 			return err
@@ -115,7 +115,7 @@ func (c *Conn) writeMultipathApplication(id uint64, tr *Transport, data []byte, 
 		if gsoSize != 0 {
 			n = min(n, int(gsoSize))
 		}
-		if err := c.conn.WriteTo(data[:n], path.remoteAddr, path.packetInfo); err != nil {
+		if err := c.writeExperimentalPath(id, data[:n], path.remoteAddr, path.packetInfo); err != nil {
 			return err
 		}
 		data = data[n:]

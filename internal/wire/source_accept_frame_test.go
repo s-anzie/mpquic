@@ -8,7 +8,7 @@ import (
 )
 
 func TestExperimentalSourceAcceptanceWire(t *testing.T) {
-	f := &ExperimentalSourceAcceptFrame{ID: 1, Generation: 2}
+	f := &ExperimentalSourceAcceptFrame{ID: 1, Generation: 2, PathID: 7}
 	b, err := f.Append(nil, protocol.Version1)
 	require.NoError(t, err)
 	require.EqualValues(t, len(b), f.Length(protocol.Version1))
@@ -26,10 +26,10 @@ func TestExperimentalSourceAcceptanceWire(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, f, got)
 	require.Equal(t, len(b), n+l)
-	for i := 0; i < 16; i++ {
+	for i := 0; i < 24; i++ {
 		_, _, err := parseExperimentalSourceAcceptFrame(b[n : n+i])
 		require.Error(t, err)
 	}
-	_, _, err = parseExperimentalSourceAcceptFrame(make([]byte, 16))
+	_, _, err = parseExperimentalSourceAcceptFrame(make([]byte, 24))
 	require.Error(t, err)
 }

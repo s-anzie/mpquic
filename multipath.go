@@ -79,6 +79,7 @@ type multipathPathState struct {
 	// The peer address and local packet information identify the destination
 	// for server-side application sending and path validation.
 	remoteAddr              net.Addr
+	experimentalRelay       *experimentalSourceRelay
 	packetInfo              packetInfo
 	serverValidated         bool
 	serverChallenge         [8]byte
