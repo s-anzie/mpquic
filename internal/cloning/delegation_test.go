@@ -71,18 +71,18 @@ func TestDelegationPreservesBytesAndAcceptsLatePartialACKs(t *testing.T) {
 func TestDelegationCapacityAndCancellationDoNotRefundCredit(t *testing.T) {
 	a, err := NewAuthority(0)
 	require.NoError(t, err)
-	require.NoError(t, a.BindPrimary(1000, 0))
+	require.NoError(t, a.BindPrimary(MaxPendingDelegations+1, 0))
 	p, err := a.GrantPath(1, "a")
 	require.NoError(t, err)
 	var first *Attempt
 	for i := range MaxPendingDelegations {
-		attempt, err := a.DelegatePrimary(p, 0, uint64(i), 1000, []byte{1}, 1000)
+		attempt, err := a.DelegatePrimary(p, 0, uint64(i), MaxPendingDelegations+1, []byte{1}, MaxPendingDelegations+1)
 		require.NoError(t, err)
 		if i == 0 {
 			first = attempt
 		}
 	}
-	_, err = a.DelegatePrimary(p, 0, MaxPendingDelegations, 1000, []byte{1}, 1000)
+	_, err = a.DelegatePrimary(p, 0, MaxPendingDelegations, MaxPendingDelegations+1, []byte{1}, MaxPendingDelegations+1)
 	require.ErrorIs(t, err, ErrLimit)
 	offset, total, _, err := a.PrimaryState(0)
 	require.NoError(t, err)
@@ -98,10 +98,10 @@ func TestDelegationCapacityAndCancellationDoNotRefundCredit(t *testing.T) {
 	_, totalAfter, _, err := a.PrimaryState(0)
 	require.NoError(t, err)
 	require.Equal(t, total, totalAfter)
-	_, err = a.DelegatePrimary(p, 0, offset, 1000, []byte{1}, 1000)
+	_, err = a.DelegatePrimary(p, 0, offset, MaxPendingDelegations+1, []byte{1}, MaxPendingDelegations+1)
 	require.ErrorIs(t, err, ErrStream, "cancellation must also reject new assignments")
 	// A separate live stream can use freed retention capacity, not refunded credit.
-	attempt, err := a.DelegatePrimary(p, 3, 0, 1000, []byte{2}, 1000)
+	attempt, err := a.DelegatePrimary(p, 3, 0, MaxPendingDelegations+1, []byte{2}, MaxPendingDelegations+1)
 	require.NoError(t, err)
 	a.Close()
 	require.Zero(t, a.delegatedBytes)

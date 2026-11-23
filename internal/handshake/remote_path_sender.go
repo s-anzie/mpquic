@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/net/ipv4"
+
 	"github.com/quic-go/quic-go/internal/protocol"
 )
 
@@ -16,10 +18,33 @@ type remoteDatagramWriter interface {
 	WriteToUDP([]byte, *net.UDPAddr) (int, error)
 }
 
+type remoteUDPBatchWriter struct {
+	*net.UDPConn
+	batch *ipv4.PacketConn
+}
+
+func (w *remoteUDPBatchWriter) writeBatch(packets [][]byte, addr *net.UDPAddr) error {
+	messages := make([]ipv4.Message, len(packets))
+	for i, p := range packets {
+		messages[i] = ipv4.Message{Buffers: [][]byte{p}, Addr: addr}
+	}
+	for len(messages) > 0 {
+		n, err := w.batch.WriteBatch(messages, 0)
+		if err != nil {
+			return err
+		}
+		if n <= 0 || n > len(messages) {
+			return io.ErrShortWrite
+		}
+		messages = messages[n:]
+	}
+	return nil
+}
+
 // RemotePathSender serializes protected UDP writes with worker-side quiescence.
 // It requires a dedicated socket and an already validated destination. The
 // caller still supplies congestion, pacing, anti-amplification and loss control.
-// This is not wired into Conn or the worker control protocol yet. Do not copy it.
+// The experimental worker runtime provides these controls. Do not copy it.
 type RemotePathSender struct {
 	mu      sync.Mutex
 	self    *RemotePathSender
@@ -61,7 +86,7 @@ func NewRemotePathSender(p *RemoteSealer, conn *net.UDPConn, addr *net.UDPAddr) 
 	}
 	copyAddr := *addr
 	copyAddr.IP = append(net.IP(nil), addr.IP...)
-	s := &RemotePathSender{conn: conn, addr: &copyAddr, current: p, path: p.path,
+	s := &RemotePathSender{conn: &remoteUDPBatchWriter{UDPConn: conn, batch: ipv4.NewPacketConn(conn)}, addr: &copyAddr, current: p, path: p.path,
 		epoch: p.epoch, end: p.end, cid: p.cid, version: p.version, suite: p.suite.ID,
 		hpHash: sha256.Sum256(p.keys.hp[:])}
 	p.owned = true
@@ -72,6 +97,12 @@ func NewRemotePathSender(p *RemoteSealer, conn *net.UDPConn, addr *net.UDPAddr) 
 // WritePayload consumes a number even if the UDP write fails. A successful
 // return only means the local socket accepted the datagram, never client ACK.
 func (s *RemotePathSender) WritePayload(payload []byte) (protocol.PacketNumber, error) {
+	return s.WritePayloads([][]byte{payload})
+}
+
+// WritePayloads commits a paced group with one bounded UDP batch. Every number
+// is consumed before the syscall; partial writes never permit number reuse.
+func (s *RemotePathSender) WritePayloads(payloads [][]byte) (protocol.PacketNumber, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.self != s || s.closed || s.current == nil {
@@ -79,7 +110,19 @@ func (s *RemotePathSender) WritePayload(payload []byte) (protocol.PacketNumber, 
 	}
 	p := s.current
 	p.mu.Lock()
-	packet, pn, err := p.sealPacketLocked(payload)
+	packets := make([][]byte, len(payloads))
+	var pn protocol.PacketNumber
+	var err error
+	if len(payloads) == 0 || len(payloads) > 64 {
+		p.mu.Unlock()
+		return 0, ErrRemoteSealer
+	}
+	for i, payload := range payloads {
+		packets[i], pn, err = p.sealPacketLocked(payload)
+		if err != nil {
+			break
+		}
+	}
 	p.mu.Unlock()
 	if err != nil {
 		return pn, err
@@ -87,9 +130,19 @@ func (s *RemotePathSender) WritePayload(payload []byte) (protocol.PacketNumber, 
 	if err := s.conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		return pn, err
 	}
-	n, err := s.conn.WriteToUDP(packet, s.addr)
-	if err == nil && n != len(packet) {
-		err = io.ErrShortWrite
+	if batch, ok := s.conn.(interface {
+		writeBatch([][]byte, *net.UDPAddr) error
+	}); ok && len(packets) > 1 {
+		return pn, batch.writeBatch(packets, s.addr)
+	}
+	for _, packet := range packets {
+		n, e := s.conn.WriteToUDP(packet, s.addr)
+		if e != nil {
+			return pn, e
+		}
+		if n != len(packet) {
+			return pn, io.ErrShortWrite
+		}
 	}
 	return pn, err
 }

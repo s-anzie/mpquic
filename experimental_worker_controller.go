@@ -65,6 +65,8 @@ type ExperimentalWorkerController struct {
 	ptoCount              uint
 	probePermit           bool
 	closed                bool
+	batchRemaining        int
+	batchPacketSize       int
 	changed               chan struct{}
 	events                chan struct{}
 	stats                 ExperimentalWorkerControllerSnapshot
@@ -83,9 +85,12 @@ func NewExperimentalWorkerController(maxDatagramSize int, maxACKDelay time.Durat
 }
 
 func (c *ExperimentalWorkerController) Events() <-chan struct{} { return c.events }
-func (c *ExperimentalWorkerController) notify() {
+func (c *ExperimentalWorkerController) wakeSenders() {
 	close(c.changed)
 	c.changed = make(chan struct{})
+}
+func (c *ExperimentalWorkerController) notify() {
+	c.wakeSenders()
 	select {
 	case c.events <- struct{}{}:
 	default:
@@ -95,21 +100,41 @@ func (c *ExperimentalWorkerController) notify() {
 // Run drives worker-local loss and PTO timers and closes the controller on exit.
 // It should be invoked once. Close also stops Run and wakes all waiting senders.
 func (c *ExperimentalWorkerController) Run(ctx context.Context) {
-	ticker := time.NewTicker(time.Millisecond)
-	defer ticker.Stop()
+	timer := time.NewTimer(time.Hour)
+	timer.Stop()
+	defer timer.Stop()
 	defer c.Close()
 	for {
+		c.mu.Lock()
+		if c.closed {
+			c.mu.Unlock()
+			return
+		}
+		now := monotime.Now()
+		c.tick(now)
+		deadline := c.ptoAt
+		lossDelay := max(time.Millisecond, max(c.rtt.LatestRTT(), c.rtt.SmoothedRTT())*9/8)
+		for _, p := range c.packets {
+			if !p.acked && !p.lost && p.pn < c.largestACK {
+				at := p.sent.Add(lossDelay)
+				if deadline.IsZero() || at < deadline {
+					deadline = at
+				}
+			}
+		}
+		wake := c.changed
+		c.mu.Unlock()
+		var timeout <-chan time.Time
+		if !deadline.IsZero() {
+			timer.Reset(max(time.Microsecond, deadline.Sub(now)))
+			timeout = timer.C
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			c.mu.Lock()
-			if c.closed {
-				c.mu.Unlock()
-				return
-			}
-			c.tick(monotime.Now())
-			c.mu.Unlock()
+		case <-wake:
+			timer.Stop()
+		case <-timeout:
 		}
 	}
 }
@@ -146,12 +171,12 @@ func (c *ExperimentalWorkerController) WaitSend(ctx context.Context, size int) e
 			return err
 		}
 		c.mu.Lock()
-		if c.closed {
+		if c.closed || c.batchRemaining > 0 && size > c.batchPacketSize {
 			c.mu.Unlock()
 			return context.Canceled
 		}
 		now := monotime.Now()
-		if c.reserved == 0 && c.room() && (c.flight+protocol.ByteCount(size) <= c.cc.GetCongestionWindow() || c.probePermit) && c.cc.HasPacingBudget(now) {
+		if c.reserved == 0 && c.room() && (c.batchRemaining > 0 || c.flight+protocol.ByteCount(size) <= c.cc.GetCongestionWindow() || c.probePermit) && c.cc.HasPacingBudget(now) {
 			c.reserved = protocol.ByteCount(size)
 			c.probePermit = false
 			c.mu.Unlock()
@@ -159,7 +184,7 @@ func (c *ExperimentalWorkerController) WaitSend(ctx context.Context, size int) e
 		}
 		wake := c.changed
 		delay := time.Hour
-		if c.reserved == 0 && c.room() && (c.flight+protocol.ByteCount(size) <= c.cc.GetCongestionWindow() || c.probePermit) {
+		if c.reserved == 0 && c.room() && (c.batchRemaining > 0 || c.flight+protocol.ByteCount(size) <= c.cc.GetCongestionWindow() || c.probePermit) {
 			delay = max(time.Millisecond, c.cc.TimeUntilSend(c.flight).Sub(now))
 		}
 		c.mu.Unlock()
@@ -173,6 +198,75 @@ func (c *ExperimentalWorkerController) WaitSend(ctx context.Context, size int) e
 		case <-timer.C:
 		}
 	}
+}
+
+// trySend allows the send lane to flush an already paced UDP batch before
+// waiting. No unsent batch is held while waiting for network feedback.
+func (c *ExperimentalWorkerController) trySend(size int) (bool, error) {
+	if size <= 0 || protocol.ByteCount(size) > c.mtu {
+		return false, ErrExperimentalWorkerController
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed || c.batchRemaining > 0 && size > c.batchPacketSize {
+		return false, context.Canceled
+	}
+	if c.reserved == 0 && c.room() && (c.batchRemaining > 0 || c.flight+protocol.ByteCount(size) <= c.cc.GetCongestionWindow() || c.probePermit) && c.cc.HasPacingBudget(monotime.Now()) {
+		c.reserved = protocol.ByteCount(size)
+		c.probePermit = false
+		return true, nil
+	}
+	return false, nil
+}
+
+// reserveBatch runs before the primary exports keys. Congestion credit for the
+// whole finite window must already be available: waiting for ACKs while holding
+// an epoch lease would deadlock a peer-initiated key update. Pacing still applies
+// to each packet. A cwnd reduction can affect only the next reservation, just as
+// it cannot recall a datagram batch already committed to a socket.
+func (c *ExperimentalWorkerController) reserveBatch(ctx context.Context, maximum, packetSize int) (int, error) {
+	if maximum < 1 || maximum > experimentalCloneBatchPackets || packetSize <= 0 || protocol.ByteCount(packetSize) > c.mtu {
+		return 0, ErrExperimentalWorkerController
+	}
+	for {
+		c.mu.Lock()
+		if c.closed || c.reserved != 0 || c.batchRemaining != 0 {
+			c.mu.Unlock()
+			return 0, ErrExperimentalWorkerController
+		}
+		available := int(max(0, c.cc.GetCongestionWindow()-c.flight) / protocol.ByteCount(packetSize))
+		room := experimentalWorkerHistoryLimit - len(c.packets)
+		for _, p := range c.packets {
+			if (p.acked || p.lost) && !p.pending {
+				room++
+			}
+		}
+		if c.probePermit {
+			available = max(available, 1)
+		}
+		if available > 0 && room > 0 {
+			n := min(maximum, available, room)
+			c.batchRemaining = n
+			c.batchPacketSize = packetSize
+			c.probePermit = false
+			c.mu.Unlock()
+			return n, nil
+		}
+		wake := c.changed
+		c.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-wake:
+		}
+	}
+}
+
+func (c *ExperimentalWorkerController) cancelBatch() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.batchRemaining = 0
+	c.notify()
 }
 func (c *ExperimentalWorkerController) CancelSend() {
 	c.mu.Lock()
@@ -202,13 +296,16 @@ func (c *ExperimentalWorkerController) OnSent(pn int64, size int, now monotime.T
 	c.flight += protocol.ByteCount(size)
 	c.reserved = 0
 	c.highest = protocol.PacketNumber(pn)
+	if c.batchRemaining > 0 {
+		c.batchRemaining--
+	}
 	c.lastSent = now
 	c.packets = append(c.packets, experimentalWorkerPacket{pn: protocol.PacketNumber(pn), size: protocol.ByteCount(size), sent: now})
 	c.stats.Sent++
 	if c.ptoAt.IsZero() {
 		c.armPTO(now)
 	}
-	c.notify()
+	c.wakeSenders()
 	return nil
 }
 
@@ -279,11 +376,29 @@ func (c *ExperimentalWorkerController) OnACK(ranges []ExperimentalWorkerACKRange
 			p.size = 0
 		}
 	}
+	// Acknowledged records can never produce another retry or congestion
+	// credit. Preserve monotonic PN guards, but remove their hot-loop cost.
+	live := c.packets[:0]
+	for _, p := range c.packets {
+		if !p.acked {
+			live = append(live, p)
+		}
+	}
+	clear(c.packets[len(live):])
+	c.packets = live
 	c.ptoCount = 0
 	c.probePermit = false
 	c.detectLoss(now)
 	c.armPTO(now)
-	c.notify()
+	pending := false
+	for _, p := range c.packets {
+		pending = pending || p.pending
+	}
+	if pending {
+		c.notify()
+	} else {
+		c.wakeSenders()
+	}
 	return nil
 }
 

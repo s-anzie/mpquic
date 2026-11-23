@@ -1,0 +1,608 @@
+EOF
+EOF
+progress mode=multisource received=473827000 elapsed=10s
+progress mode=multisource received=473827000 elapsed=20s
+progress mode=multisource received=473827000 elapsed=30s
+progress mode=multisource received=473827000 elapsed=40s
+SIGQUIT: quit
+PC=0x40f542 m=0 sigcode=0
+
+goroutine 19 gp=0xd377b7be3c0 m=0 mp=0xb86800 [running]:
+internal/runtime/maps.(*Map).putSlotSmallFast64(0xd377fc8b200?, 0xd377fc8b209?, 0x4?, 0xd377fdad288?)
+	/home/bradley/.local/go1.26.0/src/internal/runtime/maps/runtime_fast64.go:167 +0x62 fp=0xd377fdad1f0 sp=0xd377fdad1b8 pc=0x40f542
+runtime.mapassign_fast64(0x7e9180, 0xd377b784a20, 0x0)
+	/home/bradley/.local/go1.26.0/src/internal/runtime/maps/runtime_fast64.go:222 +0xe6 fp=0xd377fdad260 sp=0xd377fdad1f0 pc=0x4130e6
+github.com/quic-go/quic-go/internal/handshake.(*updatableAEAD).Open(0xd377b7b8000, {0xd377fc8b20b?, 0x2?, 0xc?}, {0xd377fc8b20b?, 0xd377b490940?, 0xd377b7981f8?}, 0xd377fdad470?, 0x45af36, 0x1, ...)
+	/home/bradley/Projets/mycelium-quic/internal/handshake/updatable_aead.go:254 +0x1c5 fp=0xd377fdad308 sp=0xd377fdad260 pc=0x69a685
+github.com/quic-go/quic-go.(*packetUnpacker).unpackShortHeaderPacket(0x410ac5?, {0x87a860, 0xd377b7b8000}, 0x352e1cade48, {0xd377fc8b200, 0x23, 0x5ac})
+	/home/bradley/Projets/mycelium-quic/packet_unpacker.go:167 +0x206 fp=0xd377fdad3a8 sp=0xd377fdad308 pc=0x6ee2e6
+github.com/quic-go/quic-go.(*packetUnpacker).UnpackShortHeaderForPath(0xd377b78c120, 0x878b80?, 0x352e1cade48, {0xd377fc8b200, 0x23, 0x5ac})
+	/home/bradley/Projets/mycelium-quic/packet_unpacker.go:125 +0xad fp=0xd377fdad3f8 sp=0xd377fdad3a8 pc=0x6edccd
+github.com/quic-go/quic-go.(*Conn).handleShortHeaderPacket(0xd377b798008, {0xd377fb530c0, {0x878b80, 0xd377b573ad0}, 0x352e1cade48, {0xd377fc8b200, 0x23, 0x5ac}, 0x1, {{{0x0, ...}, ...}, ...}, ...}, ...)
+	/home/bradley/Projets/mycelium-quic/connection.go:1325 +0x5e6 fp=0xd377fdad870 sp=0xd377fdad3f8 pc=0x6ae4a6
+github.com/quic-go/quic-go.(*Conn).handleOnePacket(0xd377b798008, {0xd377fb530c0, {0x878b80, 0xd377b573ad0}, 0x352e1cade48, {0xd377fc8b200, 0x23, 0x5ac}, 0x1, {{{0x0, ...}, ...}, ...}, ...}, ...)
+	/home/bradley/Projets/mycelium-quic/connection.go:1259 +0xb19 fp=0xd377fdadb80 sp=0xd377fdad870 pc=0x6adad9
+github.com/quic-go/quic-go.(*Conn).handlePackets(0xd377b798008)
+	/home/bradley/Projets/mycelium-quic/connection.go:1128 +0x35e fp=0xd377fdadd58 sp=0xd377fdadb80 pc=0x6ace1e
+github.com/quic-go/quic-go.(*Conn).run(0xd377b798008)
+	/home/bradley/Projets/mycelium-quic/connection.go:708 +0x4c9 fp=0xd377fdadfc8 sp=0xd377fdadd58 pc=0x6aa409
+github.com/quic-go/quic-go.(*baseServer).handleInitialImpl.gowrap1()
+	/home/bradley/Projets/mycelium-quic/server.go:858 +0x17 fp=0xd377fdadfe0 sp=0xd377fdadfc8 pc=0x6ff397
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377fdadfe8 sp=0xd377fdadfe0 pc=0x48c961
+created by github.com/quic-go/quic-go.(*baseServer).handleInitialImpl in goroutine 10
+	/home/bradley/Projets/mycelium-quic/server.go:858 +0x1125
+
+goroutine 1 gp=0xd377b45a1e0 m=nil [select]:
+runtime.gopark(0xd377f664c28?, 0x3?, 0x70?, 0x0?, 0xd377f664c02?)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:462 +0xce fp=0xd377f664a98 sp=0xd377f664a78 pc=0x4858ce
+runtime.selectgo(0xd377f664c28, 0xd377f664bfc, 0xd377e8bc700?, 0x0, 0xd377b71a000?, 0x1)
+	/home/bradley/.local/go1.26.0/src/runtime/select.go:351 +0xaa5 fp=0xd377f664bc8 sp=0xd377f664a98 pc=0x4646c5
+github.com/quic-go/quic-go.waitCloneTick({0x87ab60, 0xd377b46c230}, {0x87aaf0, 0xd377b78e000}, 0xd377f664e20?)
+	/home/bradley/Projets/mycelium-quic/experimental_cloning.go:415 +0x109 fp=0xd377f664c80 sp=0xd377f664bc8 pc=0x6c7ae9
+github.com/quic-go/quic-go.(*ExperimentalCloneWriter).chooseSource(0xd377b7ae100, {0x87ab60, 0xd377b46c230}, 0x0)
+	/home/bradley/Projets/mycelium-quic/experimental_failover.go:227 +0x2ef fp=0xd377f664e30 sp=0xd377f664c80 pc=0x6cdc4f
+github.com/quic-go/quic-go.(*ExperimentalCloneWriter).sendRange(0xd377b7ae100, {0x87ab60, 0xd377b46c230}, 0xb78790?, 0x73ae4)
+	/home/bradley/Projets/mycelium-quic/experimental_failover.go:235 +0x52 fp=0xd377f664e90 sp=0xd377f664e30 pc=0x6ce372
+github.com/quic-go/quic-go.(*ExperimentalCloneWriter).writeContent(0xd377b7ae100, {0x87ab60, 0xd377b46c230}, {0x0, 0x0, 0x0}, 0xd377ba3a500, 0x0, 0x40000000)
+	/home/bradley/Projets/mycelium-quic/experimental_cloning.go:313 +0x9f6 fp=0xd377f665178 sp=0xd377f664e90 pc=0x6c6296
+github.com/quic-go/quic-go.(*ExperimentalCloneWriter).WriteObjectRange(0xd377b7ae100, {0x87ab60, 0xd377b46c230}, {{0xc9, 0x15, 0xb9, 0x3a, 0xbe, 0x7f, 0x70, ...}, ...}, ...)
+	/home/bradley/Projets/mycelium-quic/experimental_cloning.go:217 +0x279 fp=0xd377f665218 sp=0xd377f665178 pc=0x6c5839
+github.com/quic-go/quic-go.(*ExperimentalCloneWriter).WriteObject(...)
+	/home/bradley/Projets/mycelium-quic/experimental_cloning.go:205
+main.run({0x87ab60, 0xd377b46c230}, {0x7fff670f5f7c, 0xb}, 0x40000000)
+	/home/bradley/Projets/mycelium-quic/integrationtests/tools/transfercompare/main.go:425 +0x19c5 fp=0xd377f665ec0 sp=0xd377f665218 pc=0x71fa85
+main.main()
+	/home/bradley/Projets/mycelium-quic/integrationtests/tools/transfercompare/main.go:103 +0x1ea fp=0xd377f665f48 sp=0xd377f665ec0 pc=0x71da8a
+runtime.main()
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:290 +0x2d5 fp=0xd377f665fe0 sp=0xd377f665f48 pc=0x451155
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377f665fe8 sp=0xd377f665fe0 pc=0x48c961
+
+goroutine 2 gp=0xd377b45ad20 m=nil [force gc (idle)]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:462 +0xce fp=0xd377b4b6fa8 sp=0xd377b4b6f88 pc=0x4858ce
+runtime.goparkunlock(...)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:468
+runtime.forcegchelper()
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:375 +0xb3 fp=0xd377b4b6fe0 sp=0xd377b4b6fa8 pc=0x451473
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377b4b6fe8 sp=0xd377b4b6fe0 pc=0x48c961
+created by runtime.init.7 in goroutine 1
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:363 +0x1a
+
+goroutine 3 gp=0xd377b45b2c0 m=nil [GC sweep wait]:
+runtime.gopark(0x1?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:462 +0xce fp=0xd377b4b7788 sp=0xd377b4b7768 pc=0x4858ce
+runtime.goparkunlock(...)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:468
+runtime.bgsweep(0xd377b4e0000)
+	/home/bradley/.local/go1.26.0/src/runtime/mgcsweep.go:324 +0x151 fp=0xd377b4b77c8 sp=0xd377b4b7788 pc=0x43b251
+runtime.gcenable.gowrap1()
+	/home/bradley/.local/go1.26.0/src/runtime/mgc.go:214 +0x17 fp=0xd377b4b77e0 sp=0xd377b4b77c8 pc=0x42c7f7
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377b4b77e8 sp=0xd377b4b77e0 pc=0x48c961
+created by runtime.gcenable in goroutine 1
+	/home/bradley/.local/go1.26.0/src/runtime/mgc.go:214 +0x66
+
+goroutine 4 gp=0xd377b45b4a0 m=nil [GC scavenge wait]:
+runtime.gopark(0xb85560?, 0x872000?, 0x0?, 0x0?, 0x0?)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:462 +0xce fp=0xd377b4b7f78 sp=0xd377b4b7f58 pc=0x4858ce
+runtime.goparkunlock(...)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:468
+runtime.(*scavengerState).park(0xb85560)
+	/home/bradley/.local/go1.26.0/src/runtime/mgcscavenge.go:425 +0x49 fp=0xd377b4b7fa8 sp=0xd377b4b7f78 pc=0x438cc9
+runtime.bgscavenge(0xd377b4e0000)
+	/home/bradley/.local/go1.26.0/src/runtime/mgcscavenge.go:658 +0x59 fp=0xd377b4b7fc8 sp=0xd377b4b7fa8 pc=0x439259
+runtime.gcenable.gowrap2()
+	/home/bradley/.local/go1.26.0/src/runtime/mgc.go:215 +0x17 fp=0xd377b4b7fe0 sp=0xd377b4b7fc8 pc=0x42c7b7
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377b4b7fe8 sp=0xd377b4b7fe0 pc=0x48c961
+created by runtime.gcenable in goroutine 1
+	/home/bradley/.local/go1.26.0/src/runtime/mgc.go:215 +0xa5
+
+goroutine 5 gp=0xd377b45ba40 m=nil [GOMAXPROCS updater (idle)]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:462 +0xce fp=0xd377b4b8788 sp=0xd377b4b8768 pc=0x4858ce
+runtime.goparkunlock(...)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:468
+runtime.updateMaxProcsGoroutine()
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:7095 +0xe7 fp=0xd377b4b87e0 sp=0xd377b4b8788 pc=0x45fa07
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377b4b87e8 sp=0xd377b4b87e0 pc=0x48c961
+created by runtime.defaultGOMAXPROCSUpdateEnable in goroutine 1
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:7083 +0x37
+
+goroutine 6 gp=0xd377b4f61e0 m=nil [finalizer wait]:
+runtime.gopark(0x460a55?, 0x1c8?, 0xe0?, 0xea?, 0xd377b4b6601?)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:462 +0xce fp=0xd377b4b6620 sp=0xd377b4b6600 pc=0x4858ce
+runtime.runFinalizers()
+	/home/bradley/.local/go1.26.0/src/runtime/mfinal.go:210 +0x107 fp=0xd377b4b67e0 sp=0xd377b4b6620 pc=0x42b767
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377b4b67e8 sp=0xd377b4b67e0 pc=0x48c961
+created by runtime.createfing in goroutine 1
+	/home/bradley/.local/go1.26.0/src/runtime/mfinal.go:172 +0x3d
+
+goroutine 7 gp=0xd377b4f63c0 m=nil [cleanup wait]:
+runtime.gopark(0x7f3270438c00?, 0xd377b4b8f90?, 0x75?, 0x7?, 0x7f3270438c00?)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:462 +0xce fp=0xd377b4b8f68 sp=0xd377b4b8f48 pc=0x4858ce
+runtime.goparkunlock(...)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:468
+runtime.(*cleanupQueue).dequeue(0xb85760)
+	/home/bradley/.local/go1.26.0/src/runtime/mcleanup.go:522 +0xd4 fp=0xd377b4b8fa0 sp=0xd377b4b8f68 pc=0x4285b4
+runtime.runCleanups()
+	/home/bradley/.local/go1.26.0/src/runtime/mcleanup.go:718 +0x45 fp=0xd377b4b8fe0 sp=0xd377b4b8fa0 pc=0x428c25
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377b4b8fe8 sp=0xd377b4b8fe0 pc=0x48c961
+created by runtime.(*cleanupQueue).createGs in goroutine 1
+	/home/bradley/.local/go1.26.0/src/runtime/mcleanup.go:672 +0xa5
+
+goroutine 8 gp=0xd377b4f6780 m=nil [IO wait]:
+runtime.gopark(0xd377f285000?, 0xd377b4c4a20?, 0x92?, 0x82?, 0xd377b4c4b08?)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:462 +0xce fp=0xd377b4c49d0 sp=0xd377b4c49b0 pc=0x4858ce
+runtime.netpollblock(0x80?, 0x876b00?, 0x0?)
+	/home/bradley/.local/go1.26.0/src/runtime/netpoll.go:575 +0xf7 fp=0xd377b4c4a08 sp=0xd377b4c49d0 pc=0x449c97
+internal/poll.runtime_pollWait(0x7f3271f72000, 0x72)
+	/home/bradley/.local/go1.26.0/src/runtime/netpoll.go:351 +0x85 fp=0xd377b4c4a28 sp=0xd377b4c4a08 pc=0x484aa5
+internal/poll.(*pollDesc).wait(0xd377b5a4080?, 0x493f01?, 0x0)
+	/home/bradley/.local/go1.26.0/src/internal/poll/fd_poll_runtime.go:84 +0x27 fp=0xd377b4c4a50 sp=0xd377b4c4a28 pc=0x4c9007
+internal/poll.(*pollDesc).waitRead(...)
+	/home/bradley/.local/go1.26.0/src/internal/poll/fd_poll_runtime.go:89
+internal/poll.(*FD).RawRead(0xd377b5a4080, 0xd377e038ed0)
+	/home/bradley/.local/go1.26.0/src/internal/poll/fd_unix.go:710 +0x125 fp=0xd377b4c4ab0 sp=0xd377b4c4a50 pc=0x4cc4e5
+net.(*rawConn).Read(0xd377b4580a8, 0x8?)
+	/home/bradley/.local/go1.26.0/src/net/rawconn.go:44 +0x36 fp=0xd377b4c4ae8 sp=0xd377b4c4ab0 pc=0x5658d6
+golang.org/x/net/internal/socket.(*syscaller).recvmmsg(0xd377b8f24c8, {0x879ea0?, 0xd377b4580a8?}, {0xd377f285000?, 0x871ed8?, 0x0?}, 0xd377b7883c0?)
+	/home/bradley/go/pkg/mod/golang.org/x/net@v0.56.0/internal/socket/mmsghdr_unix.go:120 +0x70 fp=0xd377b4c4b18 sp=0xd377b4c4ae8 pc=0x6880f0
+golang.org/x/net/internal/socket.(*Conn).recvMsgs(0xd377b4d6a40, {0xd377b5d4008, 0x8, 0x8}, 0x0)
+	/home/bradley/go/pkg/mod/golang.org/x/net@v0.56.0/internal/socket/rawconn_mmsg.go:24 +0x165 fp=0xd377b4c4bd8 sp=0xd377b4c4b18 pc=0x688c65
+golang.org/x/net/internal/socket.(*Conn).RecvMsgs(...)
+	/home/bradley/go/pkg/mod/golang.org/x/net@v0.56.0/internal/socket/socket.go:268
+golang.org/x/net/ipv4.(*payloadHandler).ReadBatch(0xd377b5c00b0, {0xd377b5d4008?, 0x8185a0?, 0x5?}, 0xd377f439040?)
+	/home/bradley/go/pkg/mod/golang.org/x/net@v0.56.0/ipv4/batch.go:80 +0x57 fp=0xd377b4c4c48 sp=0xd377b4c4bd8 pc=0x68a657
+main.(*countedUDP).ReadBatch(0xd377b4d6a60, {0xd377b5d4008, 0x8, 0x8?}, 0x0?)
+	/home/bradley/Projets/mycelium-quic/integrationtests/tools/transfercompare/main.go:45 +0x2c fp=0xd377b4c4c80 sp=0xd377b4c4c48 pc=0x71d78c
+github.com/quic-go/quic-go.(*oobConn).ReadPacket(0xd377b4ea4e0)
+	/home/bradley/Projets/mycelium-quic/sys_conn_oob.go:160 +0x7a8 fp=0xd377b4c4e10 sp=0xd377b4c4c80 pc=0x7078e8
+github.com/quic-go/quic-go.(*Transport).listen(0xd377b5d2000, {0x87f3d8, 0xd377b4ea4e0})
+	/home/bradley/Projets/mycelium-quic/transport.go:552 +0x7a fp=0xd377b4c4f80 sp=0xd377b4c4e10 pc=0x70aa9a
+github.com/quic-go/quic-go.(*Transport).init.func1.1()
+	/home/bradley/Projets/mycelium-quic/transport.go:427 +0x65 fp=0xd377b4c4fe0 sp=0xd377b4c4f80 pc=0x709d85
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377b4c4fe8 sp=0xd377b4c4fe0 pc=0x48c961
+created by github.com/quic-go/quic-go.(*Transport).init.func1 in goroutine 1
+	/home/bradley/Projets/mycelium-quic/transport.go:425 +0x405
+
+goroutine 9 gp=0xd377b4f6960 m=nil [select]:
+runtime.gopark(0xd377b4b9ed8?, 0x3?, 0x0?, 0x0?, 0xd377b4b9e82?)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:462 +0xce fp=0xd377b4b9cd8 sp=0xd377b4b9cb8 pc=0x4858ce
+runtime.selectgo(0xd377b4b9ed8, 0xd377b4b9e7c, 0x0?, 0x0, 0x0?, 0x1)
+	/home/bradley/.local/go1.26.0/src/runtime/select.go:351 +0xaa5 fp=0xd377b4b9e08 sp=0xd377b4b9cd8 pc=0x4646c5
+github.com/quic-go/quic-go.(*Transport).runSendQueue(0xd377b5d2000)
+	/home/bradley/Projets/mycelium-quic/transport.go:465 +0xf5 fp=0xd377b4b9fc8 sp=0xd377b4b9e08 pc=0x70a195
+github.com/quic-go/quic-go.(*Transport).init.func1.gowrap1()
+	/home/bradley/Projets/mycelium-quic/transport.go:433 +0x17 fp=0xd377b4b9fe0 sp=0xd377b4b9fc8 pc=0x709cf7
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377b4b9fe8 sp=0xd377b4b9fe0 pc=0x48c961
+created by github.com/quic-go/quic-go.(*Transport).init.func1 in goroutine 1
+	/home/bradley/Projets/mycelium-quic/transport.go:433 +0x445
+
+goroutine 10 gp=0xd377b4f6b40 m=nil [select]:
+runtime.gopark(0xd377b5abf90?, 0x2?, 0x0?, 0x0?, 0xd377b5abeac?)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:462 +0xce fp=0xd377ba04d00 sp=0xd377ba04ce0 pc=0x4858ce
+runtime.selectgo(0xd377ba04f90, 0xd377b5abea8, 0xd377b784030?, 0x0, 0xd377b704600?, 0x1)
+	/home/bradley/.local/go1.26.0/src/runtime/select.go:351 +0xaa5 fp=0xd377ba04e30 sp=0xd377ba04d00 pc=0x4646c5
+github.com/quic-go/quic-go.(*baseServer).run(0xd377b5d2240)
+	/home/bradley/Projets/mycelium-quic/server.go:300 +0x10f fp=0xd377ba04fc8 sp=0xd377ba04e30 pc=0x6fb82f
+github.com/quic-go/quic-go.newServer.gowrap1()
+	/home/bradley/Projets/mycelium-quic/server.go:286 +0x17 fp=0xd377ba04fe0 sp=0xd377ba04fc8 pc=0x6fb6f7
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377ba04fe8 sp=0xd377ba04fe0 pc=0x48c961
+created by github.com/quic-go/quic-go.newServer in goroutine 1
+	/home/bradley/Projets/mycelium-quic/server.go:286 +0x525
+
+goroutine 11 gp=0xd377b4f6d20 m=nil [select]:
+runtime.gopark(0xd377b4b2e88?, 0x5?, 0x0?, 0x0?, 0xd377b4b2da6?)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:462 +0xce fp=0xd377b516bf0 sp=0xd377b516bd0 pc=0x4858ce
+runtime.selectgo(0xd377b516e88, 0xd377b4b2d9c, 0x0?, 0x0, 0x0?, 0x1)
+	/home/bradley/.local/go1.26.0/src/runtime/select.go:351 +0xaa5 fp=0xd377b516d20 sp=0xd377b516bf0 pc=0x4646c5
+github.com/quic-go/quic-go.(*baseServer).runSendQueue(0xd377b5d2240)
+	/home/bradley/Projets/mycelium-quic/server.go:313 +0x19a fp=0xd377b516fc8 sp=0xd377b516d20 pc=0x6fbb3a
+github.com/quic-go/quic-go.newServer.gowrap2()
+	/home/bradley/Projets/mycelium-quic/server.go:287 +0x17 fp=0xd377b516fe0 sp=0xd377b516fc8 pc=0x6fb6b7
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377b516fe8 sp=0xd377b516fe0 pc=0x48c961
+created by github.com/quic-go/quic-go.newServer in goroutine 1
+	/home/bradley/Projets/mycelium-quic/server.go:287 +0x567
+
+goroutine 12 gp=0xd377b4f70e0 m=nil [IO wait]:
+runtime.gopark(0xd377ba87a00?, 0xd377b4c6a20?, 0x92?, 0x82?, 0xd377b4c6b08?)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:462 +0xce fp=0xd377b4c69d0 sp=0xd377b4c69b0 pc=0x4858ce
+runtime.netpollblock(0x80?, 0x876b00?, 0x0?)
+	/home/bradley/.local/go1.26.0/src/runtime/netpoll.go:575 +0xf7 fp=0xd377b4c6a08 sp=0xd377b4c69d0 pc=0x449c97
+internal/poll.runtime_pollWait(0x7f3271f71e00, 0x72)
+	/home/bradley/.local/go1.26.0/src/runtime/netpoll.go:351 +0x85 fp=0xd377b4c6a28 sp=0xd377b4c6a08 pc=0x484aa5
+internal/poll.(*pollDesc).wait(0xd377b5a4200?, 0x493f01?, 0x0)
+	/home/bradley/.local/go1.26.0/src/internal/poll/fd_poll_runtime.go:84 +0x27 fp=0xd377b4c6a50 sp=0xd377b4c6a28 pc=0x4c9007
+internal/poll.(*pollDesc).waitRead(...)
+	/home/bradley/.local/go1.26.0/src/internal/poll/fd_poll_runtime.go:89
+internal/poll.(*FD).RawRead(0xd377b5a4200, 0xd377f388440)
+	/home/bradley/.local/go1.26.0/src/internal/poll/fd_unix.go:710 +0x125 fp=0xd377b4c6ab0 sp=0xd377b4c6a50 pc=0x4cc4e5
+net.(*rawConn).Read(0xd377b4580e0, 0x8?)
+	/home/bradley/.local/go1.26.0/src/net/rawconn.go:44 +0x36 fp=0xd377b4c6ae8 sp=0xd377b4c6ab0 pc=0x5658d6
+golang.org/x/net/internal/socket.(*syscaller).recvmmsg(0xd377b8f2e58, {0x879ea0?, 0xd377b4580e0?}, {0xd377ba87a00?, 0x871ed8?, 0x0?}, 0x871ed8?)
+	/home/bradley/go/pkg/mod/golang.org/x/net@v0.56.0/internal/socket/mmsghdr_unix.go:120 +0x70 fp=0xd377b4c6b18 sp=0xd377b4c6ae8 pc=0x6880f0
+golang.org/x/net/internal/socket.(*Conn).recvMsgs(0xd377b4d6ac0, {0xd377b5d4308, 0x8, 0x8}, 0x0)
+	/home/bradley/go/pkg/mod/golang.org/x/net@v0.56.0/internal/socket/rawconn_mmsg.go:24 +0x165 fp=0xd377b4c6bd8 sp=0xd377b4c6b18 pc=0x688c65
+golang.org/x/net/internal/socket.(*Conn).RecvMsgs(...)
+	/home/bradley/go/pkg/mod/golang.org/x/net@v0.56.0/internal/socket/socket.go:268
+golang.org/x/net/ipv4.(*payloadHandler).ReadBatch(0xd377b5c0100, {0xd377b5d4308?, 0x8185a0?, 0x5?}, 0xd377ece92c0?)
+	/home/bradley/go/pkg/mod/golang.org/x/net@v0.56.0/ipv4/batch.go:80 +0x57 fp=0xd377b4c6c48 sp=0xd377b4c6bd8 pc=0x68a657
+main.(*countedUDP).ReadBatch(0xd377b4d6ae0, {0xd377b5d4308, 0x8, 0x0?}, 0x0?)
+	/home/bradley/Projets/mycelium-quic/integrationtests/tools/transfercompare/main.go:45 +0x2c fp=0xd377b4c6c80 sp=0xd377b4c6c48 pc=0x71d78c
+github.com/quic-go/quic-go.(*oobConn).ReadPacket(0xd377b4ea5a0)
+	/home/bradley/Projets/mycelium-quic/sys_conn_oob.go:160 +0x7a8 fp=0xd377b4c6e10 sp=0xd377b4c6c80 pc=0x7078e8
+github.com/quic-go/quic-go.(*Transport).listen(0xd377b5d2360, {0x87f3d8, 0xd377b4ea5a0})
+	/home/bradley/Projets/mycelium-quic/transport.go:552 +0x7a fp=0xd377b4c6f80 sp=0xd377b4c6e10 pc=0x70aa9a
+github.com/quic-go/quic-go.(*Transport).init.func1.1()
+	/home/bradley/Projets/mycelium-quic/transport.go:427 +0x65 fp=0xd377b4c6fe0 sp=0xd377b4c6f80 pc=0x709d85
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377b4c6fe8 sp=0xd377b4c6fe0 pc=0x48c961
+created by github.com/quic-go/quic-go.(*Transport).init.func1 in goroutine 1
+	/home/bradley/Projets/mycelium-quic/transport.go:425 +0x405
+
+goroutine 13 gp=0xd377b4f72c0 m=nil [select]:
+runtime.gopark(0xd377b4b3ed8?, 0x3?, 0x0?, 0x0?, 0xd377b4b3e82?)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:462 +0xce fp=0xd377b512cd8 sp=0xd377b512cb8 pc=0x4858ce
+runtime.selectgo(0xd377b512ed8, 0xd377b4b3e7c, 0x0?, 0x0, 0x0?, 0x1)
+	/home/bradley/.local/go1.26.0/src/runtime/select.go:351 +0xaa5 fp=0xd377b512e08 sp=0xd377b512cd8 pc=0x4646c5
+github.com/quic-go/quic-go.(*Transport).runSendQueue(0xd377b5d2360)
+	/home/bradley/Projets/mycelium-quic/transport.go:465 +0xf5 fp=0xd377b512fc8 sp=0xd377b512e08 pc=0x70a195
+github.com/quic-go/quic-go.(*Transport).init.func1.gowrap1()
+	/home/bradley/Projets/mycelium-quic/transport.go:433 +0x17 fp=0xd377b512fe0 sp=0xd377b512fc8 pc=0x709cf7
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377b512fe8 sp=0xd377b512fe0 pc=0x48c961
+created by github.com/quic-go/quic-go.(*Transport).init.func1 in goroutine 1
+	/home/bradley/Projets/mycelium-quic/transport.go:433 +0x445
+
+goroutine 14 gp=0xd377b4f7860 m=nil [runnable]:
+runtime.mapIterNext(0xd377fe17ca0?)
+	/home/bradley/.local/go1.26.0/src/runtime/map.go:168 +0x25 fp=0xd377fe17c58 sp=0xd377fe17c50 pc=0x424365
+github.com/quic-go/quic-go/internal/ackhandler.(*ReceivedPacketHandler).GetAlarmTimeout(...)
+	/home/bradley/Projets/mycelium-quic/internal/ackhandler/received_packet_handler.go:124
+github.com/quic-go/quic-go.(*Conn).maybeResetTimer(0xd377b5f4008)
+	/home/bradley/Projets/mycelium-quic/connection.go:986 +0x145 fp=0xd377fe17d10 sp=0xd377fe17c58 pc=0x6abc45
+github.com/quic-go/quic-go.(*Conn).run(0xd377b5f4008)
+	/home/bradley/Projets/mycelium-quic/connection.go:682 +0x46e fp=0xd377fe17f80 sp=0xd377fe17d10 pc=0x6aa3ae
+github.com/quic-go/quic-go.(*Transport).doDial.func1()
+	/home/bradley/Projets/mycelium-quic/transport.go:333 +0x3a fp=0xd377fe17fe0 sp=0xd377fe17f80 pc=0x70971a
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377fe17fe8 sp=0xd377fe17fe0 pc=0x48c961
+created by github.com/quic-go/quic-go.(*Transport).doDial in goroutine 1
+	/home/bradley/Projets/mycelium-quic/transport.go:332 +0x737
+
+goroutine 50 gp=0xd377b4f7a40 m=nil [GC worker (idle)]:
+runtime.gopark(0x14a63d0c953df?, 0x3?, 0xa8?, 0xc?, 0x0?)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:462 +0xce fp=0xd377b4b3740 sp=0xd377b4b3720 pc=0x4858ce
+runtime.gcBgMarkWorker(0xd377b71a230)
+	/home/bradley/.local/go1.26.0/src/runtime/mgc.go:1791 +0xeb fp=0xd377b4b37c8 sp=0xd377b4b3740 pc=0x42f0cb
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/home/bradley/.local/go1.26.0/src/runtime/mgc.go:1695 +0x17 fp=0xd377b4b37e0 sp=0xd377b4b37c8 pc=0x42efb7
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377b4b37e8 sp=0xd377b4b37e0 pc=0x48c961
+created by runtime.gcBgMarkStartWorkers in goroutine 19
+	/home/bradley/.local/go1.26.0/src/runtime/mgc.go:1695 +0x105
+
+goroutine 16 gp=0xd377b4f7c20 m=nil [runnable]:
+syscall.Syscall(0x2e, 0x7, 0xd377b4c9ad0, 0x0)
+	/home/bradley/.local/go1.26.0/src/syscall/syscall_linux.go:74 +0x25 fp=0xd377b4c9a70 sp=0xd377b4c9a10 pc=0x4b0c85
+syscall.sendmsg(0xd377b4c9b08?, 0x422e8a?, 0x7f32b8b676d8?)
+	/home/bradley/.local/go1.26.0/src/syscall/zsyscall_linux_amd64.go:1563 +0x2a fp=0xd377b4c9ab0 sp=0xd377b4c9a70 pc=0x4b08ca
+syscall.sendmsgN(0x894f?, {0xd377fb19800?, 0x23, 0x0?}, {0xd377b47a840?, 0x18, 0x7ffff80000000000?}, 0x4?, 0x0?, 0x0)
+	/home/bradley/.local/go1.26.0/src/syscall/syscall_linux.go:834 +0x119 fp=0xd377b4c9b28 sp=0xd377b4c9ab0 pc=0x4ad9b9
+syscall.SendmsgN(0x7?, {0xd377fb19800?, 0x23?, 0x5ac?}, {0xd377b47a840?, 0x18?, 0x40?}, {0x877280?, 0xd377fed9420?}, 0x0)
+	/home/bradley/.local/go1.26.0/src/syscall/syscall_unix.go:409 +0xbd fp=0xd377b4c9b88 sp=0xd377b4c9b28 pc=0x4ae35d
+internal/poll.(*FD).WriteMsg(0xd377b5a4200, {0xd377fb19800, 0x23, 0x5ac}, {0xd377b47a840, 0x18, 0x40}, {0x877280, 0xd377fed9420})
+	/home/bradley/.local/go1.26.0/src/internal/poll/fd_unix.go:525 +0x210 fp=0xd377b4c9c48 sp=0xd377b4c9b88 pc=0x4cbb70
+net.(*netFD).writeMsg(0xd377b5a4200, {0xd377fb19800?, 0x7f32703ed828?, 0x7f32703efc68?}, {0xd377b47a840?, 0x101000000000000?, 0x7f32b8b6d1a0?}, {0x877280?, 0xd377fed9420?})
+	/home/bradley/.local/go1.26.0/src/net/fd_posix.go:133 +0x3e fp=0xd377b4c9cc0 sp=0xd377b4c9c48 pc=0x5572be
+net.(*UDPConn).writeMsg(0xd377b4580d8, {0xd377fb19800, 0x23, 0x5ac}, {0xd377b47a840, 0x18, 0x40}, 0x1?)
+	/home/bradley/.local/go1.26.0/src/net/udpsock_posix.go:176 +0xca fp=0xd377b4c9d18 sp=0xd377b4c9cc0 pc=0x56cdea
+net.(*UDPConn).WriteMsgUDP(0xd377b4580d8, {0xd377fb19800?, 0x0?, 0xd377b4c9ee0?}, {0xd377b47a840?, 0xd377b4c9f58?, 0x2?}, 0xd377b4ffc20)
+	/home/bradley/.local/go1.26.0/src/net/udpsock.go:259 +0x45 fp=0xd377b4c9d98 sp=0xd377b4c9d18 pc=0x56b645
+github.com/quic-go/quic-go.(*oobConn).WritePacket(0xd377b4ea5a0, {0xd377fb19800, 0x23, 0x5ac}, {0x878b80, 0xd377b4ffc20}, {0xd377b47a840?, 0xd377b4c9e70?, 0x494f06?}, 0x0, ...)
+	/home/bradley/Projets/mycelium-quic/sys_conn_oob.go:253 +0x102 fp=0xd377b4c9de8 sp=0xd377b4c9d98 pc=0x707ca2
+github.com/quic-go/quic-go.(*sconn).writePacket(0xd377b490580, {0xd377fb19800, 0x23, 0x5ac}, {0x878b80, 0xd377b4ffc20}, {0xd377b47a840, 0x0, 0x40}, 0x0, ...)
+	/home/bradley/Projets/mycelium-quic/send_conn.go:95 +0x7a fp=0xd377b4c9e58 sp=0xd377b4c9de8 pc=0x6f6fda
+github.com/quic-go/quic-go.(*sconn).Write(0xd377b490580, {0xd377fb19800, 0x23, 0x5ac}, 0x0, 0x1)
+	/home/bradley/Projets/mycelium-quic/send_conn.go:74 +0x7e fp=0xd377b4c9ef0 sp=0xd377b4c9e58 pc=0x6f6d1e
+github.com/quic-go/quic-go.(*sendQueue).Run(0xd377b490640)
+	/home/bradley/Projets/mycelium-quic/send_queue.go:95 +0x1ad fp=0xd377b4c9fb0 sp=0xd377b4c9ef0 pc=0x6f77ad
+github.com/quic-go/quic-go.(*Conn).run.func3()
+	/home/bradley/Projets/mycelium-quic/connection.go:640 +0x25 fp=0xd377b4c9fe0 sp=0xd377b4c9fb0 pc=0x6ab2c5
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377b4c9fe8 sp=0xd377b4c9fe0 pc=0x48c961
+created by github.com/quic-go/quic-go.(*Conn).run in goroutine 14
+	/home/bradley/Projets/mycelium-quic/connection.go:639 +0x22f
+
+goroutine 35 gp=0xd377b7be1e0 m=nil [select]:
+runtime.gopark(0xd377b7c9738?, 0x2?, 0x0?, 0x0?, 0xd377b7c96c4?)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:462 +0xce fp=0xd377b7c9558 sp=0xd377b7c9538 pc=0x4858ce
+runtime.selectgo(0xd377b7c9738, 0xd377b7c96c0, 0x0?, 0x1, 0x0?, 0x1)
+	/home/bradley/.local/go1.26.0/src/runtime/select.go:351 +0xaa5 fp=0xd377b7c9688 sp=0xd377b7c9558 pc=0x4646c5
+os/exec.(*Cmd).watchCtx(0xd377b596000, 0xd377b71a1c0)
+	/home/bradley/.local/go1.26.0/src/os/exec/exec.go:797 +0xb1 fp=0xd377b7c97c0 sp=0xd377b7c9688 pc=0x639fb1
+os/exec.(*Cmd).Start.gowrap2()
+	/home/bradley/.local/go1.26.0/src/os/exec/exec.go:783 +0x1b fp=0xd377b7c97e0 sp=0xd377b7c97c0 pc=0x639c7b
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377b7c97e8 sp=0xd377b7c97e0 pc=0x48c961
+created by os/exec.(*Cmd).Start in goroutine 1
+	/home/bradley/.local/go1.26.0/src/os/exec/exec.go:783 +0x8f5
+
+goroutine 21 gp=0xd377b7be780 m=nil [runnable]:
+runtime.gopark(0xd377b513f58?, 0x2?, 0x0?, 0x40?, 0xd377b513f2c?)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:462 +0xce fp=0xd377b513dc0 sp=0xd377b513da0 pc=0x4858ce
+runtime.selectgo(0xd377b513f58, 0xd377b513f28, 0x27?, 0x0, 0x105a1?, 0x1)
+	/home/bradley/.local/go1.26.0/src/runtime/select.go:351 +0xaa5 fp=0xd377b513ef0 sp=0xd377b513dc0 pc=0x4646c5
+github.com/quic-go/quic-go.(*sendQueue).Run(0xd377b796100)
+	/home/bradley/Projets/mycelium-quic/send_queue.go:88 +0x114 fp=0xd377b513fb0 sp=0xd377b513ef0 pc=0x6f7714
+github.com/quic-go/quic-go.(*Conn).run.func3()
+	/home/bradley/Projets/mycelium-quic/connection.go:640 +0x25 fp=0xd377b513fe0 sp=0xd377b513fb0 pc=0x6ab2c5
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377b513fe8 sp=0xd377b513fe0 pc=0x48c961
+created by github.com/quic-go/quic-go.(*Conn).run in goroutine 19
+	/home/bradley/Projets/mycelium-quic/connection.go:639 +0x22f
+
+goroutine 51 gp=0xd377b9a0000 m=nil [GC worker (idle)]:
+runtime.gopark(0x14a6350c8fcdb?, 0x1?, 0xfc?, 0x55?, 0x0?)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:462 +0xce fp=0xd377b4b2740 sp=0xd377b4b2720 pc=0x4858ce
+runtime.gcBgMarkWorker(0xd377b71a230)
+	/home/bradley/.local/go1.26.0/src/runtime/mgc.go:1791 +0xeb fp=0xd377b4b27c8 sp=0xd377b4b2740 pc=0x42f0cb
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/home/bradley/.local/go1.26.0/src/runtime/mgc.go:1695 +0x17 fp=0xd377b4b27e0 sp=0xd377b4b27c8 pc=0x42efb7
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377b4b27e8 sp=0xd377b4b27e0 pc=0x48c961
+created by runtime.gcBgMarkStartWorkers in goroutine 19
+	/home/bradley/.local/go1.26.0/src/runtime/mgc.go:1695 +0x105
+
+goroutine 52 gp=0xd377b9a01e0 m=nil [GC worker (idle)]:
+runtime.gopark(0x14a63d0cf0fb4?, 0x1?, 0xcf?, 0x98?, 0x0?)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:462 +0xce fp=0xd377b4b9740 sp=0xd377b4b9720 pc=0x4858ce
+runtime.gcBgMarkWorker(0xd377b71a230)
+	/home/bradley/.local/go1.26.0/src/runtime/mgc.go:1791 +0xeb fp=0xd377b4b97c8 sp=0xd377b4b9740 pc=0x42f0cb
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/home/bradley/.local/go1.26.0/src/runtime/mgc.go:1695 +0x17 fp=0xd377b4b97e0 sp=0xd377b4b97c8 pc=0x42efb7
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377b4b97e8 sp=0xd377b4b97e0 pc=0x48c961
+created by runtime.gcBgMarkStartWorkers in goroutine 19
+	/home/bradley/.local/go1.26.0/src/runtime/mgc.go:1695 +0x105
+
+goroutine 53 gp=0xd377b9a03c0 m=nil [GC worker (idle)]:
+runtime.gopark(0x14a63d0c892eb?, 0x3?, 0x6a?, 0x79?, 0x0?)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:462 +0xce fp=0xd377b7c2740 sp=0xd377b7c2720 pc=0x4858ce
+runtime.gcBgMarkWorker(0xd377b71a230)
+	/home/bradley/.local/go1.26.0/src/runtime/mgc.go:1791 +0xeb fp=0xd377b7c27c8 sp=0xd377b7c2740 pc=0x42f0cb
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/home/bradley/.local/go1.26.0/src/runtime/mgc.go:1695 +0x17 fp=0xd377b7c27e0 sp=0xd377b7c27c8 pc=0x42efb7
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377b7c27e8 sp=0xd377b7c27e0 pc=0x48c961
+created by runtime.gcBgMarkStartWorkers in goroutine 19
+	/home/bradley/.local/go1.26.0/src/runtime/mgc.go:1695 +0x105
+
+goroutine 54 gp=0xd377b9a05a0 m=nil [GC worker (idle)]:
+runtime.gopark(0x14a63d0cfc6d4?, 0x3?, 0x3b?, 0x82?, 0x0?)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:462 +0xce fp=0xd377b7c2f40 sp=0xd377b7c2f20 pc=0x4858ce
+runtime.gcBgMarkWorker(0xd377b71a230)
+	/home/bradley/.local/go1.26.0/src/runtime/mgc.go:1791 +0xeb fp=0xd377b7c2fc8 sp=0xd377b7c2f40 pc=0x42f0cb
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/home/bradley/.local/go1.26.0/src/runtime/mgc.go:1695 +0x17 fp=0xd377b7c2fe0 sp=0xd377b7c2fc8 pc=0x42efb7
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377b7c2fe8 sp=0xd377b7c2fe0 pc=0x48c961
+created by runtime.gcBgMarkStartWorkers in goroutine 19
+	/home/bradley/.local/go1.26.0/src/runtime/mgc.go:1695 +0x105
+
+goroutine 55 gp=0xd377b9a0780 m=nil [GC worker (idle)]:
+runtime.gopark(0x14a5db44b0b0d?, 0x3?, 0x9e?, 0x4b?, 0x0?)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:462 +0xce fp=0xd377b7c3740 sp=0xd377b7c3720 pc=0x4858ce
+runtime.gcBgMarkWorker(0xd377b71a230)
+	/home/bradley/.local/go1.26.0/src/runtime/mgc.go:1791 +0xeb fp=0xd377b7c37c8 sp=0xd377b7c3740 pc=0x42f0cb
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/home/bradley/.local/go1.26.0/src/runtime/mgc.go:1695 +0x17 fp=0xd377b7c37e0 sp=0xd377b7c37c8 pc=0x42efb7
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377b7c37e8 sp=0xd377b7c37e0 pc=0x48c961
+created by runtime.gcBgMarkStartWorkers in goroutine 19
+	/home/bradley/.local/go1.26.0/src/runtime/mgc.go:1695 +0x105
+
+goroutine 56 gp=0xd377b9a0960 m=nil [GC worker (idle)]:
+runtime.gopark(0x14a63d0cf179b?, 0xd377b9a2a00?, 0x1c?, 0xa?, 0x0?)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:462 +0xce fp=0xd377b7c3f40 sp=0xd377b7c3f20 pc=0x4858ce
+runtime.gcBgMarkWorker(0xd377b71a230)
+	/home/bradley/.local/go1.26.0/src/runtime/mgc.go:1791 +0xeb fp=0xd377b7c3fc8 sp=0xd377b7c3f40 pc=0x42f0cb
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/home/bradley/.local/go1.26.0/src/runtime/mgc.go:1695 +0x17 fp=0xd377b7c3fe0 sp=0xd377b7c3fc8 pc=0x42efb7
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377b7c3fe8 sp=0xd377b7c3fe0 pc=0x48c961
+created by runtime.gcBgMarkStartWorkers in goroutine 19
+	/home/bradley/.local/go1.26.0/src/runtime/mgc.go:1695 +0x105
+
+goroutine 57 gp=0xd377b9a0b40 m=nil [GC worker (idle)]:
+runtime.gopark(0x14a5abe030788?, 0x1?, 0xde?, 0xea?, 0x0?)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:462 +0xce fp=0xd377b7c4740 sp=0xd377b7c4720 pc=0x4858ce
+runtime.gcBgMarkWorker(0xd377b71a230)
+	/home/bradley/.local/go1.26.0/src/runtime/mgc.go:1791 +0xeb fp=0xd377b7c47c8 sp=0xd377b7c4740 pc=0x42f0cb
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/home/bradley/.local/go1.26.0/src/runtime/mgc.go:1695 +0x17 fp=0xd377b7c47e0 sp=0xd377b7c47c8 pc=0x42efb7
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377b7c47e8 sp=0xd377b7c47e0 pc=0x48c961
+created by runtime.gcBgMarkStartWorkers in goroutine 19
+	/home/bradley/.local/go1.26.0/src/runtime/mgc.go:1695 +0x105
+
+goroutine 38 gp=0xd377b7bf2c0 m=nil [IO wait]:
+runtime.gopark(0xd377dfb0608?, 0xd377b5149b0?, 0x92?, 0x82?, 0xd377b514a98?)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:462 +0xce fp=0xd377b514960 sp=0xd377b514940 pc=0x4858ce
+runtime.netpollblock(0x80?, 0x876b00?, 0x0?)
+	/home/bradley/.local/go1.26.0/src/runtime/netpoll.go:575 +0xf7 fp=0xd377b514998 sp=0xd377b514960 pc=0x449c97
+internal/poll.runtime_pollWait(0x7f3271f71c00, 0x72)
+	/home/bradley/.local/go1.26.0/src/runtime/netpoll.go:351 +0x85 fp=0xd377b5149b8 sp=0xd377b514998 pc=0x484aa5
+internal/poll.(*pollDesc).wait(0xd377ba0c000?, 0x419e01?, 0x0)
+	/home/bradley/.local/go1.26.0/src/internal/poll/fd_poll_runtime.go:84 +0x27 fp=0xd377b5149e0 sp=0xd377b5149b8 pc=0x4c9007
+internal/poll.(*pollDesc).waitRead(...)
+	/home/bradley/.local/go1.26.0/src/internal/poll/fd_poll_runtime.go:89
+internal/poll.(*FD).RawRead(0xd377ba0c000, 0xd377f11f6c0)
+	/home/bradley/.local/go1.26.0/src/internal/poll/fd_unix.go:710 +0x125 fp=0xd377b514a40 sp=0xd377b5149e0 pc=0x4cc4e5
+net.(*rawConn).Read(0xd377b700038, 0x40?)
+	/home/bradley/.local/go1.26.0/src/net/rawconn.go:44 +0x36 fp=0xd377b514a78 sp=0xd377b514a40 pc=0x5658d6
+golang.org/x/net/internal/socket.(*syscaller).recvmmsg(0xd377f0c0ca8, {0x879ea0?, 0xd377b700038?}, {0xd377dfb0608?, 0x871ed8?, 0x0?}, 0x40d?)
+	/home/bradley/go/pkg/mod/golang.org/x/net@v0.56.0/internal/socket/mmsghdr_unix.go:120 +0x70 fp=0xd377b514aa8 sp=0xd377b514a78 pc=0x6880f0
+golang.org/x/net/internal/socket.(*Conn).recvMsgs(0xd377b7880c0, {0xd377b6a0008, 0x40, 0x40}, 0x0)
+	/home/bradley/go/pkg/mod/golang.org/x/net@v0.56.0/internal/socket/rawconn_mmsg.go:24 +0x165 fp=0xd377b514b68 sp=0xd377b514aa8 pc=0x688c65
+golang.org/x/net/internal/socket.(*Conn).RecvMsgs(...)
+	/home/bradley/go/pkg/mod/golang.org/x/net@v0.56.0/internal/socket/socket.go:268
+golang.org/x/net/ipv4.(*payloadHandler).ReadBatch(0xd377b78edd0, {0xd377b6a0008?, 0xd377b6be600?, 0x40d?}, 0x5ac?)
+	/home/bradley/go/pkg/mod/golang.org/x/net@v0.56.0/ipv4/batch.go:80 +0x57 fp=0xd377b514bd8 sp=0xd377b514b68 pc=0x68a657
+main.(*countedUDP).ReadBatch(0xd377b7880e0, {0xd377b6a0008, 0x40, 0x0?}, 0xd377fa88b10?)
+	/home/bradley/Projets/mycelium-quic/integrationtests/tools/transfercompare/main.go:45 +0x2c fp=0xd377b514c10 sp=0xd377b514bd8 pc=0x71d78c
+github.com/quic-go/quic-go.(*experimentalSourceOOB).ReadBatch(0xd377b60c540, {0xd377b6a0008, 0x40, 0x40}, 0x0)
+	/home/bradley/Projets/mycelium-quic/experimental_source_oob.go:67 +0x66 fp=0xd377b514c80 sp=0xd377b514c10 pc=0x6cea86
+github.com/quic-go/quic-go.(*oobConn).ReadPacket(0xd377b5c6d80)
+	/home/bradley/Projets/mycelium-quic/sys_conn_oob.go:160 +0x7a8 fp=0xd377b514e10 sp=0xd377b514c80 pc=0x7078e8
+github.com/quic-go/quic-go.(*Transport).listen(0xd377b760240, {0x87f3d8, 0xd377b5c6d80})
+	/home/bradley/Projets/mycelium-quic/transport.go:552 +0x7a fp=0xd377b514f80 sp=0xd377b514e10 pc=0x70aa9a
+github.com/quic-go/quic-go.(*Transport).init.func1.1()
+	/home/bradley/Projets/mycelium-quic/transport.go:427 +0x65 fp=0xd377b514fe0 sp=0xd377b514f80 pc=0x709d85
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377b514fe8 sp=0xd377b514fe0 pc=0x48c961
+created by github.com/quic-go/quic-go.(*Transport).init.func1 in goroutine 1
+	/home/bradley/Projets/mycelium-quic/transport.go:425 +0x405
+
+goroutine 39 gp=0xd377b7bf4a0 m=nil [select]:
+runtime.gopark(0xd377b4b3ed8?, 0x3?, 0x0?, 0xa6?, 0xd377b4b3e82?)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:462 +0xce fp=0xd377b4b3cd8 sp=0xd377b4b3cb8 pc=0x4858ce
+runtime.selectgo(0xd377b4b3ed8, 0xd377b4b3e7c, 0xd377b89a000?, 0x0, 0x2000?, 0x1)
+	/home/bradley/.local/go1.26.0/src/runtime/select.go:351 +0xaa5 fp=0xd377b4b3e08 sp=0xd377b4b3cd8 pc=0x4646c5
+github.com/quic-go/quic-go.(*Transport).runSendQueue(0xd377b760240)
+	/home/bradley/Projets/mycelium-quic/transport.go:465 +0xf5 fp=0xd377b4b3fc8 sp=0xd377b4b3e08 pc=0x70a195
+github.com/quic-go/quic-go.(*Transport).init.func1.gowrap1()
+	/home/bradley/Projets/mycelium-quic/transport.go:433 +0x17 fp=0xd377b4b3fe0 sp=0xd377b4b3fc8 pc=0x709cf7
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377b4b3fe8 sp=0xd377b4b3fe0 pc=0x48c961
+created by github.com/quic-go/quic-go.(*Transport).init.func1 in goroutine 1
+	/home/bradley/Projets/mycelium-quic/transport.go:433 +0x445
+
+goroutine 66 gp=0xd377b504780 m=nil [select]:
+runtime.gopark(0xd377b7c5738?, 0x2?, 0x0?, 0x0?, 0xd377b7c56c4?)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:462 +0xce fp=0xd377b7c5558 sp=0xd377b7c5538 pc=0x4858ce
+runtime.selectgo(0xd377b7c5738, 0xd377b7c56c0, 0x0?, 0x1, 0x0?, 0x1)
+	/home/bradley/.local/go1.26.0/src/runtime/select.go:351 +0xaa5 fp=0xd377b7c5688 sp=0xd377b7c5558 pc=0x4646c5
+os/exec.(*Cmd).watchCtx(0xd377ba4a000, 0xd377b7a68c0)
+	/home/bradley/.local/go1.26.0/src/os/exec/exec.go:797 +0xb1 fp=0xd377b7c57c0 sp=0xd377b7c5688 pc=0x639fb1
+os/exec.(*Cmd).Start.gowrap2()
+	/home/bradley/.local/go1.26.0/src/os/exec/exec.go:783 +0x1b fp=0xd377b7c57e0 sp=0xd377b7c57c0 pc=0x639c7b
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377b7c57e8 sp=0xd377b7c57e0 pc=0x48c961
+created by os/exec.(*Cmd).Start in goroutine 1
+	/home/bradley/.local/go1.26.0/src/os/exec/exec.go:783 +0x8f5
+
+goroutine 69 gp=0xd377b504f00 m=nil [IO wait]:
+runtime.gopark(0xd377f181308?, 0xd377b5189b0?, 0x92?, 0x82?, 0xd377b518a98?)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:462 +0xce fp=0xd377b518960 sp=0xd377b518940 pc=0x4858ce
+runtime.netpollblock(0x80?, 0x876b00?, 0x0?)
+	/home/bradley/.local/go1.26.0/src/runtime/netpoll.go:575 +0xf7 fp=0xd377b518998 sp=0xd377b518960 pc=0x449c97
+internal/poll.runtime_pollWait(0x7f3271f71a00, 0x72)
+	/home/bradley/.local/go1.26.0/src/runtime/netpoll.go:351 +0x85 fp=0xd377b5189b8 sp=0xd377b518998 pc=0x484aa5
+internal/poll.(*pollDesc).wait(0xd377b7a2500?, 0x419e01?, 0x0)
+	/home/bradley/.local/go1.26.0/src/internal/poll/fd_poll_runtime.go:84 +0x27 fp=0xd377b5189e0 sp=0xd377b5189b8 pc=0x4c9007
+internal/poll.(*pollDesc).waitRead(...)
+	/home/bradley/.local/go1.26.0/src/internal/poll/fd_poll_runtime.go:89
+internal/poll.(*FD).RawRead(0xd377b7a2500, 0xd377b70a030)
+	/home/bradley/.local/go1.26.0/src/internal/poll/fd_unix.go:710 +0x125 fp=0xd377b518a40 sp=0xd377b5189e0 pc=0x4cc4e5
+net.(*rawConn).Read(0xd377b458088, 0x40?)
+	/home/bradley/.local/go1.26.0/src/net/rawconn.go:44 +0x36 fp=0xd377b518a78 sp=0xd377b518a40 pc=0x5658d6
+golang.org/x/net/internal/socket.(*syscaller).recvmmsg(0xd377b70c0d8, {0x879ea0?, 0xd377b458088?}, {0xd377f181308?, 0x871ed8?, 0x0?}, 0x40d?)
+	/home/bradley/go/pkg/mod/golang.org/x/net@v0.56.0/internal/socket/mmsghdr_unix.go:120 +0x70 fp=0xd377b518aa8 sp=0xd377b518a78 pc=0x6880f0
+golang.org/x/net/internal/socket.(*Conn).recvMsgs(0xd377b4d6300, {0xd377b7e6008, 0x40, 0x40}, 0x0)
+	/home/bradley/go/pkg/mod/golang.org/x/net@v0.56.0/internal/socket/rawconn_mmsg.go:24 +0x165 fp=0xd377b518b68 sp=0xd377b518aa8 pc=0x688c65
+golang.org/x/net/internal/socket.(*Conn).RecvMsgs(...)
+	/home/bradley/go/pkg/mod/golang.org/x/net@v0.56.0/internal/socket/socket.go:268
+golang.org/x/net/ipv4.(*payloadHandler).ReadBatch(0xd377ba246a0, {0xd377b7e6008?, 0xd377b55b800?, 0xd377b6806f0?}, 0x0?)
+	/home/bradley/go/pkg/mod/golang.org/x/net@v0.56.0/ipv4/batch.go:80 +0x57 fp=0xd377b518bd8 sp=0xd377b518b68 pc=0x68a657
+main.(*countedUDP).ReadBatch(0xd377b4d6340, {0xd377b7e6008, 0x40, 0x8?}, 0xd377f8ae008?)
+	/home/bradley/Projets/mycelium-quic/integrationtests/tools/transfercompare/main.go:45 +0x2c fp=0xd377b518c10 sp=0xd377b518bd8 pc=0x71d78c
+github.com/quic-go/quic-go.(*experimentalSourceOOB).ReadBatch(0xd377ba8ec00, {0xd377b7e6008, 0x40, 0x40}, 0x0)
+	/home/bradley/Projets/mycelium-quic/experimental_source_oob.go:67 +0x66 fp=0xd377b518c80 sp=0xd377b518c10 pc=0x6cea86
+github.com/quic-go/quic-go.(*oobConn).ReadPacket(0xd377b7cca20)
+	/home/bradley/Projets/mycelium-quic/sys_conn_oob.go:160 +0x7a8 fp=0xd377b518e10 sp=0xd377b518c80 pc=0x7078e8
+github.com/quic-go/quic-go.(*Transport).listen(0xd377b7bc120, {0x87f3d8, 0xd377b7cca20})
+	/home/bradley/Projets/mycelium-quic/transport.go:552 +0x7a fp=0xd377b518f80 sp=0xd377b518e10 pc=0x70aa9a
+github.com/quic-go/quic-go.(*Transport).init.func1.1()
+	/home/bradley/Projets/mycelium-quic/transport.go:427 +0x65 fp=0xd377b518fe0 sp=0xd377b518f80 pc=0x709d85
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377b518fe8 sp=0xd377b518fe0 pc=0x48c961
+created by github.com/quic-go/quic-go.(*Transport).init.func1 in goroutine 1
+	/home/bradley/Projets/mycelium-quic/transport.go:425 +0x405
+
+goroutine 70 gp=0xd377b5050e0 m=nil [select]:
+runtime.gopark(0xd377b7c6ed8?, 0x3?, 0x0?, 0x0?, 0xd377b7c6e82?)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:462 +0xce fp=0xd377ba05cd8 sp=0xd377ba05cb8 pc=0x4858ce
+runtime.selectgo(0xd377ba05ed8, 0xd377b7c6e7c, 0x0?, 0x0, 0x0?, 0x1)
+	/home/bradley/.local/go1.26.0/src/runtime/select.go:351 +0xaa5 fp=0xd377ba05e08 sp=0xd377ba05cd8 pc=0x4646c5
+github.com/quic-go/quic-go.(*Transport).runSendQueue(0xd377b7bc120)
+	/home/bradley/Projets/mycelium-quic/transport.go:465 +0xf5 fp=0xd377ba05fc8 sp=0xd377ba05e08 pc=0x70a195
+github.com/quic-go/quic-go.(*Transport).init.func1.gowrap1()
+	/home/bradley/Projets/mycelium-quic/transport.go:433 +0x17 fp=0xd377ba05fe0 sp=0xd377ba05fc8 pc=0x709cf7
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377ba05fe8 sp=0xd377ba05fe0 pc=0x48c961
+created by github.com/quic-go/quic-go.(*Transport).init.func1 in goroutine 1
+	/home/bradley/Projets/mycelium-quic/transport.go:433 +0x445
+
+goroutine 71 gp=0xd377b5054a0 m=nil [chan receive]:
+runtime.gopark(0xaa8a4c49402e050b?, 0x2e7c52394af8abb5?, 0x5d?, 0x10?, 0x1809b02dc59f44ac?)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:462 +0xce fp=0xd377b8bdc90 sp=0xd377b8bdc70 pc=0x4858ce
+runtime.chanrecv(0xd377b7a6c40, 0x0, 0x1)
+	/home/bradley/.local/go1.26.0/src/runtime/chan.go:667 +0x4ae fp=0xd377b8bdd08 sp=0xd377b8bdc90 pc=0x41aa4e
+runtime.chanrecv1(0xd377b5844d0?, 0x994992f58d0fa567?)
+	/home/bradley/.local/go1.26.0/src/runtime/chan.go:509 +0x12 fp=0xd377b8bdd30 sp=0xd377b8bdd08 pc=0x41a572
+github.com/quic-go/quic-go.(*ReceiveStream).readImpl(0xd377b5844d0, {0xd377b8bdec8, 0x10000, 0x10000})
+	/home/bradley/Projets/mycelium-quic/receive_stream.go:202 +0x45d fp=0xd377b8bde08 sp=0xd377b8bdd30 pc=0x6f4e1d
+github.com/quic-go/quic-go.(*ReceiveStream).Read(0xd377b5844d0, {0xd377b8bdec8, 0x10000, 0x10000})
+	/home/bradley/Projets/mycelium-quic/receive_stream.go:121 +0xd4 fp=0xd377b8bde88 sp=0xd377b8bde08 pc=0x6f4794
+main.run.func5()
+	/home/bradley/Projets/mycelium-quic/integrationtests/tools/transfercompare/main.go:379 +0x13a fp=0xd377b8cdfe0 sp=0xd377b8bde88 pc=0x721d3a
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377b8cdfe8 sp=0xd377b8cdfe0 pc=0x48c961
+created by main.run in goroutine 1
+	/home/bradley/Projets/mycelium-quic/integrationtests/tools/transfercompare/main.go:370 +0x1725
+
+goroutine 72 gp=0xd377b505680 m=nil [select]:
+runtime.gopark(0xd377b4c5f90?, 0x2?, 0x0?, 0x0?, 0xd377b4c5f14?)
+	/home/bradley/.local/go1.26.0/src/runtime/proc.go:462 +0xce fp=0xd377b4c5da0 sp=0xd377b4c5d80 pc=0x4858ce
+runtime.selectgo(0xd377b4c5f90, 0xd377b4c5f10, 0x862c65?, 0x0, 0xd377b4c5f58?, 0x1)
+	/home/bradley/.local/go1.26.0/src/runtime/select.go:351 +0xaa5 fp=0xd377b4c5ed0 sp=0xd377b4c5da0 pc=0x4646c5
+main.run.func6()
+	/home/bradley/Projets/mycelium-quic/integrationtests/tools/transfercompare/main.go:416 +0x1f4 fp=0xd377b4c5fe0 sp=0xd377b4c5ed0 pc=0x721af4
+runtime.goexit({})
+	/home/bradley/.local/go1.26.0/src/runtime/asm_amd64.s:1771 +0x1 fp=0xd377b4c5fe8 sp=0xd377b4c5fe0 pc=0x48c961
+created by main.run in goroutine 1
+	/home/bradley/Projets/mycelium-quic/integrationtests/tools/transfercompare/main.go:412 +0x18fa
+
+rax    0xd377b784a20
+rbx    0x7e9180
+rcx    0x21
+rdx    0xd377b4801b0
+rdi    0x0
+rsi    0x1
+rbp    0xd377fdad1e0
+rsp    0xd377fdad1b8
+r8     0x0
+r9     0x0
+r10    0xd377e88a8c0
+r11    0xc
+r12    0x87
+r13    0x36
+r14    0xd377b7be3c0
+r15    0xd377fdacef0
+rip    0x40f542
+rflags 0x206
+cs     0x33
+fs     0x0
+gs     0x0

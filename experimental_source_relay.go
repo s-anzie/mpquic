@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"sync"
 	"time"
 
 	"github.com/quic-go/quic-go/internal/monotime"
@@ -165,6 +166,10 @@ type experimentalSourceRelay struct {
 	control        *tls.Conn
 	workerPin      [32]byte
 	queue          chan sourceRelayPacket
+	ackMutex       sync.Mutex
+	ackWake        chan struct{}
+	acks           []ExperimentalWorkerACKRange
+	ackDelay       time.Duration
 }
 
 // PrepareExperimentalSource attaches a dedicated authenticated forwarding channel
@@ -175,7 +180,7 @@ func (c *Conn) PrepareExperimentalSource(ctx context.Context, id, generation uin
 	if err := checkSourceRelayTLS(control, workerPin); err != nil {
 		return err
 	}
-	r := &experimentalSourceRelay{conn: c, id: id, generation: generation, control: control, workerPin: workerPin, queue: make(chan sourceRelayPacket, 64)}
+	r := &experimentalSourceRelay{conn: c, id: id, generation: generation, control: control, workerPin: workerPin, queue: make(chan sourceRelayPacket, 64), ackWake: make(chan struct{}, 1)}
 	err := (&ExperimentalCloneWriter{conn: c}).onLoop(ctx, func() error {
 		if c.perspective != protocol.PerspectiveServer || !c.sourceOffersNegotiated() || c.experimentalSources == nil {
 			return ErrExperimentalSourceOffer
@@ -239,6 +244,10 @@ func (r *experimentalSourceRelay) run() {
 				return
 			case <-r.conn.ctx.Done():
 				return
+			case <-r.ackWake:
+				if err := r.flushWorkerACKs(); err != nil {
+					return
+				}
 			case p := <-r.queue:
 				if err := writeSourceRelayPacket(r.control, p); err != nil {
 					return

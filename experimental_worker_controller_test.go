@@ -146,7 +146,7 @@ func TestExperimentalWorkerControllerBoundedHistory(t *testing.T) {
 		workerACK(t, c, pn, pn, now.Add(time.Millisecond))
 	}
 	s := c.Snapshot()
-	if s.Retained != experimentalWorkerHistoryLimit {
+	if s.Retained != 0 {
 		t.Fatal(s)
 	}
 	workerACK(t, c, 0, 99, now.Add(time.Second))
@@ -161,6 +161,7 @@ func TestExperimentalWorkerControllerBoundedHistory(t *testing.T) {
 	}
 	// Outstanding records and pending lost retries cannot be evicted.
 	c.mu.Lock()
+	c.packets = make([]experimentalWorkerPacket, experimentalWorkerHistoryLimit)
 	for i := range c.packets {
 		c.packets[i].acked = false
 		c.packets[i].lost = true

@@ -10,7 +10,7 @@ import (
 var ErrPacketHistory = errors.New("invalid remote packet history operation")
 
 const (
-	MaxRemoteHistoryPackets  = 4096 // shared by every path in the authority
+	MaxRemoteHistoryPackets  = 8192 // shared by every path in the authority
 	MaxRemotePacketFragments = 16
 )
 

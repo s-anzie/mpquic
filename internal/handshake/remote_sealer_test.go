@@ -269,7 +269,7 @@ func TestRemoteSealerBindingAndPayloadGuards(t *testing.T) {
 	g, err := a.GrantPath(1, "worker")
 	require.NoError(t, err)
 	cid := protocol.ParseConnectionID([]byte("cid"))
-	for _, count := range []uint64{0, 65, ^uint64(0)} {
+	for _, count := range []uint64{0, cloning.MaxRemotePacketWindow + 1, ^uint64(0)} {
 		_, err := s.prepareRemoteSealer(a, g, count, cid)
 		require.ErrorIs(t, err, ErrRemoteSealer)
 	}

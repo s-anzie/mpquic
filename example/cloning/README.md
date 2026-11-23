@@ -26,7 +26,7 @@ Certificates and keys are generated in memory. Independent temporary worker file
 are created and removed for each run; all listeners bind to loopback. The 512 KiB ordinary warm-up is
 excluded from the reported cloned-transfer throughput.
 
-The writer permits up to eight 1,000-byte portions awaiting client ACKs.
+The autonomous writer permits up to 4,096 1,000-byte portions awaiting client ACKs.
 Worker key leases remain serialized: this is bounded packet pipelining, not
 concurrent key export. It is a correctness prototype, **not representative of
 geographical multipath capacity**.
@@ -87,10 +87,10 @@ supports concurrent `Close` to interrupt them.
   accepted worker address. The lab uses explicitly trusted loopback endpoints;
   policy must restrict destinations before any Internet deployment.
 - One clone writer and one send stream per connection, up to eight initial sources
-  and 32 lifetime entries. At most eight 1,000-byte chunks are outstanding.
+  and 32 lifetime entries. At most 4,096 1,000-byte chunks are outstanding with autonomous workers (eight otherwise).
   Source-local reads are the default (`-source-local=false` uses primary-held bytes).
   Authenticate the object manifest through your application before importing it.
-- Single-packet leases serialize cryptographic handoff. Worker-local congestion,
+- Finite leases of up to 1,024 packets serialize cryptographic handoff. Worker-local congestion,
   pacing, loss and PTO decisions control UDP sends; the primary still authorizes
   packet numbers, shared credit, keys and delivery. Losing the primary remains fatal.
 - Source failure, withdrawal or invalid content triggers path retirement and an
@@ -127,7 +127,7 @@ network probe. `ProbeExperimentalSource` binds the generation to a fresh path an
 validates it. The writer rejects missing, stale, mismatched or unvalidated bindings.
 Withdrawal or relay failure retires the affected path; pending ranges can move
 to a healthy source after the client fence. Renewal requires fresh consent and
-a fresh validated path. Job and relay ALPNs are `mpquic-clone-lab/2` and
+a fresh validated path. Job and relay ALPNs are `mpquic-clone-lab/3` and
 `mpquic-clone-relay/2`.
 
 ## Verification

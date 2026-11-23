@@ -10,15 +10,16 @@ import (
 )
 
 // ExperimentalRemoteALPN separates framed jobs from the bare snapshot protocol.
-const ExperimentalRemoteALPN = "mpquic-clone-lab/2"
+const ExperimentalRemoteALPN = "mpquic-clone-lab/3"
 
-// ExperimentalRemoteCrypto permits one outstanding, single-packet lease.
+// ExperimentalRemoteCrypto permits one outstanding, bounded packet-window lease.
 // All methods run on the connection loop. Normal release requires a worker
 // drain receipt. Uncertain leases require permanent retirement and semantic
 // client fencing before reassignment; otherwise close the connection.
 type ExperimentalRemoteCrypto interface {
 	ExperimentalRemoteReady() bool
 	AcquireExperimentalRemote(*cloning.Authority, *cloning.Path, protocol.ConnectionID) (*RemoteSealer, uint64, protocol.PacketNumber, error)
+	AcquireExperimentalRemoteBatch(*cloning.Authority, *cloning.Path, protocol.ConnectionID, uint64) (*RemoteSealer, uint64, protocol.PacketNumber, error)
 	ReleaseExperimentalRemote(*RemoteSealer) error
 	RetireExperimentalRemote(*RemoteSealer) error
 	RotateExperimentalKeys() error
@@ -57,10 +58,14 @@ func (h *cryptoSetup) ExperimentalRemoteReady() bool {
 }
 
 func (h *cryptoSetup) AcquireExperimentalRemote(a *cloning.Authority, p *cloning.Path, cid protocol.ConnectionID) (*RemoteSealer, uint64, protocol.PacketNumber, error) {
+	return h.AcquireExperimentalRemoteBatch(a, p, cid, 1)
+}
+
+func (h *cryptoSetup) AcquireExperimentalRemoteBatch(a *cloning.Authority, p *cloning.Path, cid protocol.ConnectionID, count uint64) (*RemoteSealer, uint64, protocol.PacketNumber, error) {
 	if !h.ExperimentalRemoteReady() {
 		return nil, 0, 0, ErrRemoteSealer
 	}
-	s, err := h.aead.prepareRemoteSealer(a, p, 1, cid)
+	s, err := h.aead.prepareRemoteSealer(a, p, count, cid)
 	if err != nil {
 		return nil, 0, 0, err
 	}
@@ -98,10 +103,20 @@ func CheckRemoteTLS(c *tls.Conn, expected [32]byte) error {
 }
 
 // ValidateExperimentalWindow checks dispatch metadata before any UDP emission.
-func (p *RemoteSealer) ValidateExperimentalWindow(pn protocol.PacketNumber) error {
+func (p *RemoteSealer) ValidateExperimentalWindow(pn protocol.PacketNumber, counts ...uint64) error {
+	count := uint64(1)
+	if len(counts) > 1 {
+		return ErrRemoteSealer
+	}
+	if len(counts) == 1 {
+		count = counts[0]
+	}
+	if count == 0 || count > cloning.MaxRemotePacketWindow {
+		return ErrRemoteSealer
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.self != p || p.closed || p.owned || p.used || p.aead == nil || pn < 0 || p.next != pn || p.end != pn+1 {
+	if p.self != p || p.closed || p.owned || p.used || p.aead == nil || pn < 0 || p.next != pn || p.end != pn+protocol.PacketNumber(count) {
 		return ErrRemoteSealer
 	}
 	return nil

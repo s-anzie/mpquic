@@ -1,0 +1,290 @@
+{
+  "application_bytes": 1073741824,
+  "runs_per_mode": 3,
+  "results": {
+    "single": {
+      "median_seconds": 4.263848694,
+      "median_mbit_per_second": 2014.5964851162703,
+      "min_seconds": 4.054604979,
+      "max_seconds": 4.324581782,
+      "runs": [
+        {
+          "mode": "single",
+          "bytes": 1073741824,
+          "seconds": 4.054604979,
+          "mbit_per_second": 2118.5626310059342,
+          "mib_per_second": 252.55234611105135,
+          "sha256": "188e43c2f1b607dc07b58ee779b9b58fb176a51d79a7abfa70c80a16947b692c",
+          "client_sockets": [
+            {
+              "Address": "127.0.0.1:51430",
+              "UDPBytes": 1099516152,
+              "Datagrams": 773563
+            }
+          ],
+          "go_version": "go1.26.0",
+          "gomaxprocs": 8
+        },
+        {
+          "mode": "single",
+          "bytes": 1073741824,
+          "seconds": 4.263848694,
+          "mbit_per_second": 2014.5964851162703,
+          "mib_per_second": 240.15861572221164,
+          "sha256": "188e43c2f1b607dc07b58ee779b9b58fb176a51d79a7abfa70c80a16947b692c",
+          "client_sockets": [
+            {
+              "Address": "127.0.0.1:60392",
+              "UDPBytes": 1099631662,
+              "Datagrams": 777142
+            }
+          ],
+          "go_version": "go1.26.0",
+          "gomaxprocs": 8
+        },
+        {
+          "mode": "single",
+          "bytes": 1073741824,
+          "seconds": 4.324581782,
+          "mbit_per_second": 1986.3041156380655,
+          "mib_per_second": 236.78590245700664,
+          "sha256": "188e43c2f1b607dc07b58ee779b9b58fb176a51d79a7abfa70c80a16947b692c",
+          "client_sockets": [
+            {
+              "Address": "127.0.0.1:50489",
+              "UDPBytes": 1099446430,
+              "Datagrams": 771600
+            }
+          ],
+          "go_version": "go1.26.0",
+          "gomaxprocs": 8
+        }
+      ]
+    },
+    "multipath": {
+      "median_seconds": 4.467201688,
+      "median_mbit_per_second": 1922.889359366664,
+      "min_seconds": 4.348615333,
+      "max_seconds": 4.60878894,
+      "runs": [
+        {
+          "mode": "multipath",
+          "bytes": 1073741824,
+          "seconds": 4.348615333,
+          "mbit_per_second": 1975.3263818977573,
+          "mib_per_second": 235.47725461694685,
+          "sha256": "188e43c2f1b607dc07b58ee779b9b58fb176a51d79a7abfa70c80a16947b692c",
+          "client_sockets": [
+            {
+              "Address": "127.0.0.1:45014",
+              "UDPBytes": 585403210,
+              "Datagrams": 409333
+            },
+            {
+              "Address": "127.0.0.1:45517",
+              "UDPBytes": 514263593,
+              "Datagrams": 361966
+            }
+          ],
+          "go_version": "go1.26.0",
+          "gomaxprocs": 8
+        },
+        {
+          "mode": "multipath",
+          "bytes": 1073741824,
+          "seconds": 4.467201688,
+          "mbit_per_second": 1922.889359366664,
+          "mib_per_second": 229.2262744148569,
+          "sha256": "188e43c2f1b607dc07b58ee779b9b58fb176a51d79a7abfa70c80a16947b692c",
+          "client_sockets": [
+            {
+              "Address": "127.0.0.1:40458",
+              "UDPBytes": 585663898,
+              "Datagrams": 409382
+            },
+            {
+              "Address": "127.0.0.1:42547",
+              "UDPBytes": 513998761,
+              "Datagrams": 361780
+            }
+          ],
+          "go_version": "go1.26.0",
+          "gomaxprocs": 8
+        },
+        {
+          "mode": "multipath",
+          "bytes": 1073741824,
+          "seconds": 4.60878894,
+          "mbit_per_second": 1863.8160054254947,
+          "mib_per_second": 222.18418186014827,
+          "sha256": "188e43c2f1b607dc07b58ee779b9b58fb176a51d79a7abfa70c80a16947b692c",
+          "client_sockets": [
+            {
+              "Address": "127.0.0.1:60405",
+              "UDPBytes": 585780610,
+              "Datagrams": 409297
+            },
+            {
+              "Address": "127.0.0.1:34994",
+              "UDPBytes": 514363751,
+              "Datagrams": 361844
+            }
+          ],
+          "go_version": "go1.26.0",
+          "gomaxprocs": 8
+        }
+      ]
+    },
+    "multisource": {
+      "median_seconds": 17.249102537,
+      "median_mbit_per_second": 497.9931317339122,
+      "min_seconds": 16.678664586,
+      "max_seconds": 18.461299106,
+      "runs": [
+        {
+          "mode": "multisource",
+          "bytes": 1073741824,
+          "seconds": 16.678664586,
+          "mbit_per_second": 515.0253215842205,
+          "mib_per_second": 61.39580268671757,
+          "sha256": "188e43c2f1b607dc07b58ee779b9b58fb176a51d79a7abfa70c80a16947b692c",
+          "client_sockets": [
+            {
+              "Address": "127.0.0.1:41044",
+              "UDPBytes": 609274,
+              "Datagrams": 4643
+            },
+            {
+              "Address": "127.0.0.1:34872",
+              "UDPBytes": 556377250,
+              "Datagrams": 536526
+            },
+            {
+              "Address": "127.0.0.1:55464",
+              "UDPBytes": 557399944,
+              "Datagrams": 537512
+            }
+          ],
+          "sources": [
+            {
+              "PathID": 1,
+              "Packets": 536526,
+              "Batches": 1210,
+              "LastKeyEpoch": 11,
+              "KeyRotations": 10
+            },
+            {
+              "PathID": 2,
+              "Packets": 537512,
+              "Batches": 1871,
+              "LastKeyEpoch": 11,
+              "KeyRotations": 10
+            }
+          ],
+          "worker_pids": [
+            3321500,
+            3321575
+          ],
+          "go_version": "go1.26.0",
+          "gomaxprocs": 8
+        },
+        {
+          "mode": "multisource",
+          "bytes": 1073741824,
+          "seconds": 18.461299106,
+          "mbit_per_second": 465.29415631472193,
+          "mib_per_second": 55.46738580640816,
+          "sha256": "188e43c2f1b607dc07b58ee779b9b58fb176a51d79a7abfa70c80a16947b692c",
+          "client_sockets": [
+            {
+              "Address": "127.0.0.1:48903",
+              "UDPBytes": 1066880,
+              "Datagrams": 8142
+            },
+            {
+              "Address": "127.0.0.1:52705",
+              "UDPBytes": 556843900,
+              "Datagrams": 536976
+            },
+            {
+              "Address": "127.0.0.1:46528",
+              "UDPBytes": 556937442,
+              "Datagrams": 537066
+            }
+          ],
+          "sources": [
+            {
+              "PathID": 1,
+              "Packets": 536976,
+              "Batches": 2691,
+              "LastKeyEpoch": 11,
+              "KeyRotations": 10
+            },
+            {
+              "PathID": 2,
+              "Packets": 537066,
+              "Batches": 2187,
+              "LastKeyEpoch": 11,
+              "KeyRotations": 10
+            }
+          ],
+          "worker_pids": [
+            3322625,
+            3322715
+          ],
+          "go_version": "go1.26.0",
+          "gomaxprocs": 8
+        },
+        {
+          "mode": "multisource",
+          "bytes": 1073741824,
+          "seconds": 17.249102537,
+          "mbit_per_second": 497.9931317339122,
+          "mib_per_second": 59.365407435168294,
+          "sha256": "188e43c2f1b607dc07b58ee779b9b58fb176a51d79a7abfa70c80a16947b692c",
+          "client_sockets": [
+            {
+              "Address": "127.0.0.1:57702",
+              "UDPBytes": 1028961,
+              "Datagrams": 7915
+            },
+            {
+              "Address": "127.0.0.1:41345",
+              "UDPBytes": 557807273,
+              "Datagrams": 537905
+            },
+            {
+              "Address": "127.0.0.1:34988",
+              "UDPBytes": 555722078,
+              "Datagrams": 535894
+            }
+          ],
+          "sources": [
+            {
+              "PathID": 1,
+              "Packets": 537905,
+              "Batches": 1260,
+              "LastKeyEpoch": 11,
+              "KeyRotations": 10
+            },
+            {
+              "PathID": 2,
+              "Packets": 535894,
+              "Batches": 1550,
+              "LastKeyEpoch": 11,
+              "KeyRotations": 10
+            }
+          ],
+          "worker_pids": [
+            3323847,
+            3323964
+          ],
+          "go_version": "go1.26.0",
+          "gomaxprocs": 8
+        }
+      ]
+    }
+  },
+  "multisource_speedup_over_baseline": 36.26891562996105,
+  "multisource_duration_vs_single": 4.045430261461337
+}
