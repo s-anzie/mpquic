@@ -1,0 +1,1 @@
+{"mode":"single","bytes":1073741824,"seconds":2.509720574,"mbit_per_second":3422.6657266108855,"mib_per_second":408.01354963909216,"sha256_verified":false,"client_sockets":[{"Address":"127.0.0.1:41564","UDPBytes":1099319995,"Datagrams":770138}],"go_version":"go1.26.0","gomaxprocs":8}

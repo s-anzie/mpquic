@@ -1,0 +1,1 @@
+{"mode":"multipath","bytes":1073741824,"seconds":4.179303606,"mbit_per_second":2055.3506999749657,"mib_per_second":245.01689672171662,"sha256_verified":false,"client_sockets":[{"Address":"127.0.0.1:54341","UDPBytes":589006522,"Datagrams":411218},{"Address":"127.0.0.1:50809","UDPBytes":510690793,"Datagrams":359641}],"go_version":"go1.26.0","gomaxprocs":8}
