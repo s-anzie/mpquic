@@ -20,13 +20,17 @@ type ExperimentalSourceOffer struct {
 	ID, Generation uint64
 	Address        netip.AddrPort
 	ExpiresAt      time.Time
-	Accepted       bool // consent only; never path validation
+	Accepted       bool   // consent only; never path validation
+	PathID         uint64 // zero until bound to a dedicated path
 }
 
 type experimentalSourceEntry struct {
-	frame    wire.ExperimentalSourceOfferFrame
-	expires  time.Time
-	accepted bool
+	frame      wire.ExperimentalSourceOfferFrame
+	expires    time.Time
+	accepted   bool
+	pathID     uint64
+	relay      *experimentalSourceRelay
+	clientPath *ExperimentalSourcePath
 }
 
 type experimentalSourceRegistry struct {
@@ -58,6 +62,13 @@ func (r *experimentalSourceRegistry) apply(f wire.ExperimentalSourceOfferFrame, 
 		}
 	} else if len(r.entries) >= 32 {
 		return ErrExperimentalSourceOffer
+	}
+	if old.clientPath != nil {
+		old.clientPath.socket.active.Store(false)
+		old.clientPath.socket.Close()
+	}
+	if old.relay != nil {
+		old.relay.control.Close()
 	}
 	r.entries[f.ID] = experimentalSourceEntry{frame: f, expires: now.Add(time.Duration(f.TTL) * time.Second)}
 	return nil
@@ -140,7 +151,7 @@ func (c *Conn) experimentalSourceSnapshot(ctx context.Context, acceptedOnly bool
 			now := time.Now()
 			for _, entry := range c.experimentalSources.entries {
 				if entry.frame.TTL > 0 && entry.expires.After(now) && (!acceptedOnly || entry.accepted) {
-					offers = append(offers, ExperimentalSourceOffer{ID: entry.frame.ID, Generation: entry.frame.Generation, Address: entry.frame.Address, ExpiresAt: entry.expires, Accepted: entry.accepted})
+					offers = append(offers, ExperimentalSourceOffer{ID: entry.frame.ID, Generation: entry.frame.Generation, Address: entry.frame.Address, ExpiresAt: entry.expires, Accepted: entry.accepted, PathID: entry.pathID})
 				}
 			}
 		}
@@ -217,6 +228,25 @@ func (c *Conn) receiveSourceAcceptance(f *wire.ExperimentalSourceAcceptFrame, le
 		return nil
 	}
 	entry.accepted = true
+	if f.PathID != 0 {
+		if entry.pathID != 0 && entry.pathID != f.PathID {
+			return &qerr.TransportError{ErrorCode: qerr.ProtocolViolation, ErrorMessage: "source rebound to another path"}
+		}
+		for id, other := range c.experimentalSources.entries {
+			if id != f.ID && other.pathID == f.PathID {
+				return &qerr.TransportError{ErrorCode: qerr.ProtocolViolation, ErrorMessage: "source path already bound"}
+			}
+		}
+		p, err := c.multipath.path(f.PathID)
+		if err != nil {
+			return err
+		}
+		if p.remoteAddr != nil && entry.pathID == 0 {
+			return &qerr.TransportError{ErrorCode: qerr.ProtocolViolation, ErrorMessage: "source requires a fresh path"}
+		}
+		entry.pathID = f.PathID
+		p.experimentalRelay = entry.relay
+	}
 	c.experimentalSources.entries[f.ID] = entry
 	return nil
 }

@@ -66,7 +66,8 @@ type receivedPacket struct {
 
 	ecn protocol.ECN
 
-	info packetInfo // only valid if the contained IP address is valid
+	info              packetInfo // only valid if the contained IP address is valid
+	experimentalRelay *experimentalSourceRelay
 }
 
 type receivedPacketWithChecksum struct {
@@ -1308,6 +1309,9 @@ func (c *Conn) handleShortHeaderPacket(
 		}
 	}
 	var pn protocol.PacketNumber
+	if !c.acceptExperimentalRelayPacket(packetPathID, p) {
+		return false, nil
+	}
 	var pnLen protocol.PacketNumberLen
 	var keyPhase protocol.KeyPhaseBit
 	var data []byte
@@ -2348,6 +2352,9 @@ func (c *Conn) sendMultipathPathResponse(
 	c.logShortHeaderPacketWithDatagramPayloadChecksum(probe, protocol.ECNNon, buf.Len(), false, qlog.DatagramPayloadChecksum(0))
 	c.registerPackedShortHeaderPacket(probe, protocol.ECNNon, now)
 	if c.perspective == protocol.PerspectiveServer {
+		if path := c.multipath.paths[id]; path.experimentalRelay != nil {
+			return c.writeExperimentalPath(id, buf.Data, remoteAddr, info)
+		}
 		c.sendQueue.SendProbe(buf, remoteAddr, info)
 		return nil
 	}
@@ -3109,7 +3116,7 @@ func (c *Conn) sendMultipathAckOnlyPacket(now monotime.Time) (bool, error) {
 		pm := c.pathManagerOutgoing.Load()
 		if pm == nil {
 			for id, path := range c.multipath.paths {
-				if id == 0 || path.abandoned || path.remoteAddr == nil {
+				if id == 0 || path.abandoned || path.remoteAddr == nil || path.cloningRecovery != nil {
 					continue
 				}
 				connID, ok := c.connIDManager.GetConnIDForPath(pathID(id))
@@ -3129,8 +3136,15 @@ func (c *Conn) sendMultipathAckOnlyPacket(now monotime.Time) (bool, error) {
 				c.logger.Debugf("sending final ACKs on server path %d", id)
 				c.logShortHeaderPacket(packet, protocol.ECNNon, buf.Len())
 				c.registerPackedShortHeaderPacket(packet, protocol.ECNNon, now)
-				c.sendQueue.SendProbe(buf, path.remoteAddr, path.packetInfo)
+				if path.experimentalRelay != nil {
+					err = c.writeExperimentalPath(id, buf.Data, path.remoteAddr, path.packetInfo)
+				} else {
+					c.sendQueue.SendProbe(buf, path.remoteAddr, path.packetInfo)
+				}
 				buf.Release()
+				if err != nil {
+					return false, err
+				}
 				c.scheduleSending()
 				return true, nil
 			}
