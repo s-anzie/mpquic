@@ -72,22 +72,26 @@ type pathResult struct {
 	UDPBytes, Datagrams uint64
 }
 type result struct {
-	Mode           string                              `json:"mode"`
-	Bytes          int64                               `json:"bytes"`
-	Seconds        float64                             `json:"seconds"`
-	MbitPerSecond  float64                             `json:"mbit_per_second"`
-	MiBPerSecond   float64                             `json:"mib_per_second"`
-	SHA256         string                              `json:"sha256,omitempty"`
-	SHA256Verified bool                                `json:"sha256_verified"`
-	Paths          []pathResult                        `json:"client_sockets"`
-	Sources        []quic.ExperimentalCloneSourceStats `json:"sources,omitempty"`
-	WorkerPIDs     []int                               `json:"worker_pids,omitempty"`
-	GoVersion      string                              `json:"go_version"`
-	GOMAXPROCS     int                                 `json:"gomaxprocs"`
+	Mode                     string                              `json:"mode"`
+	Bytes                    int64                               `json:"bytes"`
+	Seconds                  float64                             `json:"seconds"`
+	MbitPerSecond            float64                             `json:"mbit_per_second"`
+	MiBPerSecond             float64                             `json:"mib_per_second"`
+	SHA256                   string                              `json:"sha256,omitempty"`
+	SourceSHA256Verification string                              `json:"source_sha256_verification"`
+	SHA256Verified           bool                                `json:"sha256_verified"`
+	Paths                    []pathResult                        `json:"client_sockets"`
+	Sources                  []quic.ExperimentalCloneSourceStats `json:"sources,omitempty"`
+	WorkerPIDs               []int                               `json:"worker_pids,omitempty"`
+	GoVersion                string                              `json:"go_version"`
+	GOMAXPROCS               int                                 `json:"gomaxprocs"`
 }
 
 var cpuProfile string
 var verifySHA256 bool
+
+// Set only by the source-verification benchmark overlay builder.
+var sourceSHA256Verification = "enabled"
 
 func main() {
 	mode := flag.String("mode", "single", "single, multipath, or multisource")
@@ -443,6 +447,11 @@ func run(ctx context.Context, mode string, size int64) error {
 	elapsed := time.Since(start)
 	r := result{Mode: mode, Bytes: size, Seconds: elapsed.Seconds(), MbitPerSecond: float64(size) * 8 / elapsed.Seconds() / 1e6, MiBPerSecond: float64(size) / elapsed.Seconds() / (1 << 20), SHA256: expected, WorkerPIDs: pids, GoVersion: runtime.Version(), GOMAXPROCS: runtime.GOMAXPROCS(0)}
 	r.SHA256Verified = verifySHA256
+	if mode == "multisource" {
+		r.SourceSHA256Verification = sourceSHA256Verification
+	} else {
+		r.SourceSHA256Verification = "not-applicable"
+	}
 	if !verifySHA256 {
 		r.SHA256 = ""
 	}
