@@ -39,6 +39,7 @@ type delegation struct {
 	rangeInfo  Range
 	digest     [32]byte
 	data       []byte
+	reference  bool
 	ackBits    []uint64
 	acked      uint64
 	generation uint64
@@ -51,19 +52,32 @@ type delegation struct {
 // content retention and range reservation in one transaction. The adapter must
 // advance its own offsets and counters before releasing its locks.
 func (a *Authority) DelegatePrimary(path *Path, id protocol.StreamID, offset, limit uint64, data []byte, connectionLimit uint64) (*Attempt, error) {
+	return a.delegatePrimary(path, id, offset, limit, uint64(len(data)), data, [32]byte{}, false, connectionLimit)
+}
+
+// DelegatePrimaryReference reserves a range and its content digest without retaining
+// payload. The locked live stream adapter must advance its offsets and counters,
+// and the source must keep the matching bytes available for retries.
+func (a *Authority) DelegatePrimaryReference(path *Path, id protocol.StreamID, offset, limit, length uint64, digest [32]byte, connectionLimit uint64) (*Attempt, error) {
+	return a.delegatePrimary(path, id, offset, limit, length, nil, digest, true, connectionLimit)
+}
+
+func (a *Authority) delegatePrimary(path *Path, id protocol.StreamID, offset, limit, n uint64, data []byte, digest [32]byte, reference bool, connectionLimit uint64) (*Attempt, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if err := a.checkPath(path); err != nil {
 		return nil, err
 	}
-	n := uint64(len(data))
 	if n == 0 || n > MaxDelegationBytes || len(a.delegations) >= MaxPendingDelegations || n > MaxPendingDelegationBytes-a.delegatedBytes || a.nextDelegation == ^uint64(0) {
 		return nil, ErrLimit
 	}
-	// Retain an immutable copy: a failed or retired source must not be the only
-	// holder of bytes needed for retransmission. Caller must not mutate during copy.
-	d := &delegation{data: slices.Clone(data), ackBits: make([]uint64, (n+63)/64), generation: 1}
-	d.digest = sha256.Sum256(d.data)
+	d := &delegation{reference: reference, digest: digest, ackBits: make([]uint64, (n+63)/64), generation: 1}
+	if !reference {
+		// Retain an immutable copy for retransmission. The caller must not
+		// mutate the supplied bytes during this copy.
+		d.data = slices.Clone(data)
+		d.digest = sha256.Sum256(d.data)
+	}
 	if err := a.accountPrimary(id, offset, limit, n, connectionLimit); err != nil {
 		return nil, err
 	}
@@ -188,7 +202,7 @@ func (a *Authority) acknowledgeLocked(t *Attempt, offset, length uint64) (bool, 
 
 func (a *Authority) releaseDelegation(d *delegation, canceled bool) {
 	delete(a.delegations, d.id)
-	a.delegatedBytes -= uint64(len(d.data))
+	a.delegatedBytes -= d.rangeInfo.Length
 	d.data, d.ackBits = nil, nil
 	d.done, d.canceled = !canceled, canceled
 }

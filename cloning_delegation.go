@@ -14,6 +14,14 @@ type clonedRange struct {
 }
 
 func (s *SendStream) delegateCloningRange(path *cloning.Path, data []byte) (*clonedRange, error) {
+	return s.delegateCloningContent(path, data, uint64(len(data)), [32]byte{}, false)
+}
+
+func (s *SendStream) delegateCloningReference(path *cloning.Path, length uint64, digest [32]byte) (*clonedRange, error) {
+	return s.delegateCloningContent(path, nil, length, digest, true)
+}
+
+func (s *SendStream) delegateCloningContent(path *cloning.Path, data []byte, length uint64, digest [32]byte, reference bool) (*clonedRange, error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	if s.shutdownErr != nil {
@@ -40,14 +48,23 @@ func (s *SendStream) delegateCloningRange(path *cloning.Path, data []byte) (*clo
 	if c.cloningAuthority == nil {
 		return nil, errCloningNotReady
 	}
-	n := protocol.ByteCount(len(data))
+	if length > cloning.MaxDelegationBytes {
+		return nil, cloning.ErrLimit
+	}
+	n := protocol.ByteCount(length)
 	if n == 0 || n > cloning.MaxDelegationBytes {
 		return nil, cloning.ErrLimit
 	}
 	if s.writeOffset != fc.bytesSent || fc.bytesSent > fc.sendWindow || c.bytesSent > c.sendWindow || n > min(fc.sendWindow-fc.bytesSent, c.sendWindow-c.bytesSent) {
 		return nil, ErrWouldBlock
 	}
-	attempt, err := c.cloningAuthority.DelegatePrimary(path, s.streamID, uint64(s.writeOffset), uint64(fc.sendWindow), data, uint64(c.sendWindow))
+	var attempt *cloning.Attempt
+	var err error
+	if reference {
+		attempt, err = c.cloningAuthority.DelegatePrimaryReference(path, s.streamID, uint64(s.writeOffset), uint64(fc.sendWindow), length, digest, uint64(c.sendWindow))
+	} else {
+		attempt, err = c.cloningAuthority.DelegatePrimary(path, s.streamID, uint64(s.writeOffset), uint64(fc.sendWindow), data, uint64(c.sendWindow))
+	}
 	if err != nil {
 		return nil, err
 	}

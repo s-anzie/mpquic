@@ -5,9 +5,10 @@ An **experimental raw-QUIC prototype is now runnable** with
 sources. See [the laboratory guide](example/cloning/README.md) before using the
 public experimental API. This is not production-ready, geographically validated,
 or integrated with HTTP/3. Negotiated source offers, direct worker path validation
-and coordinated key rotation are implemented for the experimental API. Worker-local
-recovery, automatic source replacement and geographically distributed validation
-remain unfinished.
+and coordinated key rotation are implemented for the experimental API. Worker-local congestion control and recovery, fenced source replacement, and
+source-local object reads are implemented experimentally. Geographically distributed
+validation and production hardening remain unfinished; ecological selection is
+application policy and is not implemented here.
 
 > Security correction discovered during C04 preparation: the earlier multipath
 > sender truncated the 96-bit path-and-packet nonce to 64 bits, dropping the low
@@ -53,8 +54,9 @@ The primary authority owns:
 - Stream offset reservations and shared MAX_DATA / MAX_STREAM_DATA accounting.
 - Dispatch of received control information to its owning path or stream.
 
-A worker will own its assigned path's sending loop, packet history, ACK/loss
-recovery, congestion controller, pacing, and RTT/PMTU state. PATH_ACK may arrive
+An autonomous worker owns its assigned path's sending loop, packet history,
+ACK/loss recovery, congestion controller, pacing and RTT state. Datagram sizing
+remains bounded by the primary's validated path configuration. PATH_ACK may arrive
 on a different path: it must reach the worker whose packet number space it
 acknowledges, not whichever server received the UDP packet.
 
@@ -72,8 +74,8 @@ Never reconstruct an authority with counters reset for an existing connection.
 3. Unique stream bytes consume shared connection credit once. Reservations are
    never refunded just because a worker failed: it might already have sent them.
    Retransmission uses the same offsets and identical content, with fresh packet
-   numbers. A future range ledger must bind content and track delivery/retry
-   ownership before workers can emit these reservations.
+   numbers. The range ledger binds content and tracks delivery/retry ownership before
+   workers can emit these reservations.
 4. Final size is fixed once. Finalizing reservations does not prove delivery and
    does not authorize discarding outstanding bytes.
 5. Path validation and anti-amplification checks still apply. A grant alone is
@@ -99,10 +101,10 @@ Never reconstruct an authority with counters reset for an existing connection.
 | C02a | Bind a confirmed multipath server's additional-path packet allocation to the authority, preserving existing high-water marks | Implemented behind an internal staging hook |
 | C02b | Import primary stream/credit state and account ordinary writes, pre-reserved buffers, and FIN through the authority | Implemented; remote reservations enabled only through the experimental writer |
 | C03a | Bounded content/range ledger connected to live SendStream offsets and completion, partial delivery, retries and cancellation | Implemented as internal local primitives |
-| C03b | Authenticated worker coordination contract, packet-to-byte ACK evidence, control routing and bounded communication queues | In progress: experimental authenticated live dispatch and recovery bridge; worker-local recovery and durable fencing pending |
+| C03b | Authenticated worker coordination contract, packet-to-byte ACK evidence, control routing and bounded communication queues | Experimental worker-local congestion/pacing/recovery and authenticated feedback implemented; durable restart fencing pending |
 | C04 | Secure worker bootstrap and packet protection state, coordinated key updates and global AEAD accounting | Experimental single-packet leases, coordinated local/peer rotation and per-path epoch boundaries implemented; durable worker recovery pending |
-| C05 | Negotiated source endpoint advertisement and client validation for different server IPs | Experimental announcement, consent, direct path validation and writer binding implemented; automatic replacement and geographical deployment testing pending |
-| C06 | Direct multi-server transmission and cross-path retransmission of distinct ranges | Experimental two-source live QUIC transfer and same-path fresh-PN retries implemented; cross-source failover pending |
+| C05 | Negotiated source endpoint advertisement and client validation for different server IPs | Experimental announcement, consent, direct validation and dynamic replacement implemented; geographical deployment testing pending |
+| C06 | Direct multi-server transmission and cross-path retransmission of distinct ranges | Experimental source-local object transfer and fenced cross-source retransmission implemented |
 | C07 | HTTP/3 integration, three-source transfers, failures, reordered messages, key updates, and performance measurements | Pending |
 
 Dependencies can require splitting or reordering lots; none should weaken the
@@ -1001,3 +1003,103 @@ transition each); its 1.355-second loopback run is not a geographical benchmark.
 Earlier full-suite attempts had intermittent failures in automatic discovery's
 cloning scenario and HTTP/3 graceful shutdown. Each passed five isolated repeats,
 and the final full run passed; no fix for those timing failures is claimed.
+
+
+## Worker failover, local recovery and source-local objects
+
+This increment supersedes earlier prototype limitations about fatal worker failure,
+primary-only recovery and primary-distributed content. HTTP/3 remains out of scope.
+The private source extension is version 4; job and relay ALPNs are respectively
+`mpquic-clone-lab/2` and `mpquic-clone-relay/2`. Older experimental peers are incompatible.
+
+### Replacement without changing the client connection
+
+A failed source is permanently retired. Before reassigning uncertain ranges, the
+primary requests an authenticated semantic fence from the client. The client
+retires the path on its connection loop before acknowledging the fence; packets
+on that path are subsequently dropped before decryption. This acknowledgment
+proves path exclusion, not delivery. Retries preserve stream offsets, content
+hashes and unique flow credit, and use fresh packet numbers on a different path.
+
+An uncertain single-packet lease can be released only after its exact path grant
+has been retired. Packet-number and epoch usage reservations are never refunded.
+Pending peer key updates can then proceed. This assumes correct, trusted workers:
+it does not cryptographically revoke copied keys or isolate a compromised worker.
+Never replay old jobs or restore old leases after a restart. Use fresh paths and
+fresh control channels. Durable primary recovery remains unsupported.
+
+`writer.AddSource(ctx, source)` accepts a freshly consented and validated source,
+including while a write is active. Failed or withdrawn sources can be replaced
+without closing the client connection. If no healthy source remains, the write
+waits for an addition until its context ends. Fence failure or write cancellation
+still closes the connection. Delegated paths requiring a new validation exchange
+are retired; endpoint migration requires a fresh path. An exact delayed duplicate
+of the last answered challenge at the still-validated endpoint is ignored,
+without allocating a primary packet number after worker handoff.
+
+### Worker decisions and remaining primary dependency
+
+Set `ExperimentalCloneSource.Autonomous` and share one
+`ExperimentalCloneWorkerOptions.Controller` between that worker's job and relay
+services. `ExperimentalWorkerController` gates actual UDP sends using local
+congestion state and pacing, and owns RTT estimation, loss detection and PTO.
+Authenticated ACK feedback reaches it over the relay. Retry requests refer to
+approved packets; the primary authorizes a fresh packet number and the same range.
+
+The primary remains authoritative for delivery, offsets, shared credit, keys and
+connection lifecycle. One global single-packet lease serializes cryptographic
+handoff, and at most eight 1,000-byte portions are outstanding. Workers cannot
+continue independently after primary loss. TLS feedback and per-packet handoff
+remain performance limits to measure on geographically separated machines.
+
+### Object metadata instead of primary-distributed bytes
+
+`BuildExperimentalCloneObjectManifest` hashes immutable content into 1,000-byte
+chunks. An application can publish its ID, size and chunk hashes; the primary
+imports these with `NewExperimentalCloneObjectManifest`. Authenticate this metadata
+through the application catalog: content hashing alone does not authenticate it.
+
+`WriteObject` and chunk-aligned `WriteObjectRange` reserve stream credit and send
+only object/chunk descriptors to workers. Each worker's `Objects` resolver opens
+its own content, verifies the requested chunk hash, and builds the STREAM payload.
+Missing, truncated or corrupt source content causes source failover. The primary
+need not open or retain the object. `WriteContext` remains available for bytes
+already held at the primary. Manifests support at most 2,097,152 chunks (64 MiB of
+hashes, at most 2,097,152,000 content bytes).
+
+There is one writer and one send stream per connection, at most eight initial
+sources and 32 lifetime source entries. Eight unsuccessful delivery attempts on
+one source trigger retirement. The laboratory uses independent worker files and
+real loopback sockets; it is not a multi-machine deployment or capacity benchmark.
+Application-level ecological selection can use announcement, acceptance,
+`AddSource` and withdrawal to change sources. Energy data and selection policy
+remain the next application objective.
+
+Validation includes live source failure, lost drain receipts, source withdrawal,
+concurrent source addition, corrupt objects, local loss recovery and key rotation,
+with exact stream content and unchanged unique flow credit checked. The combined
+laboratory command is:
+
+```sh
+go run ./example/cloning -bytes 1048576 -rotate -fail-first
+```
+
+The regression suite additionally covers source expiry while the final range is
+missing and packet loss with 4,000-byte stream or connection receive windows,
+for both retained bytes and source-local objects. Blocked admission yields to
+pending recovery, so missing bytes can unblock receiver credit.
+
+The combined loopback run verified 1,048,576 bytes with SHA-256
+`06b7bbfb7824aa03382051691630eb26de85102d1b08a81e907ec0744cd8a286`.
+The stopped worker drained 262 jobs; the survivor drained 787 and reached key
+epoch 2. These counts include protocol chunk boundaries and are not independent
+application byte counters. Timings under concurrent test load are not a capacity
+measurement.
+
+A concurrent diagnostic run completed the transfer but unexpectedly retired a
+source in the small-window regression. Its exact cause was not established.
+The follow-up adds explicit delayed-challenge coverage and ignores only an exact
+repeat at the validated endpoint; new challenges still retire the delegated path.
+The original no-unexpected-retirement assertion remains enabled for ordinary
+small-window tests and passed ten repeated race runs after this change. Treat
+geographic and sustained-load behavior as still requiring validation.

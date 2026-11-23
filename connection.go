@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"reflect"
 	"slices"
 	"sync"
@@ -180,12 +181,14 @@ type Conn struct {
 
 	maxPayloadSizeEstimate atomic.Uint32
 
-	initialStream           *initialCryptoStream
-	handshakeStream         *cryptoStream
-	oneRTTStream            *cryptoStream // only set for the server
-	cryptoStreamHandler     cryptoStreamHandler
-	experimentalCloneActive bool
-	experimentalSources     *experimentalSourceRegistry
+	initialStream              *initialCryptoStream
+	handshakeStream            *cryptoStream
+	oneRTTStream               *cryptoStream // only set for the server
+	cryptoStreamHandler        cryptoStreamHandler
+	experimentalCloneActive    bool
+	experimentalFences         map[uint64]*experimentalSourceFence
+	experimentalSources        *experimentalSourceRegistry
+	experimentalPathChallenges map[uint64]experimentalPathChallenge
 
 	notifyReceivedPacket chan struct{}
 	sendingScheduled     chan struct{}
@@ -1309,6 +1312,9 @@ func (c *Conn) handleShortHeaderPacket(
 		}
 	}
 	var pn protocol.PacketNumber
+	if c.multipathEnabled && c.multipath.isPathAbandoned(packetPathID) {
+		return false, nil
+	}
 	if !c.acceptExperimentalRelayPacket(packetPathID, p) {
 		return false, nil
 	}
@@ -2086,6 +2092,8 @@ func (c *Conn) handleFrameForPath(
 		err = c.receiveSourceOffer(frame, encLevel)
 	case *wire.ExperimentalSourceAcceptFrame:
 		err = c.receiveSourceAcceptance(frame, encLevel)
+	case *wire.ExperimentalSourceFenceFrame:
+		err = c.receiveExperimentalSourceFence(frame, encLevel)
 	case *wire.CryptoFrame:
 		err = c.handleCryptoFrame(frame, encLevel, rcvTime)
 	case *wire.ConnectionCloseFrame:
@@ -2298,6 +2306,13 @@ func (c *Conn) handlePathChallengeFrame(f *wire.PathChallengeFrame, pathID uint6
 	}
 }
 
+// experimentalPathChallenge remembers only the last response sent before a
+// source path is handed to its worker. It is owned by the connection loop.
+type experimentalPathChallenge struct {
+	data    [8]byte
+	address netip.AddrPort
+}
+
 // sendMultipathPathResponse sends a PATH_RESPONSE on the path that carried the
 // corresponding PATH_CHALLENGE. A response on the initial path would not
 // validate a secondary path and can cause the peer to probe indefinitely.
@@ -2310,6 +2325,18 @@ func (c *Conn) sendMultipathPathResponse(
 ) error {
 	if c.multipath.isPathAbandoned(id) {
 		return nil
+	}
+	if p := c.multipath.paths[id]; c.perspective == protocol.PerspectiveServer && p != nil && p.cloningRecovery != nil {
+		// A delayed repeat of the last answered challenge does not start a
+		// new validation exchange. Ignore it only at the still-validated
+		// endpoint; never allocate a local packet number after worker handoff.
+		previous, known := c.experimentalPathChallenges[id]
+		addr, udp := remoteAddr.(*net.UDPAddr)
+		if known && udp && p.serverValidated && addrsEqual(p.remoteAddr, remoteAddr) && previous.address == addr.AddrPort() && previous.data == challenge.Data {
+			return nil
+		}
+		// A new challenge or endpoint still requires a fresh worker path.
+		return c.abandonFailedPath(id, errors.New("delegated path requires revalidation"))
 	}
 	connID, ok := c.connIDManager.GetConnIDForPath(pathID(id))
 	if !ok {
@@ -2353,7 +2380,14 @@ func (c *Conn) sendMultipathPathResponse(
 	c.registerPackedShortHeaderPacket(probe, protocol.ECNNon, now)
 	if c.perspective == protocol.PerspectiveServer {
 		if path := c.multipath.paths[id]; path.experimentalRelay != nil {
-			return c.writeExperimentalPath(id, buf.Data, remoteAddr, info)
+			err := c.writeExperimentalPath(id, buf.Data, remoteAddr, info)
+			if addr, ok := remoteAddr.(*net.UDPAddr); err == nil && ok && !path.abandoned {
+				if c.experimentalPathChallenges == nil {
+					c.experimentalPathChallenges = make(map[uint64]experimentalPathChallenge)
+				}
+				c.experimentalPathChallenges[id] = experimentalPathChallenge{data: challenge.Data, address: addr.AddrPort()}
+			}
+			return err
 		}
 		c.sendQueue.SendProbe(buf, remoteAddr, info)
 		return nil
@@ -2434,6 +2468,9 @@ func (c *Conn) handleHandshakeDoneFrame(rcvTime monotime.Time) error {
 func (c *Conn) handleAckFrame(frame *wire.AckFrame, encLevel protocol.EncryptionLevel, rcvTime monotime.Time) error {
 	if frame.PathID != nil && *frame.PathID != 0 {
 		if err := c.multipath.handlePathAck(frame, rcvTime); err != nil {
+			return err
+		}
+		if err := c.forwardExperimentalWorkerACK(frame); err != nil {
 			return err
 		}
 		return c.forwardCloningPathACK(frame)

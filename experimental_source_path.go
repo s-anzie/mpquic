@@ -2,9 +2,11 @@ package quic
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/netip"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/quic-go/quic-go/internal/wire"
@@ -13,12 +15,14 @@ import (
 // ExperimentalSourcePath owns a dedicated client UDP transport to one accepted
 // source generation. Close it after use. The source cannot replace path 0.
 type ExperimentalSourcePath struct {
+	conn      *Conn
 	path      *Path
 	transport *Transport
 	socket    *sourceDestinationConn
 }
 
 func (p *ExperimentalSourcePath) Close() error {
+	p.conn.detachDiscoveredTransport(p.transport)
 	p.socket.active.Store(false)
 	p.socket.Close()
 	_ = p.path.Close()
@@ -40,7 +44,10 @@ type sourceDestinationConn struct {
 
 func (s *sourceDestinationConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 	u, ok := addr.(*net.UDPAddr)
-	if !ok || (u.AddrPort() != s.primary && u.AddrPort() != s.worker) || !s.active.Load() || !time.Now().Before(s.expires) {
+	if !s.active.Load() || !time.Now().Before(s.expires) {
+		return 0, errors.Join(ErrExperimentalSourceOffer, syscall.ENETDOWN)
+	}
+	if !ok || (u.AddrPort() != s.primary && u.AddrPort() != s.worker) {
 		return 0, ErrExperimentalSourceOffer
 	}
 	return s.PacketConn.WriteTo(b, net.UDPAddrFromAddrPort(s.worker))
@@ -50,10 +57,13 @@ func (s *sourceDestinationConn) ReadFrom(b []byte) (int, net.Addr, error) {
 	for {
 		n, addr, err := s.PacketConn.ReadFrom(b)
 		if err != nil {
+			if isPathSendError(err) {
+				continue
+			}
 			return n, addr, err
 		}
 		if !s.active.Load() || !time.Now().Before(s.expires) {
-			return 0, nil, ErrExperimentalSourceOffer
+			continue
 		}
 		u, ok := addr.(*net.UDPAddr)
 		if ok && u.AddrPort() == s.worker {
@@ -67,7 +77,7 @@ func (s *sourceDestinationConn) ReadFrom(b []byte) (int, net.Addr, error) {
 // endpoint. The server must prepare its relay first. udp must be dedicated and
 // unused; ownership transfers to the returned path, or it is closed on failure.
 // No DNS lookup is performed. Caller acceptance policy precedes all probes.
-func (c *Conn) ProbeExperimentalSource(ctx context.Context, id, generation uint64, udp *net.UDPConn) (_ *ExperimentalSourcePath, err error) {
+func (c *Conn) ProbeExperimentalSource(ctx context.Context, id, generation uint64, udp net.PacketConn) (_ *ExperimentalSourcePath, err error) {
 	if udp == nil {
 		return nil, ErrExperimentalSourceOffer
 	}
@@ -99,7 +109,7 @@ func (c *Conn) ProbeExperimentalSource(ctx context.Context, id, generation uint6
 		tr.Close()
 		return nil, err
 	}
-	result := &ExperimentalSourcePath{path: path, transport: tr, socket: s}
+	result := &ExperimentalSourcePath{conn: c, path: path, transport: tr, socket: s}
 	defer func() {
 		if err != nil {
 			result.Close()

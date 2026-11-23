@@ -89,13 +89,16 @@ func (fs frames) encode(enc *jsontext.Encoder) error {
 
 func (f Frame) Encode(enc *jsontext.Encoder) error {
 	switch frame := f.Frame.(type) {
-	case *wire.ExperimentalSourceOfferFrame, *wire.ExperimentalSourceAcceptFrame:
+	case *wire.ExperimentalSourceOfferFrame, *wire.ExperimentalSourceAcceptFrame, *wire.ExperimentalSourceFenceFrame:
 		h := encoderHelper{enc: enc}
 		h.WriteToken(jsontext.BeginObject)
 		h.WriteToken(jsontext.String("frame_type"))
 		name := "experimental_source_offer"
 		if _, ok := f.Frame.(*wire.ExperimentalSourceAcceptFrame); ok {
 			name = "experimental_source_accept"
+		}
+		if _, ok := f.Frame.(*wire.ExperimentalSourceFenceFrame); ok {
+			name = "experimental_source_fence"
 		}
 		h.WriteToken(jsontext.String(name))
 		h.WriteToken(jsontext.EndObject)

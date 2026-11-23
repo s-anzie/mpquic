@@ -72,7 +72,7 @@ func (m *multipathState) recordCloningPacket(id uint64, pn protocol.PacketNumber
 	if !ok || p.abandoned || p.cloningRecovery == nil || sentAt.IsZero() || size <= 0 || size > protocol.MaxPacketBufferSize || pn <= p.largestSent {
 		return errCloningRecoveryBlocked
 	}
-	if !m.canSendOnPath(id, sentAt) {
+	if !p.experimentalWorkerControlled && !m.canSendOnPath(id, sentAt) {
 		return errCloningRecoveryBlocked
 	}
 	r := p.cloningRecovery

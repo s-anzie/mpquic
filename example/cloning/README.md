@@ -22,8 +22,8 @@ go run ./example/cloning -bytes 1048576 -timeout 90s
 
 The default transfers 64 KiB. Output includes source/destination sockets,
 verified byte count, SHA-256, elapsed time, throughput and packets per worker.
-Certificates and keys are generated in memory for each run; nothing is written
-to disk, and all listeners bind to loopback. The 512 KiB ordinary warm-up is
+Certificates and keys are generated in memory. Independent temporary worker files
+are created and removed for each run; all listeners bind to loopback. The 512 KiB ordinary warm-up is
 excluded from the reported cloned-transfer throughput.
 
 The writer permits up to eight 1,000-byte portions awaiting client ACKs.
@@ -57,15 +57,18 @@ into another application; the upstream quic-go module does not contain this API.
    `ExperimentalCloningALPN`, certificate-chain validation and client certificates.
    Configure trusted SHA-256 leaf-certificate fingerprints on both sides. Do not
    derive expected fingerprints from the connection being authenticated.
-6. On each worker, call `ServeExperimentalCloneWorker` with its dedicated UDP
+6. Create one `ExperimentalWorkerController` per worker and share it through
+   `ExperimentalCloneWorkerOptions` between the job and relay services. Set
+   `Objects` to a resolver for that worker's immutable local files. On each worker, call `ServeExperimentalCloneWorker` with its dedicated UDP
    socket and an explicit destination allowlist. The example permits exactly the
    associated client's additional-path socket, not an arbitrary address.
 7. On the primary, create one `ExperimentalCloneWriter` for a `SendStream` and
    source assignments containing `SourceID`, `Generation`, `PathID`, the job TLS
-   channel and the worker certificate pin. Both channels must use the same worker
+   channel, `Autonomous: true` and the worker certificate pin. Both channels must use the same worker
    identity. Retry readiness until the server has also validated its return path.
-   `WriteContext` alternates portions across workers and
-   returns the confirmed prefix length. Close the original stream after a
+   `WriteObject(ctx, manifest)` distributes metadata for verified worker-local
+   reads and returns the confirmed prefix length. `WriteObjectRange` supports
+   aligned ranges; `WriteContext` supports primary-held bytes. Close the original stream after a
    successful write so the primary sends FIN. Read any application confirmation
    before closing the writer: **writer Close closes the entire connection**.
 
@@ -83,26 +86,26 @@ supports concurrent `Close` to interrupt them.
   migration or geographic-network validation. The client directly probes the
   accepted worker address. The lab uses explicitly trusted loopback endpoints;
   policy must restrict destinations before any Internet deployment.
-- One clone writer and one send stream per connection, up to eight sources.
-  The primary retains and distributes the bytes. Independent source retrieval
-  and energy-aware selection remain application work.
-- Single-packet leases serialize cryptographic handoff. A receipt is accepted
-  only after the worker exhausts and closes its window. Primary local key updates
-  wait for that drain. An authenticated peer update during a lease waits for
-  the drain receipt; its triggering packet is discarded without acknowledgment
-  and recovered by QUIC retransmission. Admission resumes after new-phase peer
-  traffic is authenticated. `writer.RotateKeys(ctx)` explicitly requests an
-  update between writes; workers receive fresh derived keys on their next job.
-  `writer.Stats()` reports each source's last epoch and observed rotations.
-- Worker failure, invalid control traffic, changed CID/destination, uncertain
-  dispatch or cancellation closes the whole connection. No transparent failover
-  or restart from old keys/counters. Retry the application transfer on a fresh
-  connection if needed.
-- Each outstanding portion waits one second for its ACK before a fresh-PN retransmission,
-  with at most eight transmissions. This is not adaptive geographical PTO or
-  worker-local congestion control. The existing primary path recovery owns
-  congestion accounting. Worker control has bounded I/O deadlines and a
-  30-second idle deadline.
+- One clone writer and one send stream per connection, up to eight initial sources
+  and 32 lifetime entries. At most eight 1,000-byte chunks are outstanding.
+  Source-local reads are the default (`-source-local=false` uses primary-held bytes).
+  Authenticate the object manifest through your application before importing it.
+- Single-packet leases serialize cryptographic handoff. Worker-local congestion,
+  pacing, loss and PTO decisions control UDP sends; the primary still authorizes
+  packet numbers, shared credit, keys and delivery. Losing the primary remains fatal.
+- Source failure, withdrawal or invalid content triggers path retirement and an
+  authenticated client fence before retrying ranges on another source. A fence is
+  not a delivery receipt or cryptographic revocation of worker keys. Workers must
+  be trusted and must never replay old jobs or leases after restart.
+- `writer.AddSource(ctx, source)` can add a freshly accepted and validated path
+  during a write. With no healthy source, the write waits for an addition until
+  its context expires. Cancellation or fence failure closes the connection.
+  Delegated-path endpoint migration requires retirement and a fresh path.
+- `writer.RotateKeys(ctx)` requests an update between writes. `Stats()` reports
+  drained jobs, epochs and rotations; worker controller snapshots report local
+  ACK, loss, PTO, RTT and congestion state. Neither replaces application confirmation.
+- Energy-aware selection, geographically distributed deployment testing and
+  durable restart recovery remain outside this laboratory.
 - **No HTTP/3 integration.** This API writes raw QUIC streams, not HTTP/3 responses
   or QPACK state. Existing HTTP/3 multipath remains separate.
 
@@ -119,18 +122,20 @@ The client can call `AcceptExperimentalSource(ctx, id, generation, policy)` with
 an explicit destination policy. The primary reads consent with
 `ExperimentalAcceptedSources(ctx)`. Consent applies only to that generation;
 renewal, withdrawal and expiry invalidate it. The negotiated private extension
-is now version 3 and must match on both peers. Acceptance alone performs no
+is now version 4 and must match on both peers. Acceptance alone performs no
 network probe. `ProbeExperimentalSource` binds the generation to a fresh path and
 validates it. The writer rejects missing, stale, mismatched or unvalidated bindings.
-Renewal/withdrawal of a prepared source or relay failure currently fails closed;
-automatic replacement within the existing connection is not implemented.
+Withdrawal or relay failure retires the affected path; pending ranges can move
+to a healthy source after the client fence. Renewal requires fresh consent and
+a fresh validated path. Job and relay ALPNs are `mpquic-clone-lab/2` and
+`mpquic-clone-relay/2`.
 
 ## Verification
 
 Run a transfer with an explicit key update halfway through:
 
 ```sh
-go run ./example/cloning -bytes 1048576 -rotate
+go run ./example/cloning -bytes 1048576 -rotate -fail-first
 ```
 
 ```sh
@@ -139,6 +144,7 @@ go test -race ./internal/handshake -run '^TestExperimentalRemote'
 ```
 
 The live tests cover exact content over one QUIC stream from two workers, loss
-and fresh-number retransmission, and worker failure closing the connection.
+and fresh-number retransmission, worker failure with same-connection recovery,
+concurrent replacement, withdrawal, corrupt content and lost drain receipts.
 Crypto tests cover local key-update deferral, authenticated peer-update deferral
 until worker drain, and fresh worker leases in the next epoch.

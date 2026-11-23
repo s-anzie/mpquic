@@ -425,3 +425,14 @@ func TestDatagramFrame(t *testing.T) {
 		},
 	)
 }
+
+func TestExperimentalSourceFenceFrame(t *testing.T) {
+	for _, ack := range []bool{false, true} {
+		frame := &wire.ExperimentalSourceFenceFrame{ID: 123, Generation: 456, PathID: 7, Ack: ack}
+		var buf bytes.Buffer
+		require.NoError(t, (Frame{Frame: frame}).Encode(jsontext.NewEncoder(&buf)))
+		var got map[string]any
+		require.NoError(t, json.Unmarshal(buf.Bytes(), &got))
+		require.Equal(t, map[string]any{"frame_type": "experimental_source_fence"}, got)
+	}
+}

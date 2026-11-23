@@ -162,6 +162,14 @@ func (a *Authority) RetirePath(p *Path) error {
 	return nil
 }
 
+// IsRetiredPath verifies a permanent local retirement without granting reuse.
+func (a *Authority) IsRetiredPath(p *Path) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	_, known := a.paths[p]
+	return !a.closed && known && p != nil && p.authority == a && p.retired
+}
+
 // NextPacketNumber never rolls back, including after a failed send or key
 // update. Actual integration must make this the worker's only number source.
 func (a *Authority) NextPacketNumber(p *Path) (protocol.PacketNumber, error) {
