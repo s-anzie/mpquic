@@ -183,11 +183,13 @@ type Config struct {
 	EnableStreamResetPartialDelivery bool
 	// Enable Multipath QUIC support.
 	// See https://datatracker.ietf.org/doc/draft-ietf-quic-multipath/.
+	// Opting in permits up to 1024 queued receive datagrams per connection
+	// to absorb concurrent path bursts (256 for single-path configurations).
 	EnableMultipath bool
 	// EnableExperimentalSourceOffers negotiates private source announcements.
 	// Offers never trigger probes automatically or mark an address validated.
 	// Opting in also permits up to 4096 queued receive datagrams per connection
-	// to accommodate bounded multi-source flights (256 otherwise).
+	// to accommodate bounded multi-source flights (1024 for ordinary multipath).
 	EnableExperimentalSourceOffers bool
 	// DisableAutomaticPathDiscovery leaves path creation to the application.
 	// Otherwise, multipath clients discover and validate additional local addresses

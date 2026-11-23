@@ -22,6 +22,12 @@ func (c *Conn) newConnectionSendQueue() sender {
 		if c.pathSendErrors == nil {
 			c.pathSendErrors = make(chan error, 1)
 		}
+		q.onPathWriteError = func(id uint64, err error) bool {
+			// Classify on the connection loop, after pending path retirement.
+			c.secondarySendErrors.Store(id, err)
+			c.scheduleSending()
+			return true
+		}
 		q.onWriteError = func(err error) bool {
 			if !isPathSendError(err) {
 				return false
@@ -135,4 +141,13 @@ func (c *Conn) detachDiscoveredTransport(tr *Transport) {
 	case <-done:
 	case <-c.Context().Done():
 	}
+}
+
+// A queued write can complete after discovery has retired its destination and
+// closed its socket. Such late errors must not close surviving paths.
+func (c *Conn) handleQueuedPathSendError(id uint64, err error) error {
+	if c.multipath.isPathAbandoned(id) {
+		return nil
+	}
+	return c.handlePathSendError(id, err)
 }

@@ -155,7 +155,7 @@ until worker drain, and fresh worker leases in the next epoch.
 The bounded autonomous writer uses Linux UDP segmentation where available and
 falls back to batch datagram sends. `QUIC_GO_DISABLE_GSO=true` disables this
 worker offload as well. Experimental source-offer connections allow a bounded
-4,096-datagram receive queue; ordinary connections retain 256.
+4,096-datagram receive queue; ordinary multipath configurations allow 1,024 and single-path configurations retain 256.
 `ConnectionStats.ReceiveQueueDrops` exposes local queue overflow, and source
 statistics expose capacity/dispatch/drain timing. Drain timing is included in
 dispatch timing and is not proof of client delivery.

@@ -195,6 +195,7 @@ type Conn struct {
 	multipathActions     chan func()
 	cloningWorkerEvents  <-chan struct{}
 	pathSendErrors       chan error
+	secondarySendErrors  sync.Map // path ID -> error, published by the send queue
 	receivedPacketMx     sync.Mutex
 	receivedPackets      ringbuffer.RingBuffer[receivedPacket]
 
@@ -669,6 +670,13 @@ runLoop:
 			}
 		}
 	multipathActionsDrained:
+		c.secondarySendErrors.Range(func(key, value any) bool {
+			c.secondarySendErrors.Delete(key)
+			if err := c.handleQueuedPathSendError(key.(uint64), value.(error)); err != nil {
+				c.setCloseError(&closeError{err: err})
+			}
+			return true
+		})
 		select {
 		case err := <-c.pathSendErrors:
 			if err = c.handlePathSendError(0, err); err != nil {
@@ -2200,12 +2208,14 @@ func (c *Conn) handleFrameForPath(
 	return pathChallenge, err
 }
 
-// Experimental cloning can admit a flight across multiple source receivers.
-// Keep a bounded queue aligned with that flight instead of dropping ordinary
-// local bursts at the smaller single-path queue limit.
+// Multipath receivers share a queue across sockets. Allow bounded bursts from
+// multiple send queues without applying the smaller single-path limit.
 func (c *Conn) maxQueuedReceivedPackets() int {
 	if c.config != nil && c.config.EnableExperimentalSourceOffers {
 		return experimentalCloneFlightPackets
+	}
+	if c.config != nil && c.config.EnableMultipath {
+		return 4 * protocol.MaxConnUnprocessedPackets
 	}
 	return protocol.MaxConnUnprocessedPackets
 }
@@ -3070,7 +3080,7 @@ func (c *Conn) sendMultipathApplicationPacket(now monotime.Time) (bool, error) {
 	if !ok {
 		return false, nil
 	}
-	if pathID == 0 && c.sendQueue.WouldBlock() {
+	if c.sendQueue.WouldBlock() {
 		return false, nil
 	}
 	pathAck := c.receivedPacketHandler.GetAckFrameForPath(uint64(pathID), now, true)
@@ -3102,8 +3112,7 @@ func (c *Conn) sendMultipathApplicationPacket(now monotime.Time) (bool, error) {
 		if pathID == 0 {
 			c.sendQueue.Send(buf, 0, protocol.ECNNon)
 		} else {
-			err = c.writeMultipathApplication(uint64(pathID), tr, buf.Data, 0)
-			buf.Release()
+			err = c.sendMultipathApplicationBuffer(uint64(pathID), tr, buf, 0)
 			if err != nil {
 				return false, err
 			}
@@ -3157,8 +3166,7 @@ func (c *Conn) sendMultipathApplicationPacket(now monotime.Time) (bool, error) {
 	if pathID == 0 {
 		c.sendQueue.Send(batch, uint16(maxSize), protocol.ECNNon)
 	} else {
-		err = c.writeMultipathApplication(uint64(pathID), tr, batch.Data, uint16(maxSize))
-		batch.Release()
+		err = c.sendMultipathApplicationBuffer(uint64(pathID), tr, batch, uint16(maxSize))
 		if err != nil {
 			return false, err
 		}

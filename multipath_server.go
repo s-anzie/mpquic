@@ -1,6 +1,7 @@
 package quic
 
 import (
+	"net"
 	"slices"
 	"time"
 
@@ -120,5 +121,59 @@ func (c *Conn) writeMultipathApplication(id uint64, tr *Transport, data []byte, 
 		}
 		data = data[n:]
 	}
+	return nil
+}
+
+// sendMultipathApplicationBuffer transfers buffer ownership to the send queue.
+// Capture the validated destination on the connection loop: the writer must not
+// access mutable path, recovery, or cloning state.
+func (c *Conn) sendMultipathApplicationBuffer(id uint64, tr *Transport, buf *packetBuffer, gsoSize uint16) error {
+	q, ok := c.sendQueue.(*sendQueue)
+	if !ok {
+		defer buf.Release()
+		return c.writeMultipathApplication(id, tr, buf.Data, gsoSize)
+	}
+	var socket rawConn
+	var addr net.Addr
+	var oob []byte
+	if c.perspective == protocol.PerspectiveClient {
+		if err := tr.init(false); err != nil {
+			buf.Release()
+			return c.handlePathSendError(id, err)
+		}
+		socket, addr = tr.conn, c.conn.RemoteAddr()
+	} else {
+		path := c.multipath.paths[id]
+		conn, ok := c.conn.(*sconn)
+		if !ok || path.experimentalRelay != nil {
+			defer buf.Release()
+			return c.writeMultipathApplication(id, tr, buf.Data, gsoSize)
+		}
+		socket, addr, oob = conn.rawConn, path.remoteAddr, path.packetInfo.OOB()
+	}
+	if udp, ok := addr.(*net.UDPAddr); ok {
+		snapshot := *udp
+		snapshot.IP = append(net.IP(nil), udp.IP...)
+		addr = &snapshot
+	}
+	oob = append([]byte(nil), oob...)
+	q.enqueue(queueEntry{
+		buf: buf, pathID: id, gsoSize: gsoSize,
+		write: func(data []byte, size uint16) error {
+			written, err := socket.WritePacket(data, addr, oob, size, protocol.ECNUnsupported)
+			if err == nil || written != 0 || size == 0 || !isGSOError(err) {
+				return err
+			}
+			// Retry the rejected GSO batch as complete individual datagrams.
+			for len(data) > 0 {
+				n := min(len(data), int(size))
+				if _, err := socket.WritePacket(data[:n], addr, oob, 0, protocol.ECNUnsupported); err != nil {
+					return err
+				}
+				data = data[n:]
+			}
+			return nil
+		},
+	})
 	return nil
 }

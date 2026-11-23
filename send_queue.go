@@ -16,6 +16,8 @@ type sender interface {
 }
 
 type queueEntry struct {
+	pathID  uint64
+	write   func([]byte, uint16) error
 	buf     *packetBuffer
 	gsoSize uint16
 	ecn     protocol.ECN
@@ -29,7 +31,8 @@ type sendQueue struct {
 	conn        sendConn
 	// onWriteError may isolate a failed path while keeping the queue drainable.
 	// It must not block or access connection-loop-owned state.
-	onWriteError func(error) bool
+	onWriteError     func(error) bool
+	onPathWriteError func(uint64, error) bool
 }
 
 var _ sender = &sendQueue{}
@@ -50,8 +53,12 @@ func newSendQueue(conn sendConn) sender {
 // Callers need to make sure that there's actually space in the send queue by calling WouldBlock.
 // Otherwise Send will panic.
 func (h *sendQueue) Send(p *packetBuffer, gsoSize uint16, ecn protocol.ECN) {
+	h.enqueue(queueEntry{buf: p, gsoSize: gsoSize, ecn: ecn})
+}
+
+func (h *sendQueue) enqueue(e queueEntry) {
 	select {
-	case h.queue <- queueEntry{buf: p, gsoSize: gsoSize, ecn: ecn}:
+	case h.queue <- e:
 		// clear available channel if we've reached capacity
 		if len(h.queue) == sendQueueCapacity {
 			select {
@@ -60,6 +67,7 @@ func (h *sendQueue) Send(p *packetBuffer, gsoSize uint16, ecn protocol.ECN) {
 			}
 		}
 	case <-h.runStopped:
+		e.buf.Release()
 	default:
 		panic("sendQueue.Send would have blocked")
 	}
@@ -81,6 +89,7 @@ func (h *sendQueue) Run() error {
 	defer close(h.runStopped)
 	var shouldClose bool
 	var failed bool
+	failedPaths := make(map[uint64]bool)
 	for {
 		if shouldClose && len(h.queue) == 0 {
 			return nil
@@ -91,18 +100,29 @@ func (h *sendQueue) Run() error {
 			// make sure that all queued packets are actually sent out
 			shouldClose = true
 		case e := <-h.queue:
-			if !failed {
-				if err := h.conn.Write(e.buf.Data, e.gsoSize, e.ecn); err != nil {
-					// This additional check enables:
-					// 1. Checking for "datagram too large" message from the kernel, as such,
-					// 2. Path MTU discovery,and
-					// 3. Eventual detection of loss PingFrame.
-					if !isSendMsgSizeErr(err) {
-						if h.onWriteError == nil || !h.onWriteError(err) {
-							e.buf.Release()
-							return err
-						}
+			if (e.pathID == 0 && !failed) || (e.pathID != 0 && !failedPaths[e.pathID]) {
+				var err error
+				if e.write != nil {
+					err = e.write(e.buf.Data, e.gsoSize)
+				} else {
+					err = h.conn.Write(e.buf.Data, e.gsoSize, e.ecn)
+				}
+				// Oversized datagrams are handled by path MTU discovery.
+				if err != nil && !isSendMsgSizeErr(err) {
+					handled := false
+					if e.pathID == 0 && h.onWriteError != nil {
+						handled = h.onWriteError(err)
+					} else if e.pathID != 0 && h.onPathWriteError != nil {
+						handled = h.onPathWriteError(e.pathID, err)
+					}
+					if !handled {
+						e.buf.Release()
+						return err
+					}
+					if e.pathID == 0 {
 						failed = true
+					} else {
+						failedPaths[e.pathID] = true
 					}
 				}
 			}

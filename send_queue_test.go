@@ -229,3 +229,123 @@ func TestSendQueueSendProbe(t *testing.T) {
 		addr: localAddr,
 	})
 }
+
+func TestSendQueueSecondaryFailureKeepsOtherPathsWritable(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		conn := NewMockSendConn(gomock.NewController(t))
+		q := newSendQueue(conn).(*sendQueue)
+		var failed []uint64
+		q.onPathWriteError = func(id uint64, err error) bool {
+			require.ErrorIs(t, err, syscall.ENETUNREACH)
+			failed = append(failed, id)
+			return true
+		}
+		conn.EXPECT().Write([]byte("initial"), uint16(0), protocol.ECNNon).Return(nil)
+		var writes []string
+		write := func(b []byte, _ uint16) error {
+			writes = append(writes, string(b))
+			if string(b) == "fail" {
+				return syscall.ENETUNREACH
+			}
+			return nil
+		}
+		q.enqueue(queueEntry{buf: getPacketWithContents([]byte("fail")), pathID: 1, write: write})
+		q.enqueue(queueEntry{buf: getPacketWithContents([]byte("discard")), pathID: 1, write: write})
+		q.enqueue(queueEntry{buf: getPacketWithContents([]byte("survivor")), pathID: 2, write: write})
+		q.Send(getPacketWithContents([]byte("initial")), 0, protocol.ECNNon)
+		done := make(chan error, 1)
+		go func() { done <- q.Run() }()
+		synctest.Wait()
+		q.Close()
+		require.NoError(t, <-done)
+		require.Equal(t, []uint64{1}, failed)
+		require.Equal(t, []string{"fail", "survivor"}, writes)
+	})
+}
+
+func TestMultipathQueuedWriteCapturesDestinationAndSplitsGSO(t *testing.T) {
+	if !platformSupportsGSO {
+		t.Skip("GSO is not supported on this platform")
+	}
+	ctrl := gomock.NewController(t)
+	socket := NewMockRawConn(ctrl)
+	c := &Conn{perspective: protocol.PerspectiveServer, multipath: newMultipathState(4)}
+	c.conn = &sconn{rawConn: socket}
+	c.sendQueue = newSendQueue(c.conn)
+	path, err := c.multipath.path(1)
+	require.NoError(t, err)
+	addr := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 443}
+	path.remoteAddr = addr
+	require.NoError(t, c.sendMultipathApplicationBuffer(1, nil, getPacketWithContents([]byte("abcdef")), 4))
+	// A later migration must not redirect already encrypted queued packets.
+	addr.Port = 444
+	addr.IP[15] = 2
+	expected := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 443}
+	gomock.InOrder(
+		socket.EXPECT().WritePacket([]byte("abcdef"), expected, gomock.Any(), uint16(4), protocol.ECNUnsupported).Return(0, errGSO),
+		socket.EXPECT().WritePacket([]byte("abcd"), expected, gomock.Any(), uint16(0), protocol.ECNUnsupported).Return(4, nil),
+		socket.EXPECT().WritePacket([]byte("ef"), expected, gomock.Any(), uint16(0), protocol.ECNUnsupported).Return(2, nil),
+	)
+	entry := <-c.sendQueue.(*sendQueue).queue
+	defer entry.buf.Release()
+	require.NoError(t, entry.write(entry.buf.Data, entry.gsoSize))
+}
+
+func TestSendQueuePrimaryFailureKeepsSecondaryWritable(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		conn := NewMockSendConn(gomock.NewController(t))
+		q := newSendQueue(conn).(*sendQueue)
+		q.onWriteError = func(error) bool { return true }
+		conn.EXPECT().Write([]byte("initial"), uint16(0), protocol.ECNNon).Return(syscall.ENETUNREACH)
+		q.Send(getPacketWithContents([]byte("initial")), 0, protocol.ECNNon)
+		var sent bool
+		q.enqueue(queueEntry{buf: getPacketWithContents([]byte("secondary")), pathID: 2,
+			write: func([]byte, uint16) error { sent = true; return nil }})
+		done := make(chan error, 1)
+		go func() { done <- q.Run() }()
+		synctest.Wait()
+		q.Close()
+		require.NoError(t, <-done)
+		require.True(t, sent)
+	})
+}
+
+func TestSendQueueSecondaryFatalError(t *testing.T) {
+	q := newSendQueue(nil).(*sendQueue)
+	q.onPathWriteError = func(uint64, error) bool { return false }
+	q.enqueue(queueEntry{buf: getPacketWithContents([]byte("fatal")), pathID: 1,
+		write: func([]byte, uint16) error { return syscall.EPERM }})
+	require.ErrorIs(t, q.Run(), syscall.EPERM)
+	q.Close()
+}
+
+func TestConnectionSendQueueRetainsDistinctSecondaryFailures(t *testing.T) {
+	c := &Conn{config: &Config{EnableMultipath: true}}
+	q := c.newConnectionSendQueue().(*sendQueue)
+	for id := uint64(1); id <= 32; id++ {
+		require.True(t, q.onPathWriteError(id, syscall.ENETUNREACH))
+	}
+	for id := uint64(1); id <= 32; id++ {
+		err, ok := c.secondarySendErrors.Load(id)
+		require.True(t, ok)
+		require.ErrorIs(t, err.(error), syscall.ENETUNREACH)
+	}
+}
+
+func TestMultipathQueuedWriteDoesNotReplayPartialGSO(t *testing.T) {
+	if !platformSupportsGSO {
+		t.Skip("GSO is not supported on this platform")
+	}
+	socket := NewMockRawConn(gomock.NewController(t))
+	c := &Conn{perspective: protocol.PerspectiveServer, multipath: newMultipathState(4)}
+	c.conn = &sconn{rawConn: socket}
+	c.sendQueue = newSendQueue(c.conn)
+	path, err := c.multipath.path(1)
+	require.NoError(t, err)
+	path.remoteAddr = &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 443}
+	require.NoError(t, c.sendMultipathApplicationBuffer(1, nil, getPacketWithContents([]byte("abcdef")), 4))
+	socket.EXPECT().WritePacket([]byte("abcdef"), gomock.Any(), gomock.Any(), uint16(4), protocol.ECNUnsupported).Return(4, errGSO)
+	entry := <-c.sendQueue.(*sendQueue).queue
+	defer entry.buf.Release()
+	require.ErrorIs(t, entry.write(entry.buf.Data, entry.gsoSize), errGSO)
+}

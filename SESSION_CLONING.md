@@ -1162,7 +1162,7 @@ storage is reused across synchronous sends, and source-local batches avoid an
 extra per-chunk read/copy while preserving normal digest verification.
 
 Experimental source-offer connections permit 4,096 queued receive datagrams;
-ordinary connections retain the 256 limit. Queue overflow returns packet buffers
+ordinary multipath configurations allow 1024 queued datagrams, while single-path configurations retain the 256 limit. Queue overflow returns packet buffers
 to the pool. `ConnectionStats.ReceiveQueueDrops` counts both ordinary receive
 queue and opaque source-relay admission drops. Completion/retry polling is grouped
 per flight, and primary loss timers retain only pre-handoff packet candidates.
