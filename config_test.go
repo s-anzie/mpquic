@@ -15,6 +15,8 @@ import (
 )
 
 func TestConfigValidation(t *testing.T) {
+	require.Error(t, validateConfig(&Config{EnableExperimentalSourceOffers: true}))
+	require.NoError(t, validateConfig(&Config{EnableExperimentalSourceOffers: true, EnableMultipath: true}))
 	t.Run("nil config", func(t *testing.T) {
 		require.NoError(t, validateConfig(nil))
 	})
@@ -133,7 +135,7 @@ func configWithNonZeroNonFunctionFields(t *testing.T) *Config {
 			f.Set(reflect.ValueOf(true))
 		case "EnableStreamResetPartialDelivery":
 			f.Set(reflect.ValueOf(true))
-		case "EnableMultipath", "DisableAutomaticPathDiscovery":
+		case "EnableMultipath", "EnableExperimentalSourceOffers", "DisableAutomaticPathDiscovery":
 			f.Set(reflect.ValueOf(true))
 		case "MaxPathID":
 			f.Set(reflect.ValueOf(uint64(3)))

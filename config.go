@@ -1,6 +1,7 @@
 package quic
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -23,6 +24,9 @@ func (c *Config) maxRetryTokenAge() time.Duration {
 }
 
 func validateConfig(config *Config) error {
+	if config != nil && config.EnableExperimentalSourceOffers && !config.EnableMultipath {
+		return errors.New("experimental source offers require multipath")
+	}
 	if config == nil {
 		return nil
 	}
@@ -127,6 +131,7 @@ func populateConfig(config *Config) *Config {
 		DisablePathMTUDiscovery:          config.DisablePathMTUDiscovery,
 		EnableStreamResetPartialDelivery: config.EnableStreamResetPartialDelivery,
 		EnableMultipath:                  config.EnableMultipath,
+		EnableExperimentalSourceOffers:   config.EnableExperimentalSourceOffers,
 		DisableAutomaticPathDiscovery:    config.DisableAutomaticPathDiscovery,
 		PathDiscoveryAddresses:           config.PathDiscoveryAddresses,
 		MaxPathID:                        config.MaxPathID,

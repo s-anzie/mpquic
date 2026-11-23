@@ -67,6 +67,7 @@ type PreferredAddress struct {
 
 // TransportParameters are parameters sent to the peer during the handshake
 type TransportParameters struct {
+	ExperimentalSourceOffers       bool
 	InitialMaxStreamDataBidiLocal  protocol.ByteCount
 	InitialMaxStreamDataBidiRemote protocol.ByteCount
 	InitialMaxStreamDataUni        protocol.ByteCount
@@ -157,6 +158,7 @@ func (p *TransportParameters) unmarshal(b []byte, sentBy protocol.Perspective, f
 			ackDelayExponentParameterID,
 			activeConnectionIDLimitParameterID,
 			initialMaxPathIDParameterID,
+			experimentalSourceOffersParameterID,
 			minAckDelayParameterID:
 			if err := p.readNumericTransportParameter(b, paramID, int(paramLen)); err != nil {
 				return err
@@ -352,6 +354,11 @@ func (p *TransportParameters) readNumericTransportParameter(b []byte, paramID tr
 			return fmt.Errorf("invalid value for initial_max_path_id: %d (maximum %d)", val, protocol.MaxPathID)
 		}
 		p.InitialMaxPathID = &val
+	case experimentalSourceOffersParameterID:
+		if val != 1 {
+			return errors.New("unsupported experimental source offer version")
+		}
+		p.ExperimentalSourceOffers = true
 	case maxDatagramFrameSizeParameterID:
 		p.MaxDatagramFrameSize = protocol.ByteCount(val)
 	case minAckDelayParameterID:
@@ -455,6 +462,9 @@ func (p *TransportParameters) Marshal(pers protocol.Perspective) []byte {
 	// Multipath QUIC
 	if p.InitialMaxPathID != nil {
 		b = p.marshalVarintParam(b, initialMaxPathIDParameterID, *p.InitialMaxPathID)
+	}
+	if p.ExperimentalSourceOffers {
+		b = p.marshalVarintParam(b, experimentalSourceOffersParameterID, 1)
 	}
 	// initial_source_connection_id
 	b = quicvarint.Append(b, uint64(initialSourceConnectionIDParameterID))

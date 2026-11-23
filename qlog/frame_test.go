@@ -8,6 +8,7 @@ import (
 
 	"github.com/quic-go/quic-go/internal/protocol"
 	"github.com/quic-go/quic-go/internal/qerr"
+	"github.com/quic-go/quic-go/internal/wire"
 	"github.com/quic-go/quic-go/qlogwriter/jsontext"
 
 	"github.com/stretchr/testify/require"
@@ -24,6 +25,10 @@ func check(t *testing.T, f any, expected map[string]any) {
 
 func TestPingFrame(t *testing.T) {
 	check(t, &PingFrame{}, map[string]any{"frame_type": "ping"})
+}
+
+func TestExperimentalSourceOfferFrame(t *testing.T) {
+	check(t, &wire.ExperimentalSourceOfferFrame{ID: 1, Generation: 1}, map[string]any{"frame_type": "experimental_source_offer"})
 }
 
 func TestAckFrame(t *testing.T) {

@@ -184,6 +184,7 @@ type Conn struct {
 	oneRTTStream            *cryptoStream // only set for the server
 	cryptoStreamHandler     cryptoStreamHandler
 	experimentalCloneActive bool
+	experimentalSources     *experimentalSourceRegistry
 
 	notifyReceivedPacket chan struct{}
 	sendingScheduled     chan struct{}
@@ -369,6 +370,7 @@ var newConnection = func(
 		EnableResetStreamAt:       conf.EnableStreamResetPartialDelivery,
 	}
 	if s.config.EnableMultipath {
+		params.ExperimentalSourceOffers = s.config.EnableExperimentalSourceOffers
 		maxPathID := s.config.MaxPathID
 		params.InitialMaxPathID = &maxPathID
 	}
@@ -500,6 +502,7 @@ var newClientConnection = func(
 		EnableResetStreamAt:       conf.EnableStreamResetPartialDelivery,
 	}
 	if s.config.EnableMultipath {
+		params.ExperimentalSourceOffers = s.config.EnableExperimentalSourceOffers
 		maxPathID := s.config.MaxPathID
 		params.InitialMaxPathID = &maxPathID
 	}
@@ -2071,6 +2074,8 @@ func (c *Conn) handleFrameForPath(
 	var err error
 	wire.LogFrame(c.logger, f, false)
 	switch frame := f.(type) {
+	case *wire.ExperimentalSourceOfferFrame:
+		err = c.receiveSourceOffer(frame, encLevel)
 	case *wire.CryptoFrame:
 		err = c.handleCryptoFrame(frame, encLevel, rcvTime)
 	case *wire.ConnectionCloseFrame:
@@ -2706,6 +2711,9 @@ func (c *Conn) checkTransportParameters(params *wire.TransportParameters) error 
 	if params.InitialMaxPathID != nil && (c.handshakeDestConnID.Len() == 0 || c.srcConnIDLen == 0) {
 		return errors.New("initial_max_path_id requires non-zero source and destination connection IDs")
 	}
+	if params.ExperimentalSourceOffers && params.InitialMaxPathID == nil {
+		return errors.New("experimental source offers require initial_max_path_id")
+	}
 
 	if c.perspective == protocol.PerspectiveServer {
 		return nil
@@ -2740,6 +2748,7 @@ func (c *Conn) applyTransportParameters() {
 	c.frameParser.SetAckDelayExponent(params.AckDelayExponent)
 	c.multipathEnabled = c.config.EnableMultipath && params.InitialMaxPathID != nil
 	c.frameParser.SetMultipath(c.multipathEnabled)
+	c.frameParser.SetExperimentalSourceOffers(c.sourceOffersNegotiated())
 	c.connIDManager.SetMultipath(c.multipathEnabled)
 	if p, ok := c.packer.(*packetPacker); ok {
 		if c.multipathEnabled {
