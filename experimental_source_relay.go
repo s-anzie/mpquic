@@ -274,7 +274,8 @@ func (r *experimentalSourceRelay) run() {
 		if err := (&ExperimentalCloneWriter{conn: r.conn}).onLoop(r.conn.ctx, func() error {
 			r.conn.receivedPacketMx.Lock()
 			defer r.conn.receivedPacketMx.Unlock()
-			if r.conn.receivedPackets.Len() >= protocol.MaxConnUnprocessedPackets {
+			if r.conn.receivedPackets.Len() >= r.conn.maxQueuedReceivedPackets() {
+				r.conn.connStats.ReceiveQueueDrops.Add(1)
 				return nil
 			}
 			b := getPacketBuffer()

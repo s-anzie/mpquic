@@ -243,6 +243,10 @@ func (p *RemoteSealer) SealPacket(payload []byte) ([]byte, protocol.PacketNumber
 }
 
 func (p *RemoteSealer) sealPacketLocked(payload []byte) ([]byte, protocol.PacketNumber, error) {
+	return p.sealPacketIntoLocked(nil, payload)
+}
+
+func (p *RemoteSealer) sealPacketIntoLocked(storage, payload []byte) ([]byte, protocol.PacketNumber, error) {
 	if p.self != p || p.closed || p.aead == nil || p.next >= p.end || len(payload) == 0 || 1+p.cid.Len()+4+len(payload)+p.aead.Overhead() > int(protocol.MaxPacketBufferSize) {
 		return nil, 0, ErrRemoteSealer
 	}
@@ -253,7 +257,11 @@ func (p *RemoteSealer) sealPacketLocked(payload []byte) ([]byte, protocol.Packet
 	if err != nil {
 		return nil, 0, err
 	}
-	hdr, err := wire.AppendShortHeader(nil, p.cid, pn, protocol.PacketNumberLen4, p.epoch.Bit())
+	size := 1 + p.cid.Len() + 4 + len(payload) + p.aead.Overhead()
+	if cap(storage) < size {
+		storage = make([]byte, 0, size)
+	}
+	hdr, err := wire.AppendShortHeader(storage[:0], p.cid, pn, protocol.PacketNumberLen4, p.epoch.Bit())
 	if err != nil {
 		return nil, 0, err
 	}

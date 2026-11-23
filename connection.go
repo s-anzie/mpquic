@@ -887,6 +887,8 @@ func (c *Conn) ConnectionState() ConnectionState {
 
 // ConnectionStats contains statistics about the QUIC connection
 type ConnectionStats struct {
+	// ReceiveQueueDrops counts datagrams discarded because the receive queue was full.
+	ReceiveQueueDrops uint64
 	// MinRTT is the estimate of the minimum RTT observed on the active network
 	// path.
 	MinRTT time.Duration
@@ -926,10 +928,11 @@ type ConnectionStats struct {
 
 func (c *Conn) ConnectionStats() ConnectionStats {
 	return ConnectionStats{
-		MinRTT:        c.rttStats.MinRTT(),
-		LatestRTT:     c.rttStats.LatestRTT(),
-		SmoothedRTT:   c.rttStats.SmoothedRTT(),
-		MeanDeviation: c.rttStats.MeanDeviation(),
+		ReceiveQueueDrops: c.connStats.ReceiveQueueDrops.Load(),
+		MinRTT:            c.rttStats.MinRTT(),
+		LatestRTT:         c.rttStats.LatestRTT(),
+		SmoothedRTT:       c.rttStats.SmoothedRTT(),
+		MeanDeviation:     c.rttStats.MeanDeviation(),
 
 		BytesSent:       c.connStats.BytesSent.Load(),
 		PacketsSent:     c.connStats.PacketsSent.Load(),
@@ -2197,12 +2200,22 @@ func (c *Conn) handleFrameForPath(
 	return pathChallenge, err
 }
 
+// Experimental cloning can admit a flight across multiple source receivers.
+// Keep a bounded queue aligned with that flight instead of dropping ordinary
+// local bursts at the smaller single-path queue limit.
+func (c *Conn) maxQueuedReceivedPackets() int {
+	if c.config != nil && c.config.EnableExperimentalSourceOffers {
+		return experimentalCloneFlightPackets
+	}
+	return protocol.MaxConnUnprocessedPackets
+}
+
 // handlePacket is called by the server with a new packet
 func (c *Conn) handlePacket(p receivedPacket) {
 	c.receivedPacketMx.Lock()
-	// Discard packets once the amount of queued packets is larger than
-	// the channel size, protocol.MaxConnUnprocessedPackets
-	if c.receivedPackets.Len() >= protocol.MaxConnUnprocessedPackets {
+	// Discard datagrams beyond the connection's bounded receive queue.
+	if c.receivedPackets.Len() >= c.maxQueuedReceivedPackets() {
+		c.connStats.ReceiveQueueDrops.Add(1)
 		if c.qlogger != nil {
 			var datagramPayloadChecksum qlog.DatagramPayloadChecksum
 			if wire.IsLongHeaderPacket(p.data[0]) {
@@ -2215,6 +2228,10 @@ func (c *Conn) handlePacket(p receivedPacket) {
 			})
 		}
 		c.receivedPacketMx.Unlock()
+		if p.buffer != nil {
+			p.buffer.Decrement()
+			p.buffer.MaybeRelease()
+		}
 		return
 	}
 	c.receivedPackets.PushBack(p)

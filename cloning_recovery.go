@@ -14,10 +14,11 @@ import (
 var errCloningRecoveryBlocked = errors.New("cloning recovery admission blocked")
 
 type cloningPathRecovery struct {
-	authority   *cloning.Authority
-	grant       *cloning.Path
-	boundary    protocol.PacketNumber
-	onCompleted func([]uint64)
+	authority      *cloning.Authority
+	grant          *cloning.Path
+	boundary       protocol.PacketNumber
+	primaryPackets []protocol.PacketNumber
+	onCompleted    func([]uint64)
 }
 
 // attachCloningRecovery is a connection-loop staging hook, not a public handoff.
@@ -37,6 +38,9 @@ func (m *multipathState) attachCloningRecovery(id uint64, a *cloning.Authority, 
 		return errCloningRecoveryBlocked
 	}
 	p.cloningRecovery = &cloningPathRecovery{authority: a, grant: grant, boundary: boundary, onCompleted: onCompleted}
+	for pn := range p.sentPackets {
+		p.cloningRecovery.primaryPackets = append(p.cloningRecovery.primaryPackets, pn)
+	}
 	return nil
 }
 

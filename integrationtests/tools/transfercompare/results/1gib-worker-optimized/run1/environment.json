@@ -1,0 +1,17 @@
+{
+  "created_unix": 1795437158.162998,
+  "platform": "Linux-7.1.5+kali-amd64-x86_64-with-glibc2.43",
+  "git_revision": "b2ecaa644ad7c2520bf40e99146b44622d89b547",
+  "git_status": " M cloning_recovery.go\n M connection.go\n M experimental_clone_object_test.go\n M experimental_cloning.go\n M experimental_failover.go\n M experimental_source_relay.go\n M experimental_throughput_test.go\n M experimental_worker_runtime.go\n M integrationtests/tools/transfercompare/main.go\n M interface.go\n M internal/handshake/remote_path_sender.go\n M internal/handshake/remote_sealer.go\n M internal/utils/connstats.go\n M multipath.go\n?? integrationtests/tools/transfercompare/results/1gib-worker-optimized/\n?? internal/handshake/remote_gso_linux.go\n?? internal/handshake/remote_gso_linux_test.go\n?? internal/handshake/remote_gso_other.go\n",
+  "bytes": 1073741824,
+  "initial_load_average": [
+    2.45458984375,
+    3.708984375,
+    3.85693359375
+  ],
+  "timeout": "90s",
+  "client_sha256_verified": false,
+  "binary_sha256": "9edb31e3e8f2688ec5521f157e2a411c89b0d90ff2d9a807f7da3138bcfd5d06",
+  "gomaxprocs_environment": "8",
+  "measurement": "loopback; client and primary share a process; each source is a distinct subprocess"
+}

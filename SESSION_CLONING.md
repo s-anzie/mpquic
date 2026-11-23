@@ -1150,3 +1150,30 @@ full SHA-256 verification. These are loopback implementation measurements, not
 geographical link aggregation results. See the [throughput investigation](integrationtests/tools/transfercompare/results/1gib-optimized/README.md)
 for raw repetitions, the failed exploratory run, profiling, validation and
 remaining serialized-control / bandwidth-delay-product constraints.
+
+
+### Worker throughput and bounded receive bursts
+
+A follow-up profile without benchmark content SHA verification found worker UDP
+system calls, local receive-queue drops, per-range loop handoffs and avoidable
+packet allocations. Linux workers now use UDP segmentation with a bounded batch
+fallback; `QUIC_GO_DISABLE_GSO` also disables this worker offload. Ciphertext
+storage is reused across synchronous sends, and source-local batches avoid an
+extra per-chunk read/copy while preserving normal digest verification.
+
+Experimental source-offer connections permit 4,096 queued receive datagrams;
+ordinary connections retain the 256 limit. Queue overflow returns packet buffers
+to the pool. `ConnectionStats.ReceiveQueueDrops` counts both ordinary receive
+queue and opaque source-relay admission drops. Completion/retry polling is grouped
+per flight, and primary loss timers retain only pre-handoff packet candidates.
+`ExperimentalCloneSourceStats` now includes successful capacity exchange time,
+dispatch time, and its drain-receipt wait subset (Go durations, JSON nanoseconds).
+
+Three local 1 GiB transfers without content SHA checks measured 8.130, 9.504 and
+8.529 seconds: a median of 8.529 s / 1,007.2 Mbit/s, 32.4% less time than the
+previous 12.611 s median. All three had zero queue drops and zero extra packet
+jobs. A separate fully verified 1 GiB transfer completed in 11.738 s with the
+expected SHA-256. The no-SHA bypass is still restricted to the benchmark overlay;
+normal library builds keep content verification enabled. Detailed evidence,
+profiling scope, test caveats and remaining serialized-dispatch costs are in the
+[worker throughput report](integrationtests/tools/transfercompare/results/1gib-worker-optimized/README.md).

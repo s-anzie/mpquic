@@ -148,3 +148,20 @@ and fresh-number retransmission, worker failure with same-connection recovery,
 concurrent replacement, withdrawal, corrupt content and lost drain receipts.
 Crypto tests cover local key-update deferral, authenticated peer-update deferral
 until worker drain, and fresh worker leases in the next epoch.
+
+
+## Throughput diagnostics
+
+The bounded autonomous writer uses Linux UDP segmentation where available and
+falls back to batch datagram sends. `QUIC_GO_DISABLE_GSO=true` disables this
+worker offload as well. Experimental source-offer connections allow a bounded
+4,096-datagram receive queue; ordinary connections retain 256.
+`ConnectionStats.ReceiveQueueDrops` exposes local queue overflow, and source
+statistics expose capacity/dispatch/drain timing. Drain timing is included in
+dispatch timing and is not proof of client delivery.
+
+The benchmark's `-worker-profile-dir` saves per-source CPU, blocking and controller
+statistics, with graceful child cleanup so profiles can finish. Profiled runs
+must be kept separate from throughput repetitions. See the [worker throughput
+report](../../integrationtests/tools/transfercompare/results/1gib-worker-optimized/README.md)
+for the 1 GiB results and the remaining control-channel serialization.

@@ -20,10 +20,27 @@ type remoteDatagramWriter interface {
 
 type remoteUDPBatchWriter struct {
 	*net.UDPConn
-	batch *ipv4.PacketConn
+	batch       *ipv4.PacketConn
+	gsoDisabled bool
+	gsoBuffer   []byte
+	gsoOOB      []byte
+	writeMsg    func([]byte, []byte, *net.UDPAddr) (int, int, error)
 }
 
 func (w *remoteUDPBatchWriter) writeBatch(packets [][]byte, addr *net.UDPAddr) error {
+	for len(packets) > 1 && !w.gsoDisabled {
+		sent, err := w.writeGSO(packets, addr)
+		if err != nil {
+			return err
+		}
+		if sent == 0 {
+			break
+		}
+		packets = packets[sent:]
+	}
+	if len(packets) == 0 {
+		return nil
+	}
 	messages := make([]ipv4.Message, len(packets))
 	for i, p := range packets {
 		messages[i] = ipv4.Message{Buffers: [][]byte{p}, Addr: addr}
@@ -59,6 +76,7 @@ type RemotePathSender struct {
 	suite   uint16
 	hpHash  [32]byte
 	closed  bool
+	packets [64][]byte
 }
 
 func (*RemotePathSender) Format(s fmt.State, _ rune) {
@@ -86,7 +104,7 @@ func NewRemotePathSender(p *RemoteSealer, conn *net.UDPConn, addr *net.UDPAddr) 
 	}
 	copyAddr := *addr
 	copyAddr.IP = append(net.IP(nil), addr.IP...)
-	s := &RemotePathSender{conn: &remoteUDPBatchWriter{UDPConn: conn, batch: ipv4.NewPacketConn(conn)}, addr: &copyAddr, current: p, path: p.path,
+	s := &RemotePathSender{conn: &remoteUDPBatchWriter{UDPConn: conn, batch: ipv4.NewPacketConn(conn), gsoDisabled: remoteGSODisabled(), writeMsg: conn.WriteMsgUDP}, addr: &copyAddr, current: p, path: p.path,
 		epoch: p.epoch, end: p.end, cid: p.cid, version: p.version, suite: p.suite.ID,
 		hpHash: sha256.Sum256(p.keys.hp[:])}
 	p.owned = true
@@ -110,15 +128,16 @@ func (s *RemotePathSender) WritePayloads(payloads [][]byte) (protocol.PacketNumb
 	}
 	p := s.current
 	p.mu.Lock()
-	packets := make([][]byte, len(payloads))
+
 	var pn protocol.PacketNumber
 	var err error
 	if len(payloads) == 0 || len(payloads) > 64 {
 		p.mu.Unlock()
 		return 0, ErrRemoteSealer
 	}
+	packets := s.packets[:len(payloads)]
 	for i, payload := range payloads {
-		packets[i], pn, err = p.sealPacketLocked(payload)
+		packets[i], pn, err = p.sealPacketIntoLocked(packets[i], payload)
 		if err != nil {
 			break
 		}

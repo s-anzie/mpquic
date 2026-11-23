@@ -139,3 +139,44 @@ func TestExperimentalLateWorkerLossRetiresHistoryWithoutRetryMapping(t *testing.
 	p.recordExperimentalWorkerLoss(1)
 	require.Equal(t, protocol.ByteCount(1200), p.bytesInFlight)
 }
+
+func TestExperimentalReceiveQueueMatchesBoundedFlight(t *testing.T) {
+	for _, experimental := range []bool{false, true} {
+		c := &Conn{config: &Config{EnableMultipath: experimental, EnableExperimentalSourceOffers: experimental}}
+		limit := protocol.MaxConnUnprocessedPackets
+		if experimental {
+			limit = experimentalCloneFlightPackets
+		}
+		for range limit {
+			c.handlePacket(receivedPacket{data: []byte{1}})
+		}
+		require.Equal(t, limit, c.receivedPackets.Len())
+		require.Zero(t, c.connStats.ReceiveQueueDrops.Load())
+		// The rejected datagram must return its buffer instead of leaking one for
+		// every queue overflow. Also support another owner of a coalesced buffer.
+		b := getPacketBuffer()
+		b.Split()
+		c.handlePacket(receivedPacket{data: []byte{1}, buffer: b})
+		require.Equal(t, 1, b.refCount)
+		b.Release()
+		require.EqualValues(t, 1, c.connStats.ReceiveQueueDrops.Load())
+		require.Equal(t, limit, c.receivedPackets.Len())
+	}
+}
+
+func TestExperimentalRecoveryTimerPreservesPrimaryHandoffPackets(t *testing.T) {
+	m, a, grant, attempt, handler, _ := cloningRecoveryFixture(t)
+	p := m.paths[1]
+	p.experimentalWorkerControlled = true
+	now := monotime.Now()
+	require.NoError(t, a.RecordRemotePacket(grant, 1, []cloning.PacketFragment{{Attempt: attempt, Offset: 0, Length: 8}}))
+	require.NoError(t, m.recordCloningPacket(1, 1, now, 1200))
+	p.packetNumberSpace.largestAcknowledged = 1
+	require.False(t, m.nextPathProbeLossTime(time.Millisecond).IsZero())
+	_, lost := m.detectLostPathPackets(now.Add(time.Second), time.Millisecond)
+	require.True(t, lost)
+	require.Equal(t, 1, handler.lost)
+	require.NotContains(t, p.sentPackets, protocol.PacketNumber(0))
+	require.Contains(t, p.sentPackets, protocol.PacketNumber(1))
+	require.True(t, m.nextPathProbeLossTime(time.Millisecond).IsZero())
+}

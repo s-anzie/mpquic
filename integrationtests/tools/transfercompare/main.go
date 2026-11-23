@@ -16,6 +16,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"runtime/pprof"
 	"sync/atomic"
@@ -72,6 +73,8 @@ type pathResult struct {
 	UDPBytes, Datagrams uint64
 }
 type result struct {
+	ClientQueueDrops         uint64                              `json:"client_queue_drops"`
+	PrimaryQueueDrops        uint64                              `json:"primary_queue_drops"`
 	Mode                     string                              `json:"mode"`
 	Bytes                    int64                               `json:"bytes"`
 	Seconds                  float64                             `json:"seconds"`
@@ -88,6 +91,7 @@ type result struct {
 }
 
 var cpuProfile string
+var workerProfileDir string
 var verifySHA256 bool
 
 // Set only by the source-verification benchmark overlay builder.
@@ -100,6 +104,7 @@ func main() {
 	worker := flag.Bool("worker", false, "internal worker subprocess")
 	flag.StringVar(&cpuProfile, "cpuprofile", "", "optional primary/client CPU profile during transfer")
 	flag.BoolVar(&verifySHA256, "verify-sha256", true, "verify the complete received content with SHA-256")
+	flag.StringVar(&workerProfileDir, "worker-profile-dir", "", "optional worker CPU and blocking profiles directory")
 	flag.Parse()
 	ctx, cancel := context.WithTimeout(context.Background(), *deadline)
 	defer cancel()
@@ -415,6 +420,7 @@ func run(ctx context.Context, mode string, size int64) error {
 		}
 		defer pprof.StopCPUProfile()
 	}
+	clientDropBase, primaryDropBase := client.ConnectionStats().ReceiveQueueDrops, server.ConnectionStats().ReceiveQueueDrops
 	start := time.Now()
 	progressDone := make(chan struct{})
 	defer close(progressDone)
@@ -446,6 +452,8 @@ func run(ctx context.Context, mode string, size int64) error {
 	}
 	elapsed := time.Since(start)
 	r := result{Mode: mode, Bytes: size, Seconds: elapsed.Seconds(), MbitPerSecond: float64(size) * 8 / elapsed.Seconds() / 1e6, MiBPerSecond: float64(size) / elapsed.Seconds() / (1 << 20), SHA256: expected, WorkerPIDs: pids, GoVersion: runtime.Version(), GOMAXPROCS: runtime.GOMAXPROCS(0)}
+	r.ClientQueueDrops = client.ConnectionStats().ReceiveQueueDrops - clientDropBase
+	r.PrimaryQueueDrops = server.ConnectionStats().ReceiveQueueDrops - primaryDropBase
 	r.SHA256Verified = verifySHA256
 	if mode == "multisource" {
 		r.SourceSHA256Verification = sourceSHA256Verification
@@ -469,7 +477,7 @@ func startWorker(ctx context.Context, config workerConfig) (ready, func(), error
 	if err != nil {
 		return ready{}, nil, err
 	}
-	cmd := exec.CommandContext(ctx, exe, "-worker", "-timeout", "45m")
+	cmd := exec.CommandContext(ctx, exe, "-worker", "-timeout", "45m", "-worker-profile-dir", workerProfileDir)
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		return ready{}, nil, err
@@ -482,7 +490,17 @@ func startWorker(ctx context.Context, config workerConfig) (ready, func(), error
 	if err = cmd.Start(); err != nil {
 		return ready{}, nil, err
 	}
-	stop := func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }
+	exited := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(exited) }()
+	stop := func() {
+		select {
+		case <-exited:
+			return
+		case <-time.After(2 * time.Second):
+		}
+		_ = cmd.Process.Kill()
+		<-exited
+	}
 	if err = json.NewEncoder(in).Encode(config); err != nil {
 		stop()
 		return ready{}, nil, err
@@ -538,6 +556,34 @@ func serveWorker(ctx context.Context) error {
 	controller, err := quic.NewExperimentalWorkerController(1452, 25*time.Millisecond)
 	if err != nil {
 		return err
+	}
+
+	if workerProfileDir != "" {
+		if err := os.MkdirAll(workerProfileDir, 0755); err != nil {
+			return err
+		}
+		prefix := filepath.Join(workerProfileDir, "worker-"+c.IP)
+		profile, err := os.Create(prefix + ".cpu.pprof")
+		if err != nil {
+			return err
+		}
+		defer profile.Close()
+		if err := pprof.StartCPUProfile(profile); err != nil {
+			return err
+		}
+		defer pprof.StopCPUProfile()
+		runtime.SetBlockProfileRate(1000000)
+		defer func() {
+			runtime.SetBlockProfileRate(0)
+			if f, err := os.Create(prefix + ".block.pprof"); err == nil {
+				_ = pprof.Lookup("block").WriteTo(f, 0)
+				_ = f.Close()
+			}
+			if f, err := os.Create(prefix + ".stats.json"); err == nil {
+				_ = json.NewEncoder(f).Encode(controller.Snapshot())
+				_ = f.Close()
+			}
+		}()
 	}
 	options := &quic.ExperimentalCloneWorkerOptions{Controller: controller, Objects: quic.ExperimentalCloneObjectResolverFunc(func(id quic.ExperimentalCloneObjectID) (io.ReaderAt, error) {
 		if id != c.ObjectID {

@@ -172,6 +172,7 @@ func (w *ExperimentalCloneWriter) addSource(ctx context.Context, s ExperimentalC
 	w.sourceMutex.Unlock()
 	w.sequences = append(w.sequences, 0)
 	w.batches = append(w.batches, 0)
+	w.timings = append(w.timings, experimentalSourceTiming{})
 	w.epochs = append(w.epochs, 0)
 	w.rotations = append(w.rotations, 0)
 	w.failed = append(w.failed, false)
