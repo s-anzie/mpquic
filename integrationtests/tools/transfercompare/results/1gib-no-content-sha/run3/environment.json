@@ -1,0 +1,17 @@
+{
+  "created_unix": 1795436394.801648,
+  "platform": "Linux-7.1.5+kali-amd64-x86_64-with-glibc2.43",
+  "git_revision": "4f6efd6d5772cf8f65ed3d9b3f71abc16ec9b294",
+  "git_status": " M integrationtests/tools/transfercompare/main.go\n?? integrationtests/tools/transfercompare/build_no_source_sha.py\n?? integrationtests/tools/transfercompare/results/1gib-no-content-sha/\n",
+  "bytes": 1073741824,
+  "initial_load_average": [
+    2.03271484375,
+    2.35205078125,
+    2.703125
+  ],
+  "timeout": "90s",
+  "client_sha256_verified": false,
+  "binary_sha256": "d207765fe22d9a666b38865a1697a1a3bdf14e6ee126ba6f6812f71c5964b773",
+  "gomaxprocs_environment": "8",
+  "measurement": "loopback; client and primary share a process; each source is a distinct subprocess"
+}
