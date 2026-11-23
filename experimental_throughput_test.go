@@ -141,12 +141,16 @@ func TestExperimentalLateWorkerLossRetiresHistoryWithoutRetryMapping(t *testing.
 }
 
 func TestExperimentalReceiveQueueMatchesBoundedFlight(t *testing.T) {
-	for _, experimental := range []bool{false, true} {
-		c := &Conn{config: &Config{EnableMultipath: experimental, EnableExperimentalSourceOffers: experimental}}
-		limit := protocol.MaxConnUnprocessedPackets
-		if experimental {
-			limit = experimentalCloneFlightPackets
-		}
+	for _, tc := range []struct {
+		config Config
+		limit  int
+	}{
+		{Config{}, protocol.MaxConnUnprocessedPackets},
+		{Config{EnableMultipath: true}, 4 * protocol.MaxConnUnprocessedPackets},
+		{Config{EnableMultipath: true, EnableExperimentalSourceOffers: true}, experimentalCloneFlightPackets},
+	} {
+		c := &Conn{config: &tc.config}
+		limit := tc.limit
 		for range limit {
 			c.handlePacket(receivedPacket{data: []byte{1}})
 		}
