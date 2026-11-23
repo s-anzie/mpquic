@@ -89,7 +89,7 @@ func (*RemoteSealer) Format(s fmt.State, _ rune) {
 	_, _ = io.WriteString(s, "[redacted remote sealer]")
 }
 
-// prepareRemoteSealer is intentionally not exposed on cryptoSetup/Conn yet.
+// prepareRemoteSealer backs the experimental cryptoSetup lease API.
 // Call on the crypto loop AFTER quiescing the local path sender. The whole
 // window is charged immediately against the current key's usage, never refunded.
 // Live use also requires an epoch barrier across workers and sent-history handoff.

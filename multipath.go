@@ -82,6 +82,7 @@ type multipathPathState struct {
 	experimentalRelay            *experimentalSourceRelay
 	experimentalWorkerControlled bool
 	experimentalPacketRanges     map[protocol.PacketNumber]uint64
+	experimentalRangePackets     map[uint64][]protocol.PacketNumber
 	experimentalRetryRanges      map[uint64]bool
 	packetInfo                   packetInfo
 	serverValidated              bool
@@ -413,6 +414,12 @@ func (m *multipathState) recordSentApplicationPacketWithSize(pathID uint64, pack
 		return fmt.Errorf("sent invalid path packet number %d", packetNumber)
 	}
 	p.largestSent = max(p.largestSent, packetNumber)
+	// Pure ACK / padding packets cannot be retransmitted and need no loss
+	// record. Keep the highest PN for ACK validation without growing history
+	// on receive-only paths whose ACKs may never themselves be acknowledged.
+	if !ackEliciting && len(frames) == 0 && len(streamFrames) == 0 {
+		return nil
+	}
 	p.sentPackets[packetNumber] = multipathSentPacket{
 		sentAt:       sentAt,
 		size:         size,
@@ -444,13 +451,16 @@ func (m *multipathState) canSendOnPath(pathID uint64, now monotime.Time) bool {
 
 func (m *multipathState) nextPathPacingTime() (monotime.Time, bool) {
 	var earliest monotime.Time
+	now := monotime.Now()
 	for _, p := range m.paths {
-		if p.abandoned || p.congestion == nil {
+		if p.abandoned || p.congestion == nil || p.cloningRecovery != nil || p.experimentalRelay != nil {
 			continue
 		}
 		next := p.congestion.TimeUntilSend(p.bytesInFlight)
-		if next.IsZero() {
-			return 0, true
+		// Readiness is not an event. Successful sends schedule their own next
+		// pass; only an actual future pacing deadline needs a timer wakeup.
+		if next.IsZero() || !next.After(now) {
+			continue
 		}
 		if earliest.IsZero() || next.Before(earliest) {
 			earliest = next
@@ -473,6 +483,9 @@ func (m *multipathState) nextPathProbeLossTime(lossDelay time.Duration) monotime
 			pathLossDelay = lossDelay
 		}
 		for pn, packet := range p.sentPackets {
+			if p.experimentalWorkerControlled && p.cloningRecovery != nil && pn >= p.cloningRecovery.boundary {
+				continue
+			}
 			if !packet.isProbe && pn > p.packetNumberSpace.largestAcknowledged {
 				continue
 			}
@@ -506,6 +519,9 @@ func (m *multipathState) detectLostPathPackets(now monotime.Time, lossDelay time
 		}
 		lossTime := now.Add(-pathLossDelay)
 		for packetNumber, packet := range p.sentPackets {
+			if p.experimentalWorkerControlled && p.cloningRecovery != nil && packetNumber >= p.cloningRecovery.boundary {
+				continue
+			}
 			// An elapsed time alone is not evidence of application packet loss.
 			// Validation probes have their own retry lifecycle.
 			if !packet.isProbe && packetNumber > p.packetNumberSpace.largestAcknowledged {

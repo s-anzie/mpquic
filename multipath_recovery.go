@@ -12,6 +12,9 @@ import (
 // A PTO solicits fresh acknowledgment evidence. It does not declare the
 // outstanding flight lost or reduce the congestion window (RFC 9002, 6.2).
 func (p *multipathPathState) probeTimeout(fallback time.Duration) monotime.Time {
+	if p.experimentalWorkerControlled && p.cloningRecovery != nil {
+		return 0
+	}
 	var lastSent monotime.Time
 	for _, packet := range p.sentPackets {
 		if !packet.isProbe && packet.ackEliciting && packet.sentAt.After(lastSent) {

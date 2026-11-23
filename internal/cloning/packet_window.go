@@ -2,7 +2,7 @@ package cloning
 
 import "github.com/quic-go/quic-go/internal/protocol"
 
-const MaxRemotePacketWindow = 64
+const MaxRemotePacketWindow = 1024
 
 // ValidateRemotePath rejects bootstrap admission after retirement or closure.
 // It cannot recall an export that already passed admission and started I/O.

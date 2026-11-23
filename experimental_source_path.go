@@ -103,7 +103,7 @@ func (c *Conn) ProbeExperimentalSource(ctx context.Context, id, generation uint6
 	}
 	s := &sourceDestinationConn{PacketConn: udp, primary: primary.AddrPort(), worker: offer.Address, expires: offer.ExpiresAt}
 	s.active.Store(true)
-	tr := &Transport{Conn: s, ConnectionIDLength: c.srcConnIDLen}
+	tr := &Transport{Conn: wrapExperimentalSource(s), ConnectionIDLength: c.srcConnIDLen}
 	path, err := c.AddPath(tr)
 	if err != nil {
 		tr.Close()

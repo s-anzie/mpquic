@@ -49,7 +49,7 @@ type oobConn struct {
 	readPos uint8
 	// Packets received from the kernel, but not yet returned by ReadPacket().
 	messages []ipv4.Message
-	buffers  [batchSize]*packetBuffer
+	buffers  []*packetBuffer
 
 	cap connCapabilities
 }
@@ -116,7 +116,11 @@ func newConn(c OOBCapablePacketConn, supportsDF bool) (*oobConn, error) {
 		bc = ipv4.NewPacketConn(c)
 	}
 
-	msgs := make([]ipv4.Message, batchSize)
+	size := batchSize
+	if preferred, ok := c.(interface{ receiveBatchSize() int }); ok {
+		size = max(size, min(64, preferred.receiveBatchSize()))
+	}
+	msgs := make([]ipv4.Message, size)
 	for i := range msgs {
 		// preallocate the [][]byte
 		msgs[i].Buffers = make([][]byte, 1)
@@ -125,14 +129,15 @@ func newConn(c OOBCapablePacketConn, supportsDF bool) (*oobConn, error) {
 		OOBCapablePacketConn: c,
 		batchConn:            bc,
 		messages:             msgs,
-		readPos:              batchSize,
+		readPos:              uint8(size),
+		buffers:              make([]*packetBuffer, size),
 		cap: connCapabilities{
 			DF:  supportsDF,
 			GSO: isGSOEnabled(rawConn),
 			ECN: isECNEnabled(),
 		},
 	}
-	for i := range batchSize {
+	for i := range size {
 		oobConn.messages[i].OOB = make([]byte, oobBufferSize)
 	}
 	return oobConn, nil
@@ -142,7 +147,7 @@ var invalidCmsgOnceV4, invalidCmsgOnceV6 sync.Once
 
 func (c *oobConn) ReadPacket() (receivedPacket, error) {
 	if len(c.messages) == int(c.readPos) { // all messages read. Read the next batch of messages.
-		c.messages = c.messages[:batchSize]
+		c.messages = c.messages[:len(c.buffers)]
 		// replace buffers data buffers up to the packet that has been consumed during the last ReadBatch call
 		for i := uint8(0); i < c.readPos; i++ {
 			buffer := getPacketBuffer()

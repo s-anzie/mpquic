@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -214,6 +215,19 @@ func dropExperimentalDrainReceipt(control *tls.Conn, pin [32]byte, udp *net.UDPC
 	var job experimentalCloneJob
 	if err := json.Unmarshal(meta, &job); err != nil {
 		return err
+	}
+	if job.Prepare {
+		if _, err := control.Write(binary.BigEndian.AppendUint16(nil, uint16(min(job.Count, 4)))); err != nil {
+			return err
+		}
+		meta, err = readCloneRecord(control, 1200)
+		if err != nil {
+			return err
+		}
+		job = experimentalCloneJob{}
+		if err = json.Unmarshal(meta, &job); err != nil {
+			return err
+		}
 	}
 	sealer, err := handshake.ReadRemoteSealer(control, pin, job.Path, protocol.KeyPhase(job.Epoch), protocol.ParseConnectionID(job.CID))
 	if err != nil {

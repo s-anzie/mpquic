@@ -1,0 +1,6 @@
+{
+  "status": "failed, excluded from final statistics",
+  "received_bytes_at_stall": 473827000,
+  "observation": "Both worker processes exited; primary waited for replacement sources. Process terminated with SIGQUIT to inspect goroutines.",
+  "followup": "Fixed a late-loss history cleanup gap and added a regression test. The exact triggering dispatch error was not captured, so this run alone does not prove causality."
+}

@@ -210,10 +210,10 @@ func TestReferenceDelegationEntryLimitAndPartialACK(t *testing.T) {
 		require.Zero(t, first.rangeState.acked)
 	}
 	for i := 1; i < MaxPendingDelegations; i++ {
-		_, err := a.DelegatePrimaryReference(p, 0, uint64(229+i), 1000, 1, [32]byte{}, 1000)
+		_, err := a.DelegatePrimaryReference(p, 0, uint64(229+i), 10000, 1, [32]byte{}, 10000)
 		require.NoError(t, err)
 	}
-	_, err := a.DelegatePrimaryReference(p, 0, 229+MaxPendingDelegations, 1000, 1, [32]byte{}, 1000)
+	_, err := a.DelegatePrimaryReference(p, 0, 229+MaxPendingDelegations, 10000, 1, [32]byte{}, 10000)
 	require.ErrorIs(t, err, ErrLimit)
 	before := a.delegatedBytes
 	done, err := a.Acknowledge(first, 100, 70)
@@ -227,13 +227,13 @@ func TestReferenceDelegationEntryLimitAndPartialACK(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, done)
 	require.Equal(t, before-130, a.delegatedBytes)
-	_, err = a.DelegatePrimaryReference(p, 0, 229+MaxPendingDelegations, 1000, 1, [32]byte{}, 1000)
+	_, err = a.DelegatePrimaryReference(p, 0, 229+MaxPendingDelegations, 10000, 1, [32]byte{}, 10000)
 	require.NoError(t, err)
 	require.NoError(t, a.RetirePath(p))
-	_, err = a.DelegatePrimaryReference(p, 3, 0, 1000, 1, [32]byte{}, 1000)
+	_, err = a.DelegatePrimaryReference(p, 3, 0, 10000, 1, [32]byte{}, 10000)
 	require.ErrorIs(t, err, ErrPath)
 	a.Close()
-	_, err = a.DelegatePrimaryReference(p, 3, 0, 1000, 1, [32]byte{}, 1000)
+	_, err = a.DelegatePrimaryReference(p, 3, 0, 10000, 1, [32]byte{}, 10000)
 	require.ErrorIs(t, err, ErrClosed)
 	require.Zero(t, a.delegatedBytes)
 }

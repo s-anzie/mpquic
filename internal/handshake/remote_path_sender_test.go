@@ -174,3 +174,39 @@ func TestRemotePathSenderPauseWaitsForWrite(t *testing.T) {
 	require.ErrorIs(t, err, ErrRemoteSealer)
 	sender.Close()
 }
+
+func TestRemotePathSenderBatchedWindow(t *testing.T) {
+	primary, _, authority := remoteTestEndpoints(t, getCipherSuite(tls.TLS_AES_128_GCM_SHA256), protocol.Version1)
+	grant, err := authority.GrantPath(1, "worker")
+	require.NoError(t, err)
+	p, err := primary.prepareRemoteSealer(authority, grant, 1024, protocol.ParseConnectionID([]byte("cid")))
+	require.NoError(t, err)
+	worker := transferRemote(t, p)
+	require.NoError(t, worker.ValidateExperimentalWindow(0, 1024))
+	require.ErrorIs(t, worker.ValidateExperimentalWindow(0, 1023), ErrRemoteSealer)
+	require.ErrorIs(t, worker.ValidateExperimentalWindow(0, 0), ErrRemoteSealer)
+	source, destination := remoteUDPSocket(t), remoteUDPSocket(t)
+	sender, err := NewRemotePathSender(worker, source, destination.LocalAddr().(*net.UDPAddr))
+	require.NoError(t, err)
+	defer sender.Close()
+	payloads := make([][]byte, 64)
+	for i := range payloads {
+		payloads[i] = []byte{1}
+	}
+	require.NoError(t, destination.SetReadDeadline(time.Now().Add(5*time.Second)))
+	for batch := range 16 {
+		pn, err := sender.WritePayloads(payloads)
+		require.NoError(t, err)
+		require.Equal(t, protocol.PacketNumber((batch+1)*64-1), pn)
+		for range payloads {
+			_, _, err := destination.ReadFromUDP(make([]byte, 1500))
+			require.NoError(t, err)
+		}
+	}
+	_, err = sender.WritePayload([]byte{1})
+	require.ErrorIs(t, err, ErrRemoteSealer)
+	boundary, err := sender.Pause()
+	require.NoError(t, err)
+	require.Equal(t, protocol.PacketNumber(1024), boundary.End)
+	require.Equal(t, remoteSendKeys{}, worker.keys)
+}

@@ -1,0 +1,16 @@
+{
+  "created_unix": 1795435617.4153576,
+  "platform": "Linux-7.1.5+kali-amd64-x86_64-with-glibc2.43",
+  "git_revision": "17e770e8606031556fd8151216998aedd2ef8256",
+  "git_status": " M SESSION_CLONING.md\n M example/cloning/README.md\n M experimental_cloning.go\n M experimental_cloning_test.go\n M experimental_failover.go\n M experimental_source_path.go\n M experimental_source_relay.go\n M experimental_worker_controller.go\n M experimental_worker_controller_test.go\n M experimental_worker_runtime.go\n M integrationtests/tools/transfercompare/run.py\n M internal/cloning/delegation.go\n M internal/cloning/delegation_test.go\n M internal/cloning/packet_history.go\n M internal/cloning/packet_window.go\n M internal/cloning/reference_delegation_test.go\n M internal/handshake/experimental_remote.go\n M internal/handshake/remote_path_sender.go\n M internal/handshake/remote_path_sender_test.go\n M internal/handshake/remote_sealer.go\n M internal/handshake/remote_sealer_test.go\n M multipath.go\n M multipath_recovery.go\n M multipath_test.go\n M sys_conn_oob.go\n?? experimental_source_oob.go\n?? experimental_throughput_test.go\n?? experimental_worker_ack_queue.go\n?? integrationtests/tools/transfercompare/results/1gib-optimized/\n",
+  "bytes": 1073741824,
+  "initial_load_average": [
+    4.453125,
+    3.09814453125,
+    3.11279296875
+  ],
+  "gomaxprocs_environment": "8",
+  "measurement": "loopback; client and primary share a process; each source is a distinct subprocess",
+  "binary_sha256": "a47b15f5fb01de658ab5cb09d74c0e1952d07a41c60ef7f6858f276152375619",
+  "timeout": "90s"
+}

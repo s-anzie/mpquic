@@ -345,7 +345,7 @@ func TestMultipathStateReportsNextPathPacingTime(t *testing.T) {
 	require.NoError(t, state.recordSentApplicationPacketWithSize(1, 1, now, 1200, true, nil, nil))
 
 	deadline, ok := state.nextPathPacingTime()
-	require.True(t, ok)
+	require.False(t, ok, "an immediately ready idle path must not arm a busy-loop timer")
 	require.Zero(t, deadline)
 
 	require.NoError(t, state.markPathAbandoned(1))

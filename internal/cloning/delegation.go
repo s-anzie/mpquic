@@ -13,7 +13,7 @@ var ErrAttempt = errors.New("invalid, obsolete, or canceled delegation attempt")
 
 const (
 	MaxDelegationBytes        = 64 << 10
-	MaxPendingDelegations     = 256
+	MaxPendingDelegations     = 4096
 	MaxPendingDelegationBytes = 8 << 20
 )
 

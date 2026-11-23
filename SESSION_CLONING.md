@@ -102,7 +102,7 @@ Never reconstruct an authority with counters reset for an existing connection.
 | C02b | Import primary stream/credit state and account ordinary writes, pre-reserved buffers, and FIN through the authority | Implemented; remote reservations enabled only through the experimental writer |
 | C03a | Bounded content/range ledger connected to live SendStream offsets and completion, partial delivery, retries and cancellation | Implemented as internal local primitives |
 | C03b | Authenticated worker coordination contract, packet-to-byte ACK evidence, control routing and bounded communication queues | Experimental worker-local congestion/pacing/recovery and authenticated feedback implemented; durable restart fencing pending |
-| C04 | Secure worker bootstrap and packet protection state, coordinated key updates and global AEAD accounting | Experimental single-packet leases, coordinated local/peer rotation and per-path epoch boundaries implemented; durable worker recovery pending |
+| C04 | Secure worker bootstrap and packet protection state, coordinated key updates and global AEAD accounting | Experimental bounded packet-window leases, coordinated local/peer rotation and per-path epoch boundaries implemented; durable worker recovery pending |
 | C05 | Negotiated source endpoint advertisement and client validation for different server IPs | Experimental announcement, consent, direct validation and dynamic replacement implemented; geographical deployment testing pending |
 | C06 | Direct multi-server transmission and cross-path retransmission of distinct ranges | Experimental source-local object transfer and fenced cross-source retransmission implemented |
 | C07 | HTTP/3 integration, three-source transfers, failures, reordered messages, key updates, and performance measurements | Pending |
@@ -1047,10 +1047,12 @@ Authenticated ACK feedback reaches it over the relay. Retry requests refer to
 approved packets; the primary authorizes a fresh packet number and the same range.
 
 The primary remains authoritative for delivery, offsets, shared credit, keys and
-connection lifecycle. One global single-packet lease serializes cryptographic
-handoff, and at most eight 1,000-byte portions are outstanding. Workers cannot
-continue independently after primary loss. TLS feedback and per-packet handoff
-remain performance limits to measure on geographically separated machines.
+connection lifecycle. One global lease of up to 1,024 packets serializes
+cryptographic handoff, and at most 4,096 1,000-byte portions are outstanding
+with autonomous workers. Workers reserve congestion and history capacity before
+key export, so a key-transition barrier never waits for credit that needs that
+same barrier to clear. Workers cannot continue independently after primary loss.
+Serialized leases and TLS feedback remain limits to measure across distant hosts.
 
 ### Object metadata instead of primary-distributed bytes
 
@@ -1103,3 +1105,48 @@ repeat at the validated endpoint; new challenges still retire the delegated path
 The original no-unexpected-retirement assertion remains enabled for ordinary
 small-window tests and passed ten repeated race runs after this change. Treat
 geographic and sustained-load behavior as still requiring validation.
+
+
+### Throughput optimization: bounded batch dispatch
+
+This supersedes the historical eight-chunk, single-packet dispatch descriptions
+above. The job ALPN is `mpquic-clone-lab/3`; the relay ALPN stays
+`mpquic-clone-relay/2`. Old job peers are incompatible.
+
+Autonomous workers negotiate available congestion and history capacity before
+receiving each finite key lease (up to 1,024 packet numbers). Only one global
+lease is outstanding. Every reserved number is charged to the key epoch and
+never refunded. A drain receipt covers the entire window; an uncertain partial
+window still requires path retirement and the authenticated client fence before
+cross-source recovery. Pacing remains active for each packet. Non-autonomous
+workers retain the smaller eight-chunk flight window.
+
+Object reads, digest descriptors and control records are grouped by contiguous
+ranges. UDP writes use groups of at most 64 datagrams; source sockets preserve
+batched receive and OOB support while enforcing endpoint pinning. ACK feedback
+coalesces the union of authenticated delivery ranges without dropping evidence.
+The delay belongs to the highest acknowledged packet; older reordered feedback
+cannot replace it. Controller timers wake on actual deadlines or state changes.
+
+Expired pacing deadlines no longer cause idle connection timer loops. Worker
+paths own their loss and PTO decisions; the primary retains delivery accounting
+without independently probing delegated packet numbers. ACK-only packets do not
+accumulate in recovery history. Completed worker history is pruned, and reverse
+range indexes avoid scanning all packet mappings for every completed chunk.
+The bounds remain explicit: 4,096 pending portions and 8 MiB pending bytes,
+4,096 worker history entries and 8,192 remote history entries.
+
+These changes do not remove the single-primary dependency, serialized lease
+handoff, 1,000-byte object chunk format, or application manifest size limit.
+The source selection policy and environmental accounting remain application work.
+
+
+The final local 1 GiB comparison (three repetitions per mode) measures medians of
+4.264 s / 2,014.6 Mbit/s for one path, 4.467 s / 1,922.9 Mbit/s for one server
+with two paths, and 17.249 s / 498.0 Mbit/s for two data sources. The old cloning
+baseline was 625.606 s / 13.73 Mbit/s: a 36.27-fold improvement, still about four
+times slower than ordinary single-path delivery. All nine final transfers passed
+full SHA-256 verification. These are loopback implementation measurements, not
+geographical link aggregation results. See the [throughput investigation](integrationtests/tools/transfercompare/results/1gib-optimized/README.md)
+for raw repetitions, the failed exploratory run, profiling, validation and
+remaining serialized-control / bandwidth-delay-product constraints.
