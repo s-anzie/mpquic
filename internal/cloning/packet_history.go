@@ -14,7 +14,7 @@ const (
 	MaxRemotePacketFragments = 16
 )
 
-// PacketFragment identifies immutable retained stream bytes placed in a packet.
+// PacketFragment identifies immutable retained or referenced stream bytes in a packet.
 // These are primary-approved plans, never delivery assertions from a worker.
 type PacketFragment struct {
 	Attempt        *Attempt
@@ -72,6 +72,27 @@ func (a *Authority) RecordRemotePacket(p *Path, pn protocol.PacketNumber, fragme
 	return nil
 }
 
+// PrepareRemoteReferencePacket records a reference-only packet plan atomically.
+// Each fragment covers its complete delegation so its digest binds all bytes.
+// The source builds the payload and must enforce its packet size before dispatch.
+func (a *Authority) PrepareRemoteReferencePacket(p *Path, pn protocol.PacketNumber, fragments []PacketFragment) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(fragments) == 0 {
+		return ErrPacketHistory
+	}
+	if err := a.validateRemotePacketLocked(p, pn, fragments); err != nil {
+		return err
+	}
+	for _, f := range fragments {
+		if !f.Attempt.rangeState.reference {
+			return ErrPacketHistory
+		}
+	}
+	a.recordRemotePacketLocked(p, pn, fragments)
+	return nil
+}
+
 // PrepareRemoteStreamPacket atomically builds STREAM frames from retained bytes
 // and records their plan. The returned payload must be sent with exactly pn on p.
 // It deliberately excludes FIN and control frames; stream finalization remains
@@ -84,6 +105,11 @@ func (a *Authority) PrepareRemoteStreamPacket(p *Path, pn protocol.PacketNumber,
 	}
 	if err := a.validateRemotePacketLocked(p, pn, fragments); err != nil {
 		return nil, err
+	}
+	for _, f := range fragments {
+		if f.Attempt.rangeState.reference {
+			return nil, ErrPacketHistory
+		}
 	}
 	// Reserve worst-case short-header CID, four PN bytes and AEAD tag.
 	const maxPayload = int(protocol.MaxPacketBufferSize) - 1 - 20 - 4 - 16
@@ -123,6 +149,9 @@ func (a *Authority) validateRemotePacketLocked(p *Path, pn protocol.PacketNumber
 		d, err := a.checkAttempt(f.Attempt)
 		if err != nil {
 			return err
+		}
+		if d.reference && (f.Offset != d.rangeInfo.Offset || f.Length != d.rangeInfo.Length) {
+			return ErrAttempt
 		}
 		if f.Attempt.path != p || d.done || d.retryable || f.Attempt.generation != d.generation ||
 			f.Offset < d.rangeInfo.Offset || f.Length == 0 || f.Offset-d.rangeInfo.Offset > d.rangeInfo.Length ||

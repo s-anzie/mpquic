@@ -35,6 +35,7 @@ type ExperimentalCloneSource struct {
 	SourceID, Generation uint64
 	Control              *tls.Conn
 	CertificateSHA256    [32]byte
+	Autonomous           bool
 }
 
 // ExperimentalCloneSourceStats counts locally drained worker packets, including
@@ -58,23 +59,29 @@ func (w *ExperimentalCloneWriter) Stats() []ExperimentalCloneSourceStats {
 
 // ExperimentalCloneWriter sends retained stream portions through trusted workers.
 // It serializes single-packet leases and waits for authenticated QUIC ACKs.
-// This is a private-network prototype: no automatic NAT traversal,
-// transparent worker failover, or HTTP/3 integration. Uncertain coordination
-// closes the WHOLE connection. Do not use in production.
+// This is a private-network prototype: no automatic NAT traversal or HTTP/3
+// integration. Negotiated sources recover through permanent path retirement
+// and client fencing. Failed fencing or application cancellation closes the
+// whole connection. Workers share one trust domain. Do not use in production.
 type ExperimentalCloneWriter struct {
-	mu        sync.Mutex
-	conn      *Conn
-	stream    *SendStream
-	sources   []ExperimentalCloneSource
-	sequences []uint64
-	epochs    []uint64
-	rotations []uint64
-	crypto    handshake.ExperimentalRemoteCrypto
-	pending   map[uint64]*clonedRange // connection-loop owned
-	delivered chan struct{}
-	next      int
-	closed    atomic.Bool
-	closeOnce sync.Once
+	mu          sync.Mutex
+	sourceMutex sync.Mutex
+	conn        *Conn
+	stream      *SendStream
+	sources     []ExperimentalCloneSource
+	sequences   []uint64
+	epochs      []uint64
+	rotations   []uint64
+	failed      []bool
+	additions   chan experimentalSourceAddition
+	assignments map[uint64]int                    // connection-loop owned
+	objects     map[uint64]*experimentalObjectJob // connection-loop owned
+	crypto      handshake.ExperimentalRemoteCrypto
+	pending     map[uint64]*clonedRange // connection-loop owned
+	delivered   chan struct{}
+	next        int
+	closed      atomic.Bool
+	closeOnce   sync.Once
 }
 
 // NewExperimentalCloneWriter requires the initial key update to have completed;
@@ -100,6 +107,8 @@ func (c *Conn) NewExperimentalCloneWriter(ctx context.Context, stream *SendStrea
 	}
 	w := &ExperimentalCloneWriter{conn: c, stream: stream, sources: append([]ExperimentalCloneSource(nil), sources...), sequences: make([]uint64, len(sources)), pending: make(map[uint64]*clonedRange), delivered: make(chan struct{}, 1)}
 	w.epochs, w.rotations = make([]uint64, len(sources)), make([]uint64, len(sources))
+	w.failed, w.additions, w.assignments = make([]bool, len(sources)), make(chan experimentalSourceAddition, 8), make(map[uint64]int)
+	w.objects = make(map[uint64]*experimentalObjectJob)
 	err := w.onLoop(ctx, func() error {
 		cs, ok := c.cryptoStreamHandler.(handshake.ExperimentalRemoteCrypto)
 		if !ok || !cs.ExperimentalRemoteReady() || c.experimentalCloneActive || c.perspective != protocol.PerspectiveServer || stream.flowController.connection != c.connFlowController || stream.supportsResetStreamAt {
@@ -125,6 +134,16 @@ func (c *Conn) NewExperimentalCloneWriter(ctx context.Context, stream *SendStrea
 		}
 		if err := c.prepareCloningAuthorityOnLoop(); err != nil {
 			return err
+		}
+		for _, s := range sources {
+			if s.Autonomous {
+				if !c.sourceOffersNegotiated() {
+					return ErrExperimentalSourceOffer
+				}
+				p := c.multipath.paths[s.PathID]
+				p.experimentalWorkerControlled = true
+				p.experimentalPacketRanges, p.experimentalRetryRanges = make(map[protocol.PacketNumber]uint64), make(map[uint64]bool)
+			}
 		}
 		c.experimentalCloneActive, w.crypto = true, cs
 		return nil
@@ -169,6 +188,28 @@ func (w *ExperimentalCloneWriter) onLoop(ctx context.Context, action func() erro
 // Close the original stream after success to send its FIN through the primary.
 // Use ctx for deadlines; the stream's ordinary write deadline is not consulted.
 func (w *ExperimentalCloneWriter) WriteContext(ctx context.Context, data []byte) (n int, err error) {
+	return w.writeContent(ctx, data, nil, 0, len(data))
+}
+
+// WriteObject transmits verified chunks read at the workers. The primary needs
+// only an authenticated manifest, never the object's content or file handle.
+func (w *ExperimentalCloneWriter) WriteObject(ctx context.Context, manifest ExperimentalCloneObjectManifest) (int, error) {
+	return w.WriteObjectRange(ctx, manifest, 0, manifest.Size())
+}
+
+// WriteObjectRange appends a chunk-aligned portion of an immutable object to the
+// stream. The final portion may end at the object's non-aligned end.
+func (w *ExperimentalCloneWriter) WriteObjectRange(ctx context.Context, manifest ExperimentalCloneObjectManifest, offset, length int64) (int, error) {
+	if err := manifest.Validate(); err != nil {
+		return 0, err
+	}
+	if offset < 0 || length < 0 || offset > manifest.Size() || length > manifest.Size()-offset || offset%1000 != 0 || length%1000 != 0 && offset+length != manifest.Size() {
+		return 0, ErrExperimentalSourceOffer
+	}
+	return w.writeContent(ctx, nil, &manifest, int(offset), int(length))
+}
+
+func (w *ExperimentalCloneWriter) writeContent(ctx context.Context, data []byte, manifest *ExperimentalCloneObjectManifest, objectOffset, length int) (n int, err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.closed.Load() {
@@ -195,16 +236,27 @@ func (w *ExperimentalCloneWriter) WriteContext(ctx context.Context, data []byte)
 	}
 	var flights []*flight
 	queued := 0
-	for n < len(data) {
-		// Bound retained application data independently of stream flow credit.
-		for queued < len(data) && len(flights) < 8 {
-			chunk := data[queued:min(queued+1000, len(data))]
-			index := w.next % len(w.sources)
+	for n < length {
+		admissionBlocked := false
+		// Bound pending data or object descriptors independently of flow credit.
+		for queued < length && len(flights) < 8 {
+			chunkLength := min(1000, length-queued)
+			index, selectErr := w.chooseSource(ctx, w.next%len(w.sources))
+			if selectErr != nil {
+				return n, selectErr
+			}
 			w.next++
 			var rangeID uint64
 			for {
 				err = w.onLoop(ctx, func() error {
-					r, e := w.stream.delegateCloningRange(w.conn.multipath.paths[w.sources[index].PathID].cloningGrant, chunk)
+					var r *clonedRange
+					var e error
+					grant := w.conn.multipath.paths[w.sources[index].PathID].cloningGrant
+					if manifest == nil {
+						r, e = w.stream.delegateCloningRange(grant, data[queued:queued+chunkLength])
+					} else {
+						r, e = w.stream.delegateCloningReference(grant, uint64(chunkLength), manifest.hashes[(objectOffset+queued)/1000])
+					}
 					if e == nil {
 						desc, _, readErr := r.read()
 						if readErr != nil {
@@ -212,23 +264,37 @@ func (w *ExperimentalCloneWriter) WriteContext(ctx context.Context, data []byte)
 						}
 						rangeID = desc.ID
 						w.pending[desc.ID] = r
+						w.assignments[desc.ID] = index
+						if manifest != nil {
+							id := manifest.ID()
+							hash := desc.SHA256
+							w.objects[desc.ID] = &experimentalObjectJob{ID: id[:], Hash: hash[:], Size: manifest.Size(), Offset: int64(objectOffset + queued), StreamID: int64(desc.Range.StreamID), StreamOffset: int64(desc.Range.Offset)}
+						}
 					}
 					return e
 				})
-				if !errors.Is(err, ErrWouldBlock) {
-					break
+				if errors.Is(err, cloning.ErrPath) && w.conn.sourceOffersNegotiated() {
+					index, err = w.chooseSource(ctx, (index+1)%len(w.sources))
+					if err != nil {
+						return n, err
+					}
+					continue
 				}
-				if err = waitCloneTick(ctx, w.conn.ctx, 5*time.Millisecond); err != nil {
-					return n, err
-				}
+				break
+			}
+			if errors.Is(err, ErrWouldBlock) {
+				// Missing earlier bytes can prevent the peer from releasing
+				// credit. Service their recovery before attempting admission again.
+				admissionBlocked = true
+				break
 			}
 			if err != nil {
 				return n, err
 			}
-			if err = w.dispatch(ctx, index, rangeID); err != nil {
+			if index, err = w.sendRange(ctx, index, rangeID); err != nil {
 				return n, err
 			}
-			queued += len(chunk)
+			queued += chunkLength
 			flights = append(flights, &flight{id: rangeID, end: queued, source: index, tries: 1, sent: time.Now()})
 		}
 		// Completion notifications are coalesced wakeups only. The loop-owned
@@ -247,22 +313,48 @@ func (w *ExperimentalCloneWriter) WriteContext(ctx context.Context, data []byte)
 			flights = flights[1:]
 		}
 		for _, f := range flights {
-			if f.done || time.Since(f.sent) < time.Second {
+			if f.done {
+				continue
+			}
+			retry := time.Since(f.sent) >= time.Second
+			if w.sources[f.source].Autonomous {
+				if err = w.onLoop(ctx, func() error {
+					source := w.sources[f.source]
+					p := w.conn.multipath.paths[source.PathID]
+					// Expired sources stop forwarding worker retry requests. Let
+					// source selection fence them even with no fresh work to admit.
+					retry = p == nil || p.abandoned || !w.conn.experimentalSourceReady(source)
+					if p != nil {
+						retry = retry || p.experimentalRetryRanges[f.id]
+						delete(p.experimentalRetryRanges, f.id)
+					}
+					return nil
+				}); err != nil {
+					return n, err
+				}
+			}
+			if !retry {
 				continue
 			}
 			if f.tries == 8 {
-				return n, errors.New("experimental clone delivery retry limit")
+				if !w.conn.sourceOffersNegotiated() {
+					return n, errors.New("experimental clone delivery retry limit")
+				}
+				if err := w.fenceSource(ctx, f.source, nil); err != nil {
+					return n, err
+				}
+				f.tries = 0
 			}
-			if err = w.dispatch(ctx, f.source, f.id); err != nil {
+			if f.source, err = w.sendRange(ctx, f.source, f.id); err != nil {
 				return n, err
 			}
 			f.tries++
 			f.sent = time.Now()
 		}
-		if n == len(data) {
+		if n == length {
 			break
 		}
-		if queued < len(data) && len(flights) < 8 {
+		if !admissionBlocked && queued < length && len(flights) < 8 {
 			continue
 		}
 		timer := time.NewTimer(5 * time.Millisecond)
@@ -301,6 +393,16 @@ func (w *ExperimentalCloneWriter) completed(ids []uint64) {
 			continue
 		}
 		delete(w.pending, id)
+		delete(w.assignments, id)
+		delete(w.objects, id)
+		for _, p := range w.conn.multipath.paths {
+			delete(p.experimentalRetryRanges, id)
+			for pn, rid := range p.experimentalPacketRanges {
+				if rid == id {
+					delete(p.experimentalPacketRanges, pn)
+				}
+			}
+		}
 		s := r.stream
 		s.mutex.Lock()
 		if s.resetErr == nil && s.shutdownErr == nil {
@@ -330,13 +432,20 @@ type experimentalCloneJob struct {
 	PN          protocol.PacketNumber
 	CID         []byte
 	Destination string
+	Object      *experimentalObjectJob `json:",omitempty"`
+	Autonomous  bool                   `json:",omitempty"`
 }
 
-func (w *ExperimentalCloneWriter) dispatch(ctx context.Context, index int, rangeID uint64) error {
+func (w *ExperimentalCloneWriter) dispatch(ctx context.Context, index int, rangeID uint64) (dispatchErr error) {
 	source := w.sources[index]
 	var snapshot *handshake.RemoteSealer
 	defer func() {
 		if snapshot != nil {
+			if dispatchErr != nil && w.conn.sourceOffersNegotiated() && ctx.Err() == nil && w.conn.ctx.Err() == nil {
+				if err := w.fenceSource(ctx, index, snapshot); err != nil {
+					dispatchErr = errors.Join(errExperimentalFence, dispatchErr, err)
+				}
+			}
 			snapshot.Close()
 		}
 	}()
@@ -349,6 +458,17 @@ func (w *ExperimentalCloneWriter) dispatch(ctx context.Context, index int, range
 			if r == nil {
 				return nil
 			} // ACK won the race with the retry timer
+			if w.assignments[rangeID] != index {
+				if err := r.lost(); err != nil {
+					return err
+				}
+				var err error
+				r, err = r.retry(w.conn.multipath.paths[source.PathID].cloningGrant)
+				if err != nil {
+					return err
+				}
+				w.pending[rangeID], w.assignments[rangeID] = r, index
+			}
 			if !w.crypto.ExperimentalRemoteReady() {
 				// An automatic local update may have been carried only by an
 				// ACK. Elicit new-phase peer traffic before admitting a worker.
@@ -365,7 +485,7 @@ func (w *ExperimentalCloneWriter) dispatch(ctx context.Context, index int, range
 			if p.abandoned || !p.serverValidated {
 				return ErrExperimentalCloningNotReady
 			}
-			if !w.conn.multipath.canSendOnPath(source.PathID, monotime.Now()) {
+			if !source.Autonomous && !w.conn.multipath.canSendOnPath(source.PathID, monotime.Now()) {
 				return ErrWouldBlock
 			}
 			cid, ok := w.conn.connIDManager.GetConnIDForPath(pathID(source.PathID))
@@ -392,16 +512,28 @@ func (w *ExperimentalCloneWriter) dispatch(ctx context.Context, index int, range
 					return err
 				}
 			}
-			payload, err = w.conn.multipath.cloningAuthority.PrepareRemoteStreamPacket(p.cloningGrant, job.PN,
-				[]cloning.PacketFragment{{Attempt: r.attempt, Offset: desc.Range.Offset, Length: desc.Range.Length}}, w.conn.version)
+			fragments := []cloning.PacketFragment{{Attempt: r.attempt, Offset: desc.Range.Offset, Length: desc.Range.Length}}
+			job.Object, job.Autonomous = w.objects[rangeID], source.Autonomous
+			if job.Object != nil {
+				err = w.conn.multipath.cloningAuthority.PrepareRemoteReferencePacket(p.cloningGrant, job.PN, fragments)
+				payload = []byte{0} // content comes exclusively from the worker resolver
+			} else {
+				payload, err = w.conn.multipath.cloningAuthority.PrepareRemoteStreamPacket(p.cloningGrant, job.PN, fragments, w.conn.version)
+			}
 			if err != nil {
 				return err
 			}
 			size := protocol.ByteCount(1 + cid.Len() + 4 + 16 + len(payload))
+			if job.Object != nil {
+				size = protocol.ByteCount(1 + cid.Len() + 4 + 16 + int(desc.Range.Length) + 24)
+			}
 			if err := w.conn.multipath.recordCloningPacket(source.PathID, job.PN, monotime.Now(), size); err != nil {
 				return err
 			}
 			job.CID, job.Destination = cid.Bytes(), p.remoteAddr.String()
+			if source.Autonomous {
+				p.experimentalPacketRanges[job.PN] = rangeID
+			}
 			return nil
 		})
 		if !errors.Is(err, ErrWouldBlock) {
@@ -490,7 +622,10 @@ func readCloneRecord(r io.Reader, limit uint16) ([]byte, error) {
 func (w *ExperimentalCloneWriter) fail() {
 	w.closeOnce.Do(func() {
 		w.closed.Store(true)
-		for _, s := range w.sources {
+		w.sourceMutex.Lock()
+		sources := append([]ExperimentalCloneSource(nil), w.sources...)
+		w.sourceMutex.Unlock()
+		for _, s := range sources {
 			s.Control.Close()
 		}
 		w.conn.CloseWithError(0x100, "experimental cloning stopped")
@@ -559,7 +694,11 @@ func (w *ExperimentalCloneWriter) Close() error {
 // the worker operator, not from an untrusted request. The caller owns udp.
 // A drain receipt confirms only that the one-packet key window was exhausted and
 // closed; it is never proof that the QUIC client received the data.
-func ServeExperimentalCloneWorker(ctx context.Context, control *tls.Conn, primaryCertificateSHA256 [32]byte, udp *net.UDPConn, allowDestination func(netip.AddrPort) bool) error {
+func ServeExperimentalCloneWorker(ctx context.Context, control *tls.Conn, primaryCertificateSHA256 [32]byte, udp *net.UDPConn, allowDestination func(netip.AddrPort) bool, workerOptions ...*ExperimentalCloneWorkerOptions) error {
+	var options *ExperimentalCloneWorkerOptions
+	if len(workerOptions) != 0 {
+		options = workerOptions[0]
+	}
 	if control != nil {
 		defer control.Close()
 	}
@@ -582,7 +721,7 @@ func ServeExperimentalCloneWorker(ctx context.Context, control *tls.Conn, primar
 		if err := control.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
 			return err
 		}
-		meta, err := readCloneRecord(control, 512)
+		meta, err := readCloneRecord(control, 1200)
 		if err != nil {
 			return err
 		}
@@ -611,6 +750,17 @@ func ServeExperimentalCloneWorker(ctx context.Context, control *tls.Conn, primar
 			sealer.Close()
 			return err
 		}
+		if job.Object != nil {
+			if options == nil {
+				sealer.Close()
+				return ErrExperimentalSourceOffer
+			}
+			payload, err = job.Object.payload(options.Objects, protocol.Version1)
+			if err != nil {
+				sealer.Close()
+				return err
+			}
+		}
 		if sender == nil {
 			sender, err = handshake.NewRemotePathSender(sealer, udp, net.UDPAddrFromAddrPort(addr))
 			destination = addr
@@ -620,6 +770,19 @@ func ServeExperimentalCloneWorker(ctx context.Context, control *tls.Conn, primar
 		if err != nil {
 			sealer.Close()
 			return err
+		}
+		if job.Autonomous {
+			if options == nil || options.Controller == nil {
+				return ErrExperimentalWorkerController
+			}
+			size := 1 + len(job.CID) + 4 + 16 + len(payload)
+			if err := options.Controller.WaitSend(ctx, size); err != nil {
+				return err
+			}
+			if err := options.Controller.OnSent(int64(job.PN), size, monotime.Now()); err != nil {
+				options.Controller.CancelSend()
+				return err
+			}
 		}
 		pn, err := sender.WritePayload(payload)
 		if err != nil {

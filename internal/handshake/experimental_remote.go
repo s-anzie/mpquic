@@ -10,16 +10,29 @@ import (
 )
 
 // ExperimentalRemoteALPN separates framed jobs from the bare snapshot protocol.
-const ExperimentalRemoteALPN = "mpquic-clone-lab/1"
+const ExperimentalRemoteALPN = "mpquic-clone-lab/2"
 
 // ExperimentalRemoteCrypto permits one outstanding, single-packet lease.
-// All methods run on the connection loop. The caller must close the connection
-// after uncertain dispatch, never release a lease without a worker drain receipt.
+// All methods run on the connection loop. Normal release requires a worker
+// drain receipt. Uncertain leases require permanent retirement and semantic
+// client fencing before reassignment; otherwise close the connection.
 type ExperimentalRemoteCrypto interface {
 	ExperimentalRemoteReady() bool
 	AcquireExperimentalRemote(*cloning.Authority, *cloning.Path, protocol.ConnectionID) (*RemoteSealer, uint64, protocol.PacketNumber, error)
 	ReleaseExperimentalRemote(*RemoteSealer) error
+	RetireExperimentalRemote(*RemoteSealer) error
 	RotateExperimentalKeys() error
+}
+
+// RetireExperimentalRemote burns an uncertain lease on a permanently retired
+// path. Reserved packet numbers and epoch usage are never refunded. A trusted
+// worker may still emit its previously approved packet; callers must obtain a
+// client path fence before reassigning work. This does not revoke remote keys.
+func (h *cryptoSetup) RetireExperimentalRemote(s *RemoteSealer) error {
+	if s == nil || h.aead.experimentalLease != s || s.authority == nil || !s.authority.IsRetiredPath(s.grant) {
+		return ErrRemoteSealer
+	}
+	return h.ReleaseExperimentalRemote(s)
 }
 
 // RotateExperimentalKeys initiates a local update only at a drained barrier

@@ -44,9 +44,9 @@ func TestExperimentalSourceOfferTransportParameter(t *testing.T) {
 	var parsed TransportParameters
 	require.NoError(t, parsed.Unmarshal(p.Marshal(protocol.PerspectiveClient), protocol.PerspectiveClient))
 	require.True(t, parsed.ExperimentalSourceOffers)
-	for _, value := range []uint64{0, 1, 2, 4} {
+	for _, value := range []uint64{0, 1, 2, 3, 5, 63, 1<<62 - 1} {
 		b := p.marshalVarintParam(nil, experimentalSourceOffersParameterID, value)
-		require.Error(t, parsed.Unmarshal(b, protocol.PerspectiveClient))
+		require.ErrorContains(t, parsed.Unmarshal(b, protocol.PerspectiveClient), "unsupported experimental source offer version")
 	}
 }
 

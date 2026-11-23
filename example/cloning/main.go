@@ -29,6 +29,8 @@ func main() {
 	size := flag.Int("bytes", 64<<10, "application bytes (1..67108864)")
 	timeout := flag.Duration("timeout", 60*time.Second, "total laboratory deadline")
 	rotate := flag.Bool("rotate", false, "rotate QUIC keys halfway through the transfer")
+	local := flag.Bool("source-local", true, "read verified object chunks from each worker's own file")
+	failFirst := flag.Bool("fail-first", false, "stop the first worker halfway through the transfer")
 	flag.Parse()
 	if *size <= 0 || *size > 64<<20 {
 		fmt.Fprintln(os.Stderr, "invalid byte count")
@@ -36,7 +38,7 @@ func main() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	if err := run(ctx, *size, *rotate); err != nil {
+	if err := run(ctx, *size, *rotate, *local, *failFirst); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -60,7 +62,14 @@ func udp() (*net.UDPConn, error) {
 	return net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 }
 
-func run(ctx context.Context, size int, rotate bool) error {
+func run(ctx context.Context, size int, rotate, local, failFirst bool) error {
+	data := make([]byte, size)
+	for i := range data {
+		data[i] = byte(i*31 + 7)
+	}
+	var manifest quic.ExperimentalCloneObjectManifest
+	var controllers []*quic.ExperimentalWorkerController
+	var firstWorker *net.UDPConn
 	primaryCert, err := identity(1)
 	if err != nil {
 		return err
@@ -148,6 +157,42 @@ func run(ctx context.Context, size int, rotate bool) error {
 			return err
 		}
 		defer workerUDP.Close()
+		if i == 0 {
+			firstWorker = workerUDP
+		}
+		controller, err := quic.NewExperimentalWorkerController(1452, 25*time.Millisecond)
+		if err != nil {
+			return err
+		}
+		controllers = append(controllers, controller)
+		options := &quic.ExperimentalCloneWorkerOptions{Controller: controller}
+		if local {
+			file, err := os.CreateTemp("", "mpquic-source-*")
+			if err != nil {
+				return err
+			}
+			defer os.Remove(file.Name())
+			defer file.Close()
+			if _, err := file.Write(data); err != nil {
+				return err
+			}
+			if i == 0 {
+				published, err := quic.BuildExperimentalCloneObjectManifest(file, int64(size))
+				if err != nil {
+					return err
+				}
+				manifest, err = quic.NewExperimentalCloneObjectManifest(published.ID(), published.Size(), published.ChunkHashes())
+				if err != nil {
+					return err
+				}
+			}
+			options.Objects = quic.ExperimentalCloneObjectResolverFunc(func(id quic.ExperimentalCloneObjectID) (io.ReaderAt, error) {
+				if id != manifest.ID() {
+					return nil, errors.New("object not present at source")
+				}
+				return file, nil
+			})
+		}
 		tcp, err := net.Listen("tcp4", "127.0.0.1:0")
 		if err != nil {
 			return err
@@ -174,7 +219,7 @@ func run(ctx context.Context, size int, rotate bool) error {
 			if err := tc.HandshakeContext(ctx); err != nil {
 				return
 			}
-			_ = quic.ServeExperimentalSourceRelay(ctx, tc, primaryPin, workerUDP, func(addr netip.AddrPort) bool { return addr == destination })
+			_ = quic.ServeExperimentalSourceRelay(ctx, tc, primaryPin, workerUDP, func(addr netip.AddrPort) bool { return addr == destination }, options)
 		}()
 		relayDialer := tls.Dialer{Config: &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: workerRoots, Certificates: []tls.Certificate{primaryCert}, ServerName: "localhost", NextProtos: []string{quic.ExperimentalSourceRelayALPN}}}
 		relay, err := relayDialer.DialContext(ctx, "tcp", relayListener.Addr().String())
@@ -214,7 +259,7 @@ func run(ctx context.Context, size int, rotate bool) error {
 				workerErrors <- err
 				return
 			}
-			workerErrors <- quic.ServeExperimentalCloneWorker(ctx, tlsConn, primaryPin, workerUDP, func(addr netip.AddrPort) bool { return addr == destination })
+			workerErrors <- quic.ServeExperimentalCloneWorker(ctx, tlsConn, primaryPin, workerUDP, func(addr netip.AddrPort) bool { return addr == destination }, options)
 		}()
 		dialer := tls.Dialer{Config: &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: workerRoots, Certificates: []tls.Certificate{primaryCert}, ServerName: "localhost", NextProtos: []string{quic.ExperimentalCloningALPN}}}
 		control, err := dialer.DialContext(ctx, "tcp", tcp.Addr().String())
@@ -222,7 +267,7 @@ func run(ctx context.Context, size int, rotate bool) error {
 			return err
 		}
 		defer control.Close()
-		sources = append(sources, quic.ExperimentalCloneSource{PathID: path.ID(), SourceID: id, Generation: 1, Control: control.(*tls.Conn), CertificateSHA256: workerPin})
+		sources = append(sources, quic.ExperimentalCloneSource{PathID: path.ID(), SourceID: id, Generation: 1, Control: control.(*tls.Conn), CertificateSHA256: workerPin, Autonomous: true})
 		fmt.Printf("validated worker source_id=%d path=%d source=%s destination=%s\n", id, path.ID(), workerUDP.LocalAddr(), destination)
 	}
 	stream, err := server.OpenUniStreamSync(ctx)
@@ -245,10 +290,6 @@ func run(ctx context.Context, size int, rotate bool) error {
 		}
 	}
 	defer writer.Close()
-	data := make([]byte, size)
-	for i := range data {
-		data[i] = byte(i*31 + 7)
-	}
 	readDone := make(chan error, 1)
 	go func() {
 		s, err := client.AcceptUniStream(ctx)
@@ -264,16 +305,32 @@ func run(ctx context.Context, size int, rotate bool) error {
 	}()
 	start := time.Now()
 	cut := len(data)
-	if rotate {
+	if rotate || failFirst {
 		cut /= 2
+		if local {
+			cut = cut / 1000 * 1000
+		}
 	}
-	n, err := writer.WriteContext(ctx, data[:cut])
+	var n int
+	if local {
+		n, err = writer.WriteObjectRange(ctx, manifest, 0, int64(cut))
+	} else {
+		n, err = writer.WriteContext(ctx, data[:cut])
+	}
+	if err == nil && failFirst {
+		err = firstWorker.Close()
+		fmt.Println("first worker stopped; continuing on the same QUIC connection")
+	}
 	if err == nil && rotate {
 		err = writer.RotateKeys(ctx)
 	}
 	if err == nil && cut < len(data) {
 		var rest int
-		rest, err = writer.WriteContext(ctx, data[cut:])
+		if local {
+			rest, err = writer.WriteObjectRange(ctx, manifest, int64(cut), int64(len(data)-cut))
+		} else {
+			rest, err = writer.WriteContext(ctx, data[cut:])
+		}
 		n += rest
 	}
 	if err != nil {
@@ -289,6 +346,10 @@ func run(ctx context.Context, size int, rotate bool) error {
 	fmt.Printf("verified bytes=%d elapsed=%s throughput=%.3f Mbit/s sha256=%x\n", n, elapsed.Round(time.Millisecond), float64(n)*8/elapsed.Seconds()/1e6, sha256.Sum256(data))
 	for _, stat := range writer.Stats() {
 		fmt.Printf("path=%d worker_packets=%d key_epoch=%d key_rotations=%d\n", stat.PathID, stat.Packets, stat.LastKeyEpoch, stat.KeyRotations)
+	}
+	for i, controller := range controllers {
+		s := controller.Snapshot()
+		fmt.Printf("worker=%d local_sent=%d local_acked=%d local_lost=%d pto=%d cwnd=%d rtt=%s\n", i+1, s.Sent, s.Acked, s.Lost, s.PTOs, s.CongestionWindow, s.RTT)
 	}
 	fmt.Println("Experimental loopback lab only; one QUIC connection, two worker UDP sources. Not HTTP/3 or production-ready.")
 	return nil

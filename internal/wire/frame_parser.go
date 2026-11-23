@@ -55,7 +55,7 @@ func (p *FrameParser) ParseType(b []byte, encLevel protocol.EncryptionLevel) (Fr
 		}
 		ft := FrameType(typ)
 		valid := ft.isValidRFC9000() ||
-			(p.supportsSourceOffers && (ft == FrameTypeExperimentalSourceOffer || ft == FrameTypeExperimentalSourceAccept)) ||
+			(p.supportsSourceOffers && (ft == FrameTypeExperimentalSourceOffer || ft == FrameTypeExperimentalSourceAccept || ft == FrameTypeExperimentalSourceFence)) ||
 			(p.supportsDatagrams && ft.IsDatagramFrameType()) ||
 			(p.supportsResetStreamAt && ft == FrameTypeResetStreamAt) ||
 			(p.supportsAckFrequency && (ft == FrameTypeAckFrequency || ft == FrameTypeImmediateAck)) ||
@@ -133,6 +133,8 @@ func (p *FrameParser) ParseLessCommonFrame(frameType FrameType, data []byte, v p
 		frame, l, err = parseExperimentalSourceOfferFrame(data)
 	case FrameTypeExperimentalSourceAccept:
 		frame, l, err = parseExperimentalSourceAcceptFrame(data)
+	case FrameTypeExperimentalSourceFence:
+		frame, l, err = parseExperimentalSourceFenceFrame(data)
 	case FrameTypePing:
 		frame = &PingFrame{}
 	case FrameTypeResetStream:

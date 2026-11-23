@@ -78,16 +78,19 @@ type multipathPathState struct {
 
 	// The peer address and local packet information identify the destination
 	// for server-side application sending and path validation.
-	remoteAddr              net.Addr
-	experimentalRelay       *experimentalSourceRelay
-	packetInfo              packetInfo
-	serverValidated         bool
-	serverChallenge         [8]byte
-	serverChallengePending  bool
-	serverChallengeDeadline monotime.Time
-	serverChallengeAttempts int
-	serverBytesReceived     protocol.ByteCount
-	serverProbeBytesSent    protocol.ByteCount
+	remoteAddr                   net.Addr
+	experimentalRelay            *experimentalSourceRelay
+	experimentalWorkerControlled bool
+	experimentalPacketRanges     map[protocol.PacketNumber]uint64
+	experimentalRetryRanges      map[uint64]bool
+	packetInfo                   packetInfo
+	serverValidated              bool
+	serverChallenge              [8]byte
+	serverChallengePending       bool
+	serverChallengeDeadline      monotime.Time
+	serverChallengeAttempts      int
+	serverBytesReceived          protocol.ByteCount
+	serverProbeBytesSent         protocol.ByteCount
 
 	packetNumberSpace multipathPacketNumberSpace
 	largestSent       protocol.PacketNumber

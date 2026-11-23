@@ -15,7 +15,7 @@ import (
 )
 
 // ExperimentalSourceRelayALPN separates opaque packet forwarding from key jobs.
-const ExperimentalSourceRelayALPN = "mpquic-clone-relay/1"
+const ExperimentalSourceRelayALPN = "mpquic-clone-relay/2"
 
 func checkSourceRelayTLS(c *tls.Conn, pin [32]byte) error {
 	if c == nil {
@@ -29,16 +29,27 @@ func checkSourceRelayTLS(c *tls.Conn, pin [32]byte) error {
 }
 
 type sourceRelayPacket struct {
-	address netip.AddrPort
-	data    []byte
+	address  netip.AddrPort
+	data     []byte
+	feedback *experimentalWorkerFeedback
 }
 
 func writeSourceRelayPacket(c *tls.Conn, p sourceRelayPacket) error {
+	if p.feedback != nil {
+		b, err := encodeWorkerFeedback(p.feedback)
+		if err != nil {
+			return err
+		}
+		if err := c.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			return err
+		}
+		return writeCloneRecord(c, b)
+	}
 	if !p.address.IsValid() || p.address.Port() == 0 || len(p.data) == 0 || len(p.data) > 1452 {
 		return ErrExperimentalSourceOffer
 	}
 	ip := p.address.Addr().As16()
-	b := append([]byte(nil), ip[:]...)
+	b := append([]byte{0}, ip[:]...)
 	b = binary.BigEndian.AppendUint16(b, p.address.Port())
 	b = append(b, p.data...)
 	if err := c.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
@@ -48,26 +59,34 @@ func writeSourceRelayPacket(c *tls.Conn, p sourceRelayPacket) error {
 }
 
 func readSourceRelayPacket(c *tls.Conn) (sourceRelayPacket, error) {
-	b, err := readCloneRecord(c, 1470)
+	b, err := readCloneRecord(c, 1471)
 	if err != nil {
 		return sourceRelayPacket{}, err
 	}
-	if len(b) <= 18 {
+	if b[0] == 1 {
+		f, err := decodeWorkerFeedback(b[1:])
+		return sourceRelayPacket{feedback: f}, err
+	}
+	if b[0] != 0 || len(b) <= 19 {
 		return sourceRelayPacket{}, ErrExperimentalSourceOffer
 	}
-	ip := netip.AddrFrom16([16]byte(b[:16])).Unmap()
-	addr := netip.AddrPortFrom(ip, binary.BigEndian.Uint16(b[16:18]))
+	ip := netip.AddrFrom16([16]byte(b[1:17])).Unmap()
+	addr := netip.AddrPortFrom(ip, binary.BigEndian.Uint16(b[17:19]))
 	if ip.IsUnspecified() || ip.IsMulticast() || addr.Port() == 0 {
 		return sourceRelayPacket{}, ErrExperimentalSourceOffer
 	}
-	return sourceRelayPacket{addr, b[18:]}, nil
+	return sourceRelayPacket{address: addr, data: b[19:]}, nil
 }
 
 // ServeExperimentalSourceRelay forwards opaque QUIC datagrams over dedicated
 // mutual TLS. It owns reads on udp; ServeExperimentalCloneWorker may concurrently
 // send using the same socket. No receive keys leave the primary. Destination
 // policy is mandatory for both directions. The caller retains ownership of udp.
-func ServeExperimentalSourceRelay(ctx context.Context, control *tls.Conn, primaryPin [32]byte, udp *net.UDPConn, allow func(netip.AddrPort) bool) error {
+func ServeExperimentalSourceRelay(ctx context.Context, control *tls.Conn, primaryPin [32]byte, udp *net.UDPConn, allow func(netip.AddrPort) bool, workerOptions ...*ExperimentalCloneWorkerOptions) error {
+	var options *ExperimentalCloneWorkerOptions
+	if len(workerOptions) != 0 {
+		options = workerOptions[0]
+	}
 	if err := checkSourceRelayTLS(control, primaryPin); err != nil {
 		return err
 	}
@@ -77,10 +96,26 @@ func ServeExperimentalSourceRelay(ctx context.Context, control *tls.Conn, primar
 	}
 	stop := context.AfterFunc(ctx, func() { control.Close() })
 	defer stop()
+	workerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if options != nil && options.Controller != nil {
+		go options.Controller.Run(workerCtx)
+		go func() {
+			_ = workerRelayFeedback(workerCtx, func(f *experimentalWorkerFeedback) error {
+				return writeSourceRelayPacket(control, sourceRelayPacket{feedback: f})
+			}, options.Controller)
+			control.Close()
+		}()
+	}
 	done := make(chan error, 1)
 	go func() {
 		for {
 			p, err := readSourceRelayPacket(control)
+			if err == nil && p.feedback != nil {
+				if err = applyWorkerFeedback(options, p.feedback); err == nil {
+					continue
+				}
+			}
 			if err == nil && !allow(p.address) {
 				err = ErrExperimentalSourceOffer
 			}
@@ -118,7 +153,7 @@ func ServeExperimentalSourceRelay(ctx context.Context, control *tls.Conn, primar
 		if n == 0 || n > 1452 || buf[0]&0x80 != 0 || !allow(addr) {
 			continue
 		}
-		if err := writeSourceRelayPacket(control, sourceRelayPacket{addr, buf[:n]}); err != nil {
+		if err := writeSourceRelayPacket(control, sourceRelayPacket{address: addr, data: buf[:n]}); err != nil {
 			return err
 		}
 	}
@@ -135,7 +170,7 @@ type experimentalSourceRelay struct {
 // PrepareExperimentalSource attaches a dedicated authenticated forwarding channel
 // to an announced generation before the client probes it. The worker must run
 // ServeExperimentalSourceRelay on the advertised UDP socket. This method takes
-// ownership of control on success; channel failure closes the QUIC connection.
+// ownership of control on success; channel failure retires this source path.
 func (c *Conn) PrepareExperimentalSource(ctx context.Context, id, generation uint64, control *tls.Conn, workerPin [32]byte) error {
 	if err := checkSourceRelayTLS(control, workerPin); err != nil {
 		return err
@@ -179,13 +214,29 @@ func (r *experimentalSourceRelay) current(pathID uint64) bool {
 
 func (r *experimentalSourceRelay) run() {
 	defer r.control.Close()
-	defer r.conn.CloseWithError(0x100, "experimental source relay stopped")
+	defer func() {
+		err := (&ExperimentalCloneWriter{conn: r.conn}).onLoop(r.conn.ctx, func() error {
+			for id, p := range r.conn.multipath.paths {
+				if p.experimentalRelay == r {
+					return r.conn.abandonFailedPath(id, net.ErrClosed)
+				}
+			}
+			return nil
+		})
+		if err != nil && r.conn.ctx.Err() == nil {
+			r.conn.CloseWithError(0x100, "experimental source relay stopped")
+		}
+	}()
+	done := make(chan struct{})
+	defer close(done)
 	stop := context.AfterFunc(r.conn.ctx, func() { r.control.Close() })
 	defer stop()
 	go func() {
 		defer r.control.Close()
 		for {
 			select {
+			case <-done:
+				return
 			case <-r.conn.ctx.Done():
 				return
 			case p := <-r.queue:
@@ -199,6 +250,12 @@ func (r *experimentalSourceRelay) run() {
 		p, err := readSourceRelayPacket(r.control)
 		if err != nil {
 			return
+		}
+		if p.feedback != nil {
+			if err := r.handleWorkerRetry(p.feedback); err != nil {
+				return
+			}
+			continue
 		}
 		if p.data[0]&0x80 != 0 {
 			continue
@@ -270,16 +327,16 @@ func (c *Conn) writeExperimentalPath(id uint64, data []byte, addr net.Addr, info
 	}
 	r := p.experimentalRelay
 	if !r.current(id) {
-		return ErrExperimentalSourceOffer
+		return c.abandonFailedPath(id, ErrExperimentalSourceOffer)
 	}
 	u, ok := addr.(*net.UDPAddr)
 	if !ok {
 		return ErrExperimentalSourceOffer
 	}
 	select {
-	case r.queue <- sourceRelayPacket{u.AddrPort(), append([]byte(nil), data...)}:
+	case r.queue <- sourceRelayPacket{address: u.AddrPort(), data: append([]byte(nil), data...)}:
 		return nil
 	default:
-		return errors.New("experimental source relay queue full")
+		return c.abandonFailedPath(id, errors.New("experimental source relay queue full"))
 	}
 }

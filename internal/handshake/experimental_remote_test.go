@@ -9,6 +9,36 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestExperimentalRemoteRetiredLeaseDuringPeerUpdate(t *testing.T) {
+	s, c, authority := remoteTestEndpoints(t, getCipherSuite(tls.TLS_AES_128_GCM_SHA256), protocol.Version1)
+	h := &cryptoSetup{aead: s}
+	s.rollKeys()
+	c.rollKeys()
+	_, err := c.Open(nil, s.Seal(nil, []byte{1}, 0, nil), monotime.Now(), 0, s.keyPhase.Bit(), nil)
+	require.NoError(t, err)
+	_, err = s.Open(nil, c.Seal(nil, []byte{1}, 0, nil), monotime.Now(), 0, c.keyPhase.Bit(), nil)
+	require.NoError(t, err)
+	grant, err := authority.GrantPath(1, "worker")
+	require.NoError(t, err)
+	lease, _, _, err := h.AcquireExperimentalRemote(authority, grant, protocol.ParseConnectionID([]byte("cid")))
+	require.NoError(t, err)
+	defer lease.Close()
+	require.ErrorIs(t, h.RetireExperimentalRemote(lease), ErrRemoteSealer)
+	c.rollKeys()
+	ciphertext := c.Seal(nil, []byte{2}, 1, nil)
+	_, err = s.Open(nil, ciphertext, monotime.Now(), 1, c.keyPhase.Bit(), nil)
+	require.ErrorIs(t, err, ErrRemoteKeyUpdatePending)
+	require.NoError(t, authority.RetirePath(grant))
+	require.NoError(t, h.RetireExperimentalRemote(lease))
+	require.ErrorIs(t, h.ReleaseExperimentalRemote(lease), ErrRemoteSealer, "stale drain must not release a future lease")
+	require.Equal(t, protocol.KeyPhase(2), s.keyPhase)
+	_, err = s.Open(nil, ciphertext, monotime.Now(), 1, c.keyPhase.Bit(), nil)
+	require.NoError(t, err)
+	require.True(t, h.ExperimentalRemoteReady())
+	_, _, err = authority.ReservePacketWindow(grant, 1)
+	require.Error(t, err, "retired path can never allocate another number")
+}
+
 func TestExperimentalRemoteLeaseFencesKeyUpdates(t *testing.T) {
 	s, c, authority := remoteTestEndpoints(t, getCipherSuite(tls.TLS_AES_128_GCM_SHA256), protocol.Version1)
 	h := &cryptoSetup{aead: s}

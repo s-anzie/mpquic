@@ -64,6 +64,18 @@ func (r *experimentalSourceRegistry) apply(f wire.ExperimentalSourceOfferFrame, 
 		return ErrExperimentalSourceOffer
 	}
 	if old.clientPath != nil {
+		p := old.clientPath
+		if err := p.conn.abandonFailedPath(p.path.ID(), ErrExperimentalSourceOffer); err != nil {
+			return err
+		}
+		delete(p.conn.connIDGenerator.connRunners, (*packetHandlerMap)(p.transport))
+		p.transport.mutex.Lock()
+		for id, h := range p.transport.handlers {
+			if h == p.conn {
+				delete(p.transport.handlers, id)
+			}
+		}
+		p.transport.mutex.Unlock()
 		old.clientPath.socket.active.Store(false)
 		old.clientPath.socket.Close()
 	}
