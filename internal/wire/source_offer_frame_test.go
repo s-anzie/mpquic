@@ -44,7 +44,7 @@ func TestExperimentalSourceOfferTransportParameter(t *testing.T) {
 	var parsed TransportParameters
 	require.NoError(t, parsed.Unmarshal(p.Marshal(protocol.PerspectiveClient), protocol.PerspectiveClient))
 	require.True(t, parsed.ExperimentalSourceOffers)
-	for _, value := range []uint64{0, 2} {
+	for _, value := range []uint64{0, 1, 3} {
 		b := p.marshalVarintParam(nil, experimentalSourceOffersParameterID, value)
 		require.Error(t, parsed.Unmarshal(b, protocol.PerspectiveClient))
 	}

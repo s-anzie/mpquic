@@ -21,6 +21,9 @@ var (
 	ErrKeysDropped = errors.New("CryptoSetup: keys were already dropped")
 	// ErrDecryptionFailed is returned when the AEAD fails to open the packet.
 	ErrDecryptionFailed = errors.New("decryption failed")
+	// ErrRemoteKeyUpdatePending drops an authenticated next-phase packet until
+	// a bounded worker lease drains. No ACK or delivery is recorded for it.
+	ErrRemoteKeyUpdatePending = errors.New("remote key update waiting for worker drain")
 )
 
 type headerDecryptor interface {

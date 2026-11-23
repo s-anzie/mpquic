@@ -28,6 +28,7 @@ import (
 func main() {
 	size := flag.Int("bytes", 64<<10, "application bytes (1..67108864)")
 	timeout := flag.Duration("timeout", 60*time.Second, "total laboratory deadline")
+	rotate := flag.Bool("rotate", false, "rotate QUIC keys halfway through the transfer")
 	flag.Parse()
 	if *size <= 0 || *size > 64<<20 {
 		fmt.Fprintln(os.Stderr, "invalid byte count")
@@ -35,7 +36,7 @@ func main() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	if err := run(ctx, *size); err != nil {
+	if err := run(ctx, *size, *rotate); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -59,7 +60,7 @@ func udp() (*net.UDPConn, error) {
 	return net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 }
 
-func run(ctx context.Context, size int) error {
+func run(ctx context.Context, size int, rotate bool) error {
 	primaryCert, err := identity(1)
 	if err != nil {
 		return err
@@ -224,7 +225,19 @@ func run(ctx context.Context, size int) error {
 		readDone <- err
 	}()
 	start := time.Now()
-	n, err := writer.WriteContext(ctx, data)
+	cut := len(data)
+	if rotate {
+		cut /= 2
+	}
+	n, err := writer.WriteContext(ctx, data[:cut])
+	if err == nil && rotate {
+		err = writer.RotateKeys(ctx)
+	}
+	if err == nil && cut < len(data) {
+		var rest int
+		rest, err = writer.WriteContext(ctx, data[cut:])
+		n += rest
+	}
 	if err != nil {
 		return err
 	}
@@ -237,7 +250,7 @@ func run(ctx context.Context, size int) error {
 	elapsed := time.Since(start)
 	fmt.Printf("verified bytes=%d elapsed=%s throughput=%.3f Mbit/s sha256=%x\n", n, elapsed.Round(time.Millisecond), float64(n)*8/elapsed.Seconds()/1e6, sha256.Sum256(data))
 	for _, stat := range writer.Stats() {
-		fmt.Printf("path=%d worker_packets=%d\n", stat.PathID, stat.Packets)
+		fmt.Printf("path=%d worker_packets=%d key_epoch=%d key_rotations=%d\n", stat.PathID, stat.Packets, stat.LastKeyEpoch, stat.KeyRotations)
 	}
 	fmt.Println("Experimental loopback lab only; one QUIC connection, two worker UDP sources. Not HTTP/3 or production-ready.")
 	return nil

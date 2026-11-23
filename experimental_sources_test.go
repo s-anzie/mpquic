@@ -73,13 +73,42 @@ func TestSourceOfferLiveNegotiation(t *testing.T) {
 				offers, err := client.ExperimentalSourceOffers(ctx)
 				return err == nil && len(offers) == 1 && offers[0].Address == addr
 			}, time.Second, 5*time.Millisecond)
+			require.ErrorIs(t, client.AcceptExperimentalSource(ctx, 1, 1, nil), ErrExperimentalSourceOffer)
+			require.ErrorIs(t, client.AcceptExperimentalSource(ctx, 1, 1, func(ExperimentalSourceOffer) bool { return false }), ErrExperimentalSourceOffer)
+			require.NoError(t, client.AcceptExperimentalSource(ctx, 1, 1, func(o ExperimentalSourceOffer) bool { return o.Address == addr }))
+			require.NoError(t, client.AcceptExperimentalSource(ctx, 1, 1, func(ExperimentalSourceOffer) bool { return true }))
+			require.Eventually(t, func() bool {
+				offers, err := server.ExperimentalAcceptedSources(ctx)
+				return err == nil && len(offers) == 1 && offers[0].Accepted && offers[0].Generation == 1
+			}, time.Second, 5*time.Millisecond)
 			require.ErrorIs(t, client.AnnounceExperimentalSource(ctx, 2, 1, addr, time.Minute), ErrExperimentalSourceOffer)
 			require.ErrorIs(t, server.AnnounceExperimentalSource(ctx, 1, 1, addr, time.Minute), ErrExperimentalSourceOffer)
-			require.NoError(t, server.AnnounceExperimentalSource(ctx, 1, 2, netip.AddrPort{}, 0))
+			// Policy can yield while an authenticated withdrawal arrives. The
+			// on-loop recheck must reject stale consent after the callback returns.
+			err = client.AcceptExperimentalSource(ctx, 1, 1, func(ExperimentalSourceOffer) bool {
+				if e := server.AnnounceExperimentalSource(ctx, 1, 2, netip.AddrPort{}, 0); e != nil {
+					t.Error(e)
+					return false
+				}
+				deadline := time.Now().Add(time.Second)
+				for time.Now().Before(deadline) {
+					offers, e := client.ExperimentalSourceOffers(ctx)
+					if e == nil && len(offers) == 0 {
+						return true
+					}
+					time.Sleep(time.Millisecond)
+				}
+				return true
+			})
+			require.ErrorIs(t, err, ErrExperimentalSourceOffer)
 			require.Eventually(t, func() bool {
 				offers, err := client.ExperimentalSourceOffers(ctx)
 				return err == nil && len(offers) == 0
 			}, time.Second, 5*time.Millisecond)
+			require.ErrorIs(t, client.AcceptExperimentalSource(ctx, 1, 1, func(ExperimentalSourceOffer) bool { return true }), ErrExperimentalSourceOffer)
+			accepted, err := server.ExperimentalAcceptedSources(ctx)
+			require.NoError(t, err)
+			require.Empty(t, accepted)
 			onCloningConnectionLoop(t, client, func() {
 				for _, p := range client.multipath.paths {
 					assert.Nil(t, p.remoteAddr, "offers must not probe preprovisioned path IDs")

@@ -6,7 +6,6 @@ import (
 
 	"github.com/quic-go/quic-go/internal/monotime"
 	"github.com/quic-go/quic-go/internal/protocol"
-	"github.com/quic-go/quic-go/internal/qerr"
 	"github.com/stretchr/testify/require"
 )
 
@@ -40,13 +39,35 @@ func TestExperimentalRemoteLeaseFencesKeyUpdates(t *testing.T) {
 	corrupt[len(corrupt)-1] ^= 1
 	_, err = s.Open(nil, corrupt, monotime.Now(), 1, c.keyPhase.Bit(), nil)
 	require.ErrorIs(t, err, ErrDecryptionFailed)
+	invalidBefore := s.invalidPacketCount
+	packetBefore := s.highestRcvdPN
 	_, err = s.Open(nil, ciphertext, monotime.Now(), 1, c.keyPhase.Bit(), nil)
-	var transportError *qerr.TransportError
-	require.ErrorAs(t, err, &transportError)
-	require.Equal(t, qerr.InternalError, transportError.ErrorCode)
+	require.ErrorIs(t, err, ErrRemoteKeyUpdatePending)
+	require.Equal(t, invalidBefore, s.invalidPacketCount, "authenticated deferred packet is not an integrity failure")
+	require.Equal(t, packetBefore, s.highestRcvdPN, "deferred packet must not advance receive history")
+	worker := transferRemote(t, lease)
+	_, _, err = worker.SealPacket([]byte{1})
+	require.NoError(t, err, "current worker window must remain valid until drain")
+	worker.Close()
 	require.Equal(t, protocol.KeyPhase(1), s.keyPhase)
 	require.ErrorIs(t, h.ReleaseExperimentalRemote(&RemoteSealer{}), ErrRemoteSealer)
 	require.NoError(t, h.ReleaseExperimentalRemote(lease))
+	require.Equal(t, protocol.KeyPhase(2), s.keyPhase)
+	require.False(t, h.ExperimentalRemoteReady())
+	plain, err := s.Open(nil, ciphertext, monotime.Now(), 1, c.keyPhase.Bit(), nil)
+	require.NoError(t, err)
+	require.Equal(t, []byte{1}, plain)
+	require.True(t, h.ExperimentalRemoteReady())
+	next, newEpoch, nextPN, err := h.AcquireExperimentalRemote(authority, grant, protocol.ParseConnectionID([]byte("cid")))
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), newEpoch)
+	require.Equal(t, protocol.PacketNumber(1), nextPN)
+	updated := transferRemote(t, next)
+	require.Equal(t, worker.keys.hp, [32]byte{}, "old worker explicit keys were cleared")
+	_, _, err = updated.SealPacket([]byte{1})
+	require.NoError(t, err)
+	updated.Close()
+	require.NoError(t, h.ReleaseExperimentalRemote(next))
 	require.ErrorIs(t, h.ReleaseExperimentalRemote(lease), ErrRemoteSealer)
 }
 

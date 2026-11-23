@@ -76,9 +76,12 @@ supports concurrent `Close` to interrupt them.
   and energy-aware selection remain application work.
 - Single-packet leases serialize cryptographic handoff. A receipt is accepted
   only after the worker exhausts and closes its window. Primary local key updates
-  wait for that drain; a peer key update during a lease **terminates** the
-  connection. Some transitions between jobs can also make the prototype stop;
-  seamless distributed key rotation is not implemented.
+  wait for that drain. An authenticated peer update during a lease waits for
+  the drain receipt; its triggering packet is discarded without acknowledgment
+  and recovered by QUIC retransmission. Admission resumes after new-phase peer
+  traffic is authenticated. `writer.RotateKeys(ctx)` explicitly requests an
+  update between writes; workers receive fresh derived keys on their next job.
+  `writer.Stats()` reports each source's last epoch and observed rotations.
 - Worker failure, invalid control traffic, changed CID/destination, uncertain
   dispatch or cancellation closes the whole connection. No transparent failover
   or restart from old keys/counters. Retry the application transfer on a fresh
@@ -100,8 +103,20 @@ must opt in; this uses private negotiated QUIC control frames, not application
 streams. Announcements do **not** establish paths, validate workers, or authorize
 network probes. The lab still uses its explicit loopback assignments. See
 `SESSION_CLONING.md` for lifecycle limits and the remaining validation work.
+The client can call `AcceptExperimentalSource(ctx, id, generation, policy)` with
+an explicit destination policy. The primary reads consent with
+`ExperimentalAcceptedSources(ctx)`. Consent applies only to that generation;
+renewal, withdrawal and expiry invalidate it. The negotiated private extension
+is now version 2 and must match on both peers. Acceptance still performs no
+network probe and is not connected to the clone writer's path assignments.
 
 ## Verification
+
+Run a transfer with an explicit key update halfway through:
+
+```sh
+go run ./example/cloning -bytes 1048576 -rotate
+```
 
 ```sh
 go test -race . -run '^TestExperimentalCloning' -count=3
@@ -110,5 +125,5 @@ go test -race ./internal/handshake -run '^TestExperimentalRemote'
 
 The live tests cover exact content over one QUIC stream from two workers, loss
 and fresh-number retransmission, and worker failure closing the connection.
-Crypto tests cover local key-update deferral and authenticated peer-key-update
-rejection while a worker lease is outstanding.
+Crypto tests cover local key-update deferral, authenticated peer-update deferral
+until worker drain, and fresh worker leases in the next epoch.

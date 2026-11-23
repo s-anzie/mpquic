@@ -29,6 +29,7 @@ func TestPingFrame(t *testing.T) {
 
 func TestExperimentalSourceOfferFrame(t *testing.T) {
 	check(t, &wire.ExperimentalSourceOfferFrame{ID: 1, Generation: 1}, map[string]any{"frame_type": "experimental_source_offer"})
+	check(t, &wire.ExperimentalSourceAcceptFrame{ID: 1, Generation: 1}, map[string]any{"frame_type": "experimental_source_accept"})
 }
 
 func TestAckFrame(t *testing.T) {

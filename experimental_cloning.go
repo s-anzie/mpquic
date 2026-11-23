@@ -17,6 +17,7 @@ import (
 	"github.com/quic-go/quic-go/internal/handshake"
 	"github.com/quic-go/quic-go/internal/monotime"
 	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/quic-go/quic-go/internal/wire"
 )
 
 // ExperimentalCloningALPN is for dedicated, mutually authenticated worker TLS
@@ -38,8 +39,10 @@ type ExperimentalCloneSource struct {
 // ExperimentalCloneSourceStats counts locally drained worker packets, including
 // retransmissions. It is not an application-byte or client-delivery counter.
 type ExperimentalCloneSourceStats struct {
-	PathID  uint64
-	Packets uint64
+	PathID       uint64
+	Packets      uint64
+	LastKeyEpoch uint64
+	KeyRotations uint64
 }
 
 func (w *ExperimentalCloneWriter) Stats() []ExperimentalCloneSourceStats {
@@ -47,7 +50,7 @@ func (w *ExperimentalCloneWriter) Stats() []ExperimentalCloneSourceStats {
 	defer w.mu.Unlock()
 	stats := make([]ExperimentalCloneSourceStats, len(w.sources))
 	for i, source := range w.sources {
-		stats[i] = ExperimentalCloneSourceStats{PathID: source.PathID, Packets: w.sequences[i]}
+		stats[i] = ExperimentalCloneSourceStats{PathID: source.PathID, Packets: w.sequences[i], LastKeyEpoch: w.epochs[i], KeyRotations: w.rotations[i]}
 	}
 	return stats
 }
@@ -55,14 +58,16 @@ func (w *ExperimentalCloneWriter) Stats() []ExperimentalCloneSourceStats {
 // ExperimentalCloneWriter sends retained stream portions through trusted workers.
 // It serializes single-packet leases and waits for authenticated QUIC ACKs.
 // This is a private-network prototype: no source advertisement/NAT traversal,
-// transparent worker failover, or HTTP/3 integration. Uncertain coordination or
-// peer key update during a lease closes the WHOLE connection. Do not use in production.
+// transparent worker failover, or HTTP/3 integration. Uncertain coordination
+// closes the WHOLE connection. Do not use in production.
 type ExperimentalCloneWriter struct {
 	mu        sync.Mutex
 	conn      *Conn
 	stream    *SendStream
 	sources   []ExperimentalCloneSource
 	sequences []uint64
+	epochs    []uint64
+	rotations []uint64
 	crypto    handshake.ExperimentalRemoteCrypto
 	pending   map[uint64]*clonedRange // connection-loop owned
 	delivered chan struct{}
@@ -91,6 +96,7 @@ func (c *Conn) NewExperimentalCloneWriter(ctx context.Context, stream *SendStrea
 		seen[s.PathID], channels[s.Control] = true, true
 	}
 	w := &ExperimentalCloneWriter{conn: c, stream: stream, sources: append([]ExperimentalCloneSource(nil), sources...), sequences: make([]uint64, len(sources)), pending: make(map[uint64]*clonedRange), delivered: make(chan struct{}, 1)}
+	w.epochs, w.rotations = make([]uint64, len(sources)), make([]uint64, len(sources))
 	err := w.onLoop(ctx, func() error {
 		cs, ok := c.cryptoStreamHandler.(handshake.ExperimentalRemoteCrypto)
 		if !ok || !cs.ExperimentalRemoteReady() || c.experimentalCloneActive || c.perspective != protocol.PerspectiveServer || stream.flowController.connection != c.connFlowController || stream.supportsResetStreamAt {
@@ -329,6 +335,7 @@ func (w *ExperimentalCloneWriter) dispatch(ctx context.Context, index int, range
 		}
 	}()
 	var payload []byte
+	var nextKeyProbe time.Time
 	job := experimentalCloneJob{Path: source.PathID, Sequence: w.sequences[index] + 1}
 	for {
 		err := w.onLoop(ctx, func() error {
@@ -336,6 +343,15 @@ func (w *ExperimentalCloneWriter) dispatch(ctx context.Context, index int, range
 			if r == nil {
 				return nil
 			} // ACK won the race with the retry timer
+			if !w.crypto.ExperimentalRemoteReady() {
+				// An automatic local update may have been carried only by an
+				// ACK. Elicit new-phase peer traffic before admitting a worker.
+				if now := time.Now(); !now.Before(nextKeyProbe) {
+					w.conn.queueControlFrame(&wire.PingFrame{})
+					nextKeyProbe = now.Add(25 * time.Millisecond)
+				}
+				return ErrWouldBlock
+			}
 			p := w.conn.multipath.paths[source.PathID]
 			if p.abandoned || !p.serverValidated {
 				return ErrExperimentalCloningNotReady
@@ -420,7 +436,19 @@ func (w *ExperimentalCloneWriter) dispatch(ctx context.Context, index int, range
 		return errors.New("invalid experimental worker drain receipt")
 	}
 	w.sequences[index] = job.Sequence
-	return w.onLoop(ctx, func() error { return w.crypto.ReleaseExperimentalRemote(snapshot) })
+	if job.Sequence > 1 && w.epochs[index] != job.Epoch {
+		w.rotations[index]++
+	}
+	w.epochs[index] = job.Epoch
+	return w.onLoop(ctx, func() error {
+		if err := w.crypto.ReleaseExperimentalRemote(snapshot); err != nil {
+			return err
+		}
+		if !w.crypto.ExperimentalRemoteReady() {
+			w.conn.queueControlFrame(&wire.PingFrame{})
+		}
+		return nil
+	})
 }
 
 func writeCloneRecord(w io.Writer, data []byte) error {
@@ -458,6 +486,56 @@ func (w *ExperimentalCloneWriter) fail() {
 		}
 		w.conn.CloseWithError(0x100, "experimental cloning stopped")
 	})
+}
+
+// RotateKeys waits for the current write/drain, initiates a QUIC key update and
+// waits for authenticated traffic in the new phase. Each worker receives the
+// new derived keys in its next single-packet job. It does not reset packet numbers.
+// A deadline or connection failure closes this experimental writer's connection.
+func (w *ExperimentalCloneWriter) RotateKeys(ctx context.Context) (err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed.Load() {
+		return net.ErrClosed
+	}
+	defer func() {
+		if err != nil {
+			w.fail()
+		}
+	}()
+	for {
+		err = w.onLoop(ctx, func() error {
+			if err := w.crypto.RotateExperimentalKeys(); err != nil {
+				w.conn.queueControlFrame(&wire.PingFrame{})
+				return ErrWouldBlock
+			}
+			w.conn.queueControlFrame(&wire.PingFrame{})
+			return nil
+		})
+		if !errors.Is(err, ErrWouldBlock) {
+			if err != nil {
+				return err
+			}
+			break
+		}
+		if err = waitCloneTick(ctx, w.conn.ctx, 25*time.Millisecond); err != nil {
+			return err
+		}
+	}
+	for {
+		err = w.onLoop(ctx, func() error {
+			if !w.crypto.ExperimentalRemoteReady() {
+				return ErrWouldBlock
+			}
+			return nil
+		})
+		if !errors.Is(err, ErrWouldBlock) {
+			return err
+		}
+		if err = waitCloneTick(ctx, w.conn.ctx, 5*time.Millisecond); err != nil {
+			return err
+		}
+	}
 }
 
 // Close stops the prototype and closes the whole connection. Send and receive

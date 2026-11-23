@@ -834,7 +834,7 @@ Three isolated repetitions of `TestCancelAcceptStream` subsequently passed in
 ## Negotiated source announcements
 
 `Config.EnableExperimentalSourceOffers` (default false, requires multipath)
-negotiates private transport parameter `0x3f4d505102`, version 1. Both peers must
+negotiates private transport parameter `0x3f4d505102`, now version 2. Both peers must
 opt in before control frame `0x3f4d505101` is accepted. These are project-private
 experimental identifiers, not IETF allocations or a standardized extension.
 Unknown versions are rejected. The capability is not restored from 0-RTT tickets;
@@ -881,3 +881,57 @@ and vet passed. Decoder fuzzing completed 80,487 executions without failure.
 The existing wire STREAM allocation-count test failed under a full race-enabled
 wire run (four allocations instead of zero), but passed without race instrumentation;
 only targeted race-enabled wire results are claimed here.
+
+## Source consent and coordinated key rotation (lot 16)
+
+This supersedes the earlier prototype restriction that closed the connection
+when an authenticated peer key update arrived during a worker lease.
+The primary now defers that update until the exact outstanding lease has a
+worker drain receipt. The triggering packet is discarded without ACK, delivery
+or receive packet-number advancement. Invalid ciphertext cannot request an
+update. After drain, the primary advances the epoch and sends a primary-path
+PING; admission waits for authenticated new-phase traffic. Retransmission
+recovers the discarded packet. Missing drain receipts and uncertain worker
+dispatch still close the connection.
+
+`ExperimentalCloneWriter.RotateKeys(ctx)` serializes with writes, respects QUIC's
+acknowledgment requirement for successive updates, initiates one update, and
+waits for authenticated peer traffic in the new phase. Workers receive fresh
+send-only derived keys with their next single-packet job; packet numbers never
+reset. Per-source statistics expose `LastKeyEpoch` and `KeyRotations` (observed
+epoch transitions between jobs, not all connection-wide updates).
+
+The multipath receiver also tracks current-epoch packet-number boundaries per
+path. A packet numbered 419 on path 0 must not be mistaken for an old epoch
+because path 2 first used the current epoch at packet 731. Where no boundary
+exists for the receiving path, the previous key is tried without overwriting
+the input before attempting the next key. A deterministic regression test covers
+the unequal counters and in-place decryption. This fixes intermittent transfer
+stalls exposed by frequent automatic rotations, including in FIPS mode.
+Admission also sends a throttled primary PING if an automatic update needs peer
+confirmation; an ACK-only update must not leave worker dispatch waiting forever.
+
+The client can explicitly accept an announced source generation through
+`AcceptExperimentalSource(ctx, id, generation, policy)`. The mandatory policy
+runs outside the connection loop. The generation, address and expiry are checked
+again afterward, so concurrent withdrawal or replacement cannot authorize a stale
+proposal. A reliable private 1-RTT frame (`0x3f4d505103`) carries the source ID and
+generation. The primary exposes current consent through
+`ExperimentalAcceptedSources(ctx)`. Duplicates are idempotent, stale acceptances
+are ignored, and acceptance of an unknown/future generation is a protocol error.
+Renewal, withdrawal and expiry invalidate consent. Version 2 negotiation rejects
+the earlier version 1 instead of sending an unknown frame to old implementations.
+
+Acceptance is **not path validation**. Direct worker destination routing,
+PATH_CHALLENGE/PATH_RESPONSE handling at the worker, return-path validation,
+anti-amplification and binding accepted offers to clone-writer assignments remain
+unfinished. The existing lab still establishes paths against the primary first.
+
+Validation: the complete suite (`go test -p 1 -timeout 90s ./...`) and vet passed.
+Three race-enabled repetitions of cloning, source offers, source acceptance and
+AEAD tests passed. FIPS mode passed 30 explicit-update and 30 automatic-update
+live transfers. Earlier stress runs exposed the cross-path boundary defect;
+the passing results above are after its correction. The final loopback lab
+transferred and verified 1,048,576 bytes with `-rotate` in 529 ms (15.853 Mbit/s),
+525 worker packets per source and one observed epoch transition on each source.
+This is a functional measurement, not a controlled throughput comparison.
