@@ -1,0 +1,1 @@
+{"client_queue_drops":626,"primary_queue_drops":0,"mode":"single","bytes":1073741824,"seconds":1.781313554,"mbit_per_second":4822.247364991419,"mib_per_second":574.856682418754,"source_sha256_verification":"not-applicable","sha256_verified":false,"client_sockets":[{"Address":"172.18.20.1:44779","UDPBytes":1100084212,"Datagrams":770672}],"go_version":"go1.26.0","gomaxprocs":8}

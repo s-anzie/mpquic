@@ -1,0 +1,23 @@
+Inter-|   Receive                                                |  Transmit
+ face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
+    lo:    7220     112    0    0    0     0          0         0     7220     112    0    0    0     0       0          0
+enp24s0f0: 158594753  251388    0    0    0     0          0     13353 2289046484 2219795    0    0    0     0       0          0
+enp24s0f1:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0
+   ib0:     168       3    0    0    0     0          0         0        0       0    0   13    0     0       0          0
+   br0: 151536390  183995    0    0    0     0          0     13353 2203237542  177360    0    0    0     0       0          0
+
+Ip: Forwarding DefaultTTL InReceives InHdrErrors InAddrErrors ForwDatagrams InUnknownProtos InDiscards InDelivers OutRequests OutDiscards OutNoRoutes ReasmTimeout ReasmReqds ReasmOKs ReasmFails FragOKs FragFails FragCreates OutTransmits
+Ip: 2 64 337492 0 3 0 0 0 336789 359619 11 0 0 0 0 0 0 0 0 359619
+Icmp: InMsgs InErrors InCsumErrors InDestUnreachs InTimeExcds InParmProbs InSrcQuenchs InRedirects InEchos InEchoReps InTimestamps InTimestampReps InAddrMasks InAddrMaskReps OutMsgs OutErrors OutRateLimitGlobal OutRateLimitHost OutDestUnreachs OutTimeExcds OutParmProbs OutSrcQuenchs OutRedirects OutEchos OutEchoReps OutTimestamps OutTimestampReps OutAddrMasks OutAddrMaskReps
+Icmp: 20 0 0 20 0 0 0 0 0 0 0 0 0 0 20 0 0 0 20 0 0 0 0 0 0 0 0 0 0
+IcmpMsg: InType3 OutType3
+IcmpMsg: 20 20
+Tcp: RtoAlgorithm RtoMin RtoMax MaxConn ActiveOpens PassiveOpens AttemptFails EstabResets CurrEstab InSegs OutSegs RetransSegs InErrs OutRsts InCsumErrors
+Tcp: 1 200 120000 -1 113 141 20 2 7 269324 197283 0 0 64 0
+Udp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti MemErrors
+Udp: 67190 20 0 163374 0 1 0 205 0
+UdpLite: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti MemErrors
+UdpLite: 0 0 0 0 0 0 0 0 0
+
+{"rdma_counters": {"/sys/class/infiniband/hfi1_0/ports/1/counters/port_xmit_data": 423770403, "/sys/class/infiniband/hfi1_0/ports/1/counters/port_rcv_data": 16271562}}
+2026-11-23T13:25:48.213145+00:00

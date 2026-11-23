@@ -1,0 +1,14 @@
+{
+  "verified_1gib_runs": [
+    "ethernet-verified/single-1.json",
+    "ethernet-verified/multisource-1.json",
+    "ethernet-verified/multipath-1.json",
+    "dual-fabric-verified/multisource-1.json",
+    "dual-fabric-verified/multipath-1.json",
+    "dual-fabric-counters-verified/multisource-1.json",
+    "dual-fabric-counters-verified/multipath-1.json"
+  ],
+  "temporary_policy_route_removed": true,
+  "benchmark_processes_remaining": 0,
+  "allocation_left_running_until_scheduled_expiry": true
+}
