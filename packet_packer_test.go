@@ -1184,3 +1184,36 @@ func TestPackApplicationPacketReservesPathAckWithFullStreamPayload(t *testing.T)
 		})
 	}
 }
+
+// Appending a packet must preserve preceding encrypted GSO segments.
+func TestAppendApplicationPacketForPathPreservesBatch(t *testing.T) {
+	for _, id := range []uint64{0, 2} {
+		t.Run(fmt.Sprint(id), func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			tp := newTestPacketPacker(t, ctrl, protocol.PerspectiveServer)
+			tp.packer.setPathPacketNumberSource(func(uint64) (protocol.PacketNumber, protocol.PacketNumberLen, error) {
+				return 42, protocol.PacketNumberLen2, nil
+			})
+			if id == 0 {
+				tp.pnManager.EXPECT().PeekPacketNumber(protocol.Encryption1RTT).Return(protocol.PacketNumber(42), protocol.PacketNumberLen2)
+				tp.pnManager.EXPECT().PopPacketNumber(protocol.Encryption1RTT).Return(protocol.PacketNumber(42))
+			}
+			tp.sealingManager.EXPECT().Get1RTTSealer().Return(newMockShortHeaderSealer(ctrl), nil)
+			tp.framer.EXPECT().HasData().Return(false)
+			tp.ackFramer.EXPECT().GetAckFrame(protocol.Encryption1RTT, gomock.Any(), true).Return(nil)
+			ackPath := uint64(2)
+			ack := &wire.AckFrame{PathID: &ackPath, AckRanges: []wire.AckRange{{Smallest: 1, Largest: 10}}}
+			buf := getLargePacketBuffer()
+			defer buf.Release()
+			prefix := bytes.Repeat([]byte{0xa5}, 1200)
+			buf.Data = append(buf.Data, prefix...)
+			packet, err := tp.packer.AppendApplicationPacketForPath(buf, id, protocol.ParseConnectionID([]byte{1, 2, 3, 4}), ack, 1200, monotime.Now(), protocol.Version1)
+			require.NoError(t, err)
+			require.Equal(t, prefix, buf.Data[:len(prefix)])
+			require.Equal(t, protocol.ByteCount(len(prefix))+packet.Length, buf.Len())
+			require.Equal(t, id, packet.PathID)
+			require.Equal(t, protocol.PacketNumber(42), packet.PacketNumber)
+			require.Contains(t, packet.Frames, ackhandler.Frame{Frame: ack})
+		})
+	}
+}

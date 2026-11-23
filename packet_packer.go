@@ -486,45 +486,57 @@ func (p *packetPacker) PackApplicationPacketForPath(
 	now monotime.Time,
 	v protocol.Version,
 ) (shortHeaderPacket, *packetBuffer, error) {
+	buf := getPacketBuffer()
+	packet, err := p.AppendApplicationPacketForPath(buf, pathID, connID, pathAck, maxPacketSize, now, v)
+	if err != nil {
+		buf.Release()
+		return shortHeaderPacket{}, nil, err
+	}
+	return packet, buf, nil
+}
+
+// AppendApplicationPacketForPath seals directly into the caller's batch buffer.
+func (p *packetPacker) AppendApplicationPacketForPath(
+	buf *packetBuffer,
+	pathID uint64,
+	connID protocol.ConnectionID,
+	pathAck *wire.AckFrame,
+	maxPacketSize protocol.ByteCount,
+	now monotime.Time,
+	v protocol.Version,
+) (shortHeaderPacket, error) {
 	if pathID == 0 {
-		buf := getPacketBuffer()
 		sealer, err := p.get1RTTSealer(0)
 		if err != nil {
-			buf.Release()
-			return shortHeaderPacket{}, nil, err
+			return shortHeaderPacket{}, err
 		}
 		pn, pnLen := p.pnManager.PeekPacketNumber(protocol.Encryption1RTT)
 		hdrLen := wire.ShortHeaderLen(connID, pnLen)
 		pl := p.composePathApplicationPayload(sealer, hdrLen, maxPacketSize, pathAck, now, v)
 		if pl.length == 0 {
-			buf.Release()
-			return shortHeaderPacket{}, nil, errNothingToPack
+			return shortHeaderPacket{}, errNothingToPack
 		}
 		packet, err := p.appendShortHeaderPacket(buf, connID, pn, pnLen, sealer.KeyPhase(), pl, 0, maxPacketSize, sealer, false, v)
-		if err != nil {
-			buf.Release()
-		}
-		return packet, buf, err
+		return packet, err
 	}
 	if p.pathPacketNumbers == nil {
-		return shortHeaderPacket{}, nil, fmt.Errorf("multipath packet number source is not configured")
+		return shortHeaderPacket{}, fmt.Errorf("multipath packet number source is not configured")
 	}
 
 	sealer, err := p.get1RTTSealer(pathID)
 	if err != nil {
-		return shortHeaderPacket{}, nil, err
+		return shortHeaderPacket{}, err
 	}
 	pn, pnLen, err := p.pathPacketNumbers(pathID)
 	if err != nil {
-		return shortHeaderPacket{}, nil, err
+		return shortHeaderPacket{}, err
 	}
 	hdrLen := wire.ShortHeaderLen(connID, pnLen)
 	pl := p.composePathApplicationPayload(sealer, hdrLen, maxPacketSize, pathAck, now, v)
 	if pl.length == 0 {
-		return shortHeaderPacket{}, nil, errNothingToPack
+		return shortHeaderPacket{}, errNothingToPack
 	}
 
-	buf := getPacketBuffer()
 	packet, err := p.appendShortHeaderPacketForPath(
 		buf,
 		connID,
@@ -540,11 +552,10 @@ func (p *packetPacker) PackApplicationPacketForPath(
 		v,
 	)
 	if err != nil {
-		buf.Release()
-		return shortHeaderPacket{}, nil, err
+		return shortHeaderPacket{}, err
 	}
 	packet.PathID = pathID
-	return packet, buf, nil
+	return packet, nil
 }
 
 // Reserve PATH_ACK space before selecting stream data. Adding it afterwards
