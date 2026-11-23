@@ -72,20 +72,22 @@ type pathResult struct {
 	UDPBytes, Datagrams uint64
 }
 type result struct {
-	Mode          string                              `json:"mode"`
-	Bytes         int64                               `json:"bytes"`
-	Seconds       float64                             `json:"seconds"`
-	MbitPerSecond float64                             `json:"mbit_per_second"`
-	MiBPerSecond  float64                             `json:"mib_per_second"`
-	SHA256        string                              `json:"sha256"`
-	Paths         []pathResult                        `json:"client_sockets"`
-	Sources       []quic.ExperimentalCloneSourceStats `json:"sources,omitempty"`
-	WorkerPIDs    []int                               `json:"worker_pids,omitempty"`
-	GoVersion     string                              `json:"go_version"`
-	GOMAXPROCS    int                                 `json:"gomaxprocs"`
+	Mode           string                              `json:"mode"`
+	Bytes          int64                               `json:"bytes"`
+	Seconds        float64                             `json:"seconds"`
+	MbitPerSecond  float64                             `json:"mbit_per_second"`
+	MiBPerSecond   float64                             `json:"mib_per_second"`
+	SHA256         string                              `json:"sha256,omitempty"`
+	SHA256Verified bool                                `json:"sha256_verified"`
+	Paths          []pathResult                        `json:"client_sockets"`
+	Sources        []quic.ExperimentalCloneSourceStats `json:"sources,omitempty"`
+	WorkerPIDs     []int                               `json:"worker_pids,omitempty"`
+	GoVersion      string                              `json:"go_version"`
+	GOMAXPROCS     int                                 `json:"gomaxprocs"`
 }
 
 var cpuProfile string
+var verifySHA256 bool
 
 func main() {
 	mode := flag.String("mode", "single", "single, multipath, or multisource")
@@ -93,6 +95,7 @@ func main() {
 	deadline := flag.Duration("timeout", 30*time.Minute, "whole-run deadline")
 	worker := flag.Bool("worker", false, "internal worker subprocess")
 	flag.StringVar(&cpuProfile, "cpuprofile", "", "optional primary/client CPU profile during transfer")
+	flag.BoolVar(&verifySHA256, "verify-sha256", true, "verify the complete received content with SHA-256")
 	flag.Parse()
 	ctx, cancel := context.WithTimeout(context.Background(), *deadline)
 	defer cancel()
@@ -378,7 +381,9 @@ func run(ctx context.Context, mode string, size int64) error {
 		for {
 			n, re := s.Read(b)
 			if n > 0 {
-				h.Write(b[:n])
+				if verifySHA256 {
+					h.Write(b[:n])
+				}
 				received.Add(int64(n))
 			}
 			if re == io.EOF {
@@ -389,7 +394,7 @@ func run(ctx context.Context, mode string, size int64) error {
 				return
 			}
 		}
-		if received.Load() != size || hex.EncodeToString(h.Sum(nil)) != expected {
+		if received.Load() != size || (verifySHA256 && hex.EncodeToString(h.Sum(nil)) != expected) {
 			done <- errors.New("content mismatch")
 			return
 		}
@@ -437,6 +442,10 @@ func run(ctx context.Context, mode string, size int64) error {
 	}
 	elapsed := time.Since(start)
 	r := result{Mode: mode, Bytes: size, Seconds: elapsed.Seconds(), MbitPerSecond: float64(size) * 8 / elapsed.Seconds() / 1e6, MiBPerSecond: float64(size) / elapsed.Seconds() / (1 << 20), SHA256: expected, WorkerPIDs: pids, GoVersion: runtime.Version(), GOMAXPROCS: runtime.GOMAXPROCS(0)}
+	r.SHA256Verified = verifySHA256
+	if !verifySHA256 {
+		r.SHA256 = ""
+	}
 	for i, u := range sockets {
 		r.Paths = append(r.Paths, pathResult{Address: base[i].Address, UDPBytes: u.bytes.Load() - base[i].UDPBytes, Datagrams: u.packets.Load() - base[i].Datagrams})
 	}

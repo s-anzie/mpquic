@@ -1,0 +1,7 @@
+{
+  "exit_code": 0,
+  "whole_process_seconds": 31.053940990997944,
+  "user_cpu_seconds": 44.266633,
+  "system_cpu_seconds": 16.14384,
+  "note": "CPU and whole-process time include preparation, warm-up and cleanup; transfer time is in the mode JSON."
+}

@@ -12,6 +12,7 @@ from pathlib import Path
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--binary", default="/tmp/mpquic-transfercompare")
+parser.add_argument("--skip-sha256", action="store_true", help="skip only the client content digest; retain byte-count verification")
 parser.add_argument("--timeout", default="2h")
 parser.add_argument("--bytes", type=int, default=1 << 30)
 parser.add_argument("--output", type=Path, required=True)
@@ -24,6 +25,7 @@ metadata = {
     "git_status": subprocess.check_output(["git", "status", "--short"], text=True),
     "bytes": args.bytes, "initial_load_average": os.getloadavg(),
     "timeout": args.timeout,
+    "client_sha256_verified": not args.skip_sha256,
     "binary_sha256": hashlib.sha256(Path(args.binary).read_bytes()).hexdigest(),
     "gomaxprocs_environment": os.environ.get("GOMAXPROCS"),
     "measurement": "loopback; client and primary share a process; each source is a distinct subprocess",
@@ -34,7 +36,7 @@ for mode in args.modes:
     before = resource.getrusage(resource.RUSAGE_CHILDREN)
     start = time.monotonic()
     with (args.output / f"{mode}.json").open("w") as out, (args.output / f"{mode}.log").open("w") as log:
-        completed = subprocess.run([args.binary, "-mode", mode, "-bytes", str(args.bytes), "-timeout", args.timeout], stdout=out, stderr=log)
+        completed = subprocess.run([args.binary, "-mode", mode, "-bytes", str(args.bytes), "-timeout", args.timeout, "-verify-sha256=" + str(not args.skip_sha256).lower()], stdout=out, stderr=log)
     after = resource.getrusage(resource.RUSAGE_CHILDREN)
     timing = {"exit_code": completed.returncode, "whole_process_seconds": time.monotonic() - start,
               "user_cpu_seconds": after.ru_utime - before.ru_utime,
