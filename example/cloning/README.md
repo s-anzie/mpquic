@@ -91,6 +91,16 @@ supports concurrent `Close` to interrupt them.
 - **No HTTP/3 integration.** This API writes raw QUIC streams, not HTTP/3 responses
   or QPACK state. Existing HTTP/3 multipath remains separate.
 
+### Source announcements (separate opt-in stage)
+
+`Config.EnableExperimentalSourceOffers` now permits the primary to publish and
+withdraw literal endpoints through `Conn.AnnounceExperimentalSource`. The client
+can read authenticated proposals with `Conn.ExperimentalSourceOffers`. Both peers
+must opt in; this uses private negotiated QUIC control frames, not application
+streams. Announcements do **not** establish paths, validate workers, or authorize
+network probes. The lab still uses its explicit loopback assignments. See
+`SESSION_CLONING.md` for lifecycle limits and the remaining validation work.
+
 ## Verification
 
 ```sh

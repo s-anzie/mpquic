@@ -19,6 +19,7 @@ type FrameParser struct {
 	supportsResetStreamAt bool
 	supportsAckFrequency  bool
 	supportsMultipath     bool
+	supportsSourceOffers  bool
 
 	// To avoid allocating when parsing, keep a single ACK frame struct.
 	// It is used over and over again.
@@ -54,6 +55,7 @@ func (p *FrameParser) ParseType(b []byte, encLevel protocol.EncryptionLevel) (Fr
 		}
 		ft := FrameType(typ)
 		valid := ft.isValidRFC9000() ||
+			(p.supportsSourceOffers && ft == FrameTypeExperimentalSourceOffer) ||
 			(p.supportsDatagrams && ft.IsDatagramFrameType()) ||
 			(p.supportsResetStreamAt && ft == FrameTypeResetStreamAt) ||
 			(p.supportsAckFrequency && (ft == FrameTypeAckFrequency || ft == FrameTypeImmediateAck)) ||
@@ -127,6 +129,8 @@ func (p *FrameParser) ParseLessCommonFrame(frameType FrameType, data []byte, v p
 	var err error
 	//nolint:exhaustive // Common frames should already be handled.
 	switch frameType {
+	case FrameTypeExperimentalSourceOffer:
+		frame, l, err = parseExperimentalSourceOfferFrame(data)
 	case FrameTypePing:
 		frame = &PingFrame{}
 	case FrameTypeResetStream:
@@ -193,6 +197,8 @@ func (p *FrameParser) ParseLessCommonFrame(frameType FrameType, data []byte, v p
 	}
 	return frame, l, err
 }
+
+func (p *FrameParser) SetExperimentalSourceOffers(enabled bool) { p.supportsSourceOffers = enabled }
 
 // SetAckDelayExponent sets the acknowledgment delay exponent (sent in the transport parameters).
 // This value is used to scale the ACK Delay field in the ACK frame.

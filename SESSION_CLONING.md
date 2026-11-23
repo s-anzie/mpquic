@@ -97,7 +97,7 @@ Never reconstruct an authority with counters reset for an existing connection.
 | C03a | Bounded content/range ledger connected to live SendStream offsets and completion, partial delivery, retries and cancellation | Implemented as internal local primitives |
 | C03b | Authenticated worker coordination contract, packet-to-byte ACK evidence, control routing and bounded communication queues | In progress: experimental authenticated live dispatch and recovery bridge; worker-local recovery and durable fencing pending |
 | C04 | Secure worker bootstrap and packet protection state, coordinated key updates and global AEAD accounting | In progress: experimental single-packet leases with fail-closed key transitions; seamless distributed key rotation pending |
-| C05 | Negotiated source endpoint advertisement and client validation for different server IPs | Pending |
+| C05 | Negotiated source endpoint advertisement and client validation for different server IPs | Authenticated opt-in source announcement/withdrawal implemented; acceptance, worker provisioning and direct address validation pending |
 | C06 | Direct multi-server transmission and cross-path retransmission of distinct ranges | Experimental two-source live QUIC transfer and same-path fresh-PN retries implemented; cross-source failover pending |
 | C07 | HTTP/3 integration, three-source transfers, failures, reordered messages, key updates, and performance measurements | Pending |
 
@@ -830,3 +830,54 @@ after more than ten minutes, with the captured stack blocked in
 the full suite must not be reported as passing for this increment.
 Three isolated repetitions of `TestCancelAcceptStream` subsequently passed in
 1.274 s, without changing that test or its timeout.
+
+## Negotiated source announcements
+
+`Config.EnableExperimentalSourceOffers` (default false, requires multipath)
+negotiates private transport parameter `0x3f4d505102`, version 1. Both peers must
+opt in before control frame `0x3f4d505101` is accepted. These are project-private
+experimental identifiers, not IETF allocations or a standardized extension.
+Unknown versions are rejected. The capability is not restored from 0-RTT tickets;
+announcements are forbidden in Initial, Handshake and 0-RTT packets.
+
+The primary calls `AnnounceExperimentalSource(ctx, id, generation, address, ttl)`
+after handshake confirmation. Its reliable control frame contains 64-bit source
+ID and generation, a 32-bit TTL (seconds, at most 3600), a 16-byte literal IP and
+a 16-bit UDP port. IPv4 uses the mapped encoding and is normalized on receipt.
+The client calls `ExperimentalSourceOffers(ctx)` to get copied, sorted, unexpired
+proposals. No application stream or HTTP/3 stream ID is consumed, and there is
+no DNS resolution or probe triggered by receipt. Qlog recognizes the experimental
+frame without including its endpoint payload.
+
+IDs and generations are positive. Duplicate retransmissions cannot extend a
+lease. Lower generations are ignored; same-generation conflicts fail. TTL zero
+with an empty address permanently withdraws an ID. Lifetime state is capped at
+32 IDs, including expired/withdrawn tombstones, to bound memory and prevent old
+announcements from resurrecting a withdrawn source. Renew a non-withdrawn source
+using a greater generation. Receipt deadlines use local time, not synchronized
+server timestamps; delayed delivery of a new generation starts its lease on
+receipt. Absolute server-time expiration is not claimed.
+
+Example (both endpoints configured with the option):
+
+```go
+err := server.AnnounceExperimentalSource(ctx, 1, 1,
+    netip.MustParseAddrPort("192.0.2.10:4433"), time.Minute)
+offers, err := client.ExperimentalSourceOffers(ctx)
+// Apply application destination policy; these are NOT validated paths.
+err = server.AnnounceExperimentalSource(ctx, 1, 2, netip.AddrPort{}, 0)
+```
+
+This completes announcement only. Client acceptance, new destination routing,
+worker preparation, return-path validation/anti-amplification, and integration
+with the cloning writer are not implemented here. In particular, applications
+must not treat a received address as permission to probe private/local networks
+or to bypass QUIC path validation. Existing lab cloning remains unchanged.
+
+Validation: full suite (`go test -p 1 -timeout 90s ./...`), complete root/wire/qlog
+packages, ten race-enabled repetitions of offer scenarios, three race-enabled
+repetitions of the live cloning/offer tests, three FIPS live negotiation runs,
+and vet passed. Decoder fuzzing completed 80,487 executions without failure.
+The existing wire STREAM allocation-count test failed under a full race-enabled
+wire run (four allocations instead of zero), but passed without race instrumentation;
+only targeted race-enabled wire results are claimed here.

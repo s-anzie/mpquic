@@ -184,6 +184,9 @@ type Config struct {
 	// Enable Multipath QUIC support.
 	// See https://datatracker.ietf.org/doc/draft-ietf-quic-multipath/.
 	EnableMultipath bool
+	// EnableExperimentalSourceOffers negotiates private source announcements.
+	// Offers never trigger probes automatically or mark an address validated.
+	EnableExperimentalSourceOffers bool
 	// DisableAutomaticPathDiscovery leaves path creation to the application.
 	// Otherwise, multipath clients discover and validate additional local addresses
 	// after the handshake. Servers never initiate discovery.
