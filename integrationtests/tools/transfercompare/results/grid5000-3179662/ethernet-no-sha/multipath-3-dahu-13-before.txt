@@ -1,0 +1,20 @@
+Inter-|   Receive                                                |  Transmit
+ face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
+    lo: 86350869  177198    0    0    0     0          0         0 86350869  177198    0    0    0     0       0          0
+enp24s0f0: 72645397  433412    0    0    0     0          0     10854 9796554443 7193424    0    0    0     0       0          0
+enp24s0f1:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0
+   ib0:       0       0    0    0    0     0          0         0        0       0    0   13    0     0       0          0
+   br0: 65679962  416814    0    0    0     0          0     10855 9519784755  622008    0    0    0     0       0          0
+Ip: Forwarding DefaultTTL InReceives InHdrErrors InAddrErrors ForwDatagrams InUnknownProtos InDiscards InDelivers OutRequests OutDiscards OutNoRoutes ReasmTimeout ReasmReqds ReasmOKs ReasmFails FragOKs FragFails FragCreates OutTransmits
+Ip: 2 64 571433 0 2 0 0 0 570797 798914 16 0 0 0 0 0 0 0 0 798914
+Icmp: InMsgs InErrors InCsumErrors InDestUnreachs InTimeExcds InParmProbs InSrcQuenchs InRedirects InEchos InEchoReps InTimestamps InTimestampReps InAddrMasks InAddrMaskReps OutMsgs OutErrors OutRateLimitGlobal OutRateLimitHost OutDestUnreachs OutTimeExcds OutParmProbs OutSrcQuenchs OutRedirects OutEchos OutEchoReps OutTimestamps OutTimestampReps OutAddrMasks OutAddrMaskReps
+Icmp: 32 0 0 32 0 0 0 0 0 0 0 0 0 0 32 0 0 0 32 0 0 0 0 0 0 0 0 0 0
+IcmpMsg: InType3 OutType3
+IcmpMsg: 32 32
+Tcp: RtoAlgorithm RtoMin RtoMax MaxConn ActiveOpens PassiveOpens AttemptFails EstabResets CurrEstab InSegs OutSegs RetransSegs InErrs OutRsts InCsumErrors
+Tcp: 1 200 120000 -1 125 68 20 4 7 256373 296056 0 0 73 0
+Udp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti MemErrors
+Udp: 314146 32 0 534865 0 0 0 187 0
+UdpLite: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti MemErrors
+UdpLite: 0 0 0 0 0 0 0 0 0
+2026-11-23T14:19:15+01:00

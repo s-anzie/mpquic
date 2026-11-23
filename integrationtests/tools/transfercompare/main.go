@@ -1,4 +1,4 @@
-// Command transfercompare compares raw QUIC transport architectures on loopback.
+// Command transfercompare compares raw QUIC on loopback or distributed hosts.
 package main
 
 import (
@@ -111,6 +111,8 @@ func main() {
 	var err error
 	if *worker {
 		err = serveWorker(ctx)
+	} else if distributedRole != "" {
+		err = runDistributed(ctx, *mode, *size)
 	} else {
 		err = run(ctx, *mode, *size)
 	}
@@ -473,11 +475,18 @@ func run(ctx context.Context, mode string, size int64) error {
 }
 
 func startWorker(ctx context.Context, config workerConfig) (ready, func(), error) {
+	return startWorkerOnHost(ctx, config, "")
+}
+
+func startWorkerOnHost(ctx context.Context, config workerConfig, host string) (ready, func(), error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return ready{}, nil, err
 	}
 	cmd := exec.CommandContext(ctx, exe, "-worker", "-timeout", "45m", "-worker-profile-dir", workerProfileDir)
+	if host != "" {
+		cmd = remoteWorkerCommand(ctx, host, exe)
+	}
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		return ready{}, nil, err

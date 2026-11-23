@@ -1,0 +1,98 @@
+[
+  {
+    "topology": "Ethernet",
+    "mode": "single",
+    "runs_seconds": [
+      1.930152817,
+      1.816083231,
+      1.93347838
+    ],
+    "median_seconds": 1.930152817,
+    "median_mbit_per_second": 4450.390930885552,
+    "client_queue_drops": [
+      429,
+      285,
+      190
+    ]
+  },
+  {
+    "topology": "Omni-Path",
+    "mode": "single",
+    "runs_seconds": [
+      1.781313554,
+      1.989230823,
+      1.777735922
+    ],
+    "median_seconds": 1.781313554,
+    "median_mbit_per_second": 4822.247364991419,
+    "client_queue_drops": [
+      626,
+      95,
+      545
+    ]
+  },
+  {
+    "topology": "Ethernet, two sockets",
+    "mode": "multipath",
+    "runs_seconds": [
+      2.657188782,
+      2.53810916,
+      2.93070924
+    ],
+    "median_seconds": 2.657188782,
+    "median_mbit_per_second": 3232.715210220995,
+    "client_queue_drops": [
+      0,
+      0,
+      0
+    ]
+  },
+  {
+    "topology": "Ethernet + Omni-Path",
+    "mode": "multipath",
+    "runs_seconds": [
+      2.393776262,
+      2.470102654,
+      2.348894852
+    ],
+    "median_seconds": 2.393776262,
+    "median_mbit_per_second": 3588.445055772719,
+    "client_queue_drops": [
+      0,
+      0,
+      0
+    ]
+  },
+  {
+    "topology": "Ethernet, two sources",
+    "mode": "multisource",
+    "runs_seconds": [
+      9.143278377,
+      9.050989027,
+      8.730226874
+    ],
+    "median_seconds": 9.050989027,
+    "median_mbit_per_second": 949.0603254931998,
+    "client_queue_drops": [
+      0,
+      0,
+      0
+    ]
+  },
+  {
+    "topology": "Ethernet + Omni-Path, two sources",
+    "mode": "multisource",
+    "runs_seconds": [
+      7.60044451,
+      8.237429517,
+      7.598322573
+    ],
+    "median_seconds": 7.60044451,
+    "median_mbit_per_second": 1130.1884489384952,
+    "client_queue_drops": [
+      0,
+      0,
+      0
+    ]
+  }
+]
